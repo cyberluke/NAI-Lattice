@@ -1,0 +1,18 @@
+[package]
+name = "nai-lattice-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NAI Lattice inspection, verification, recovery and rebuild CLI (spec §7)."
+
+[[bin]]
+name = "nai-lattice-cli"
+path = "src/main.rs"
+
+[dependencies]
+lattice-runtime = { path = "../../crates/lattice-runtime" }
+lattice-ledger = { path = "../../crates/lattice-ledger" }
+lattice-cas = { path = "../../crates/lattice-cas" }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true }

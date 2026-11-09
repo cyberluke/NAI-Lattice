@@ -1,0 +1,24 @@
+[package]
+name = "lattice-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NAF/1 protocol: handshake, frames, events, artifacts, queries (prost pb)."
+build = "build.rs"
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+prost.workspace = true
+prost-types.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+blake3.workspace = true
+crc32c.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"

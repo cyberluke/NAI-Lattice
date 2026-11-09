@@ -1,0 +1,14 @@
+[package]
+name = "lattice-embeddings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AAF-federated embeddings + rerank provider: calls the LUSI NPU Qwen3 gateway (never re-implements or duplicates the models)."
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-vector = { path = "../lattice-vector" }
+ureq = { version = "2", default-features = false, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/lattice-core",
+  "crates/lattice-protocol",
+  "crates/lattice-ledger",
+  "crates/lattice-cas",
+  "crates/lattice-aaf",
+  "crates/lattice-hotstore",
+  "crates/lattice-hotstore-surrealkv",
+  "crates/lattice-hotstore-fjall",
+  "crates/lattice-lakehouse",
+  "crates/lattice-search",
+  "crates/lattice-vector",
+  "crates/lattice-embeddings",
+  "crates/lattice-graph",
+  "crates/lattice-query",
+  "crates/lattice-provider-windows-search",
+  "crates/lattice-provider-appcontent",
+  "crates/lattice-provider-opfs",
+  "crates/lattice-provider-filesystem",
+  "crates/lattice-observability",
+  "crates/lattice-runtime",
+  "crates/lattice-client",
+  "crates/lattice-testkit",
+  "apps/nai-lattice-cli",
+  "apps/nai-fabric-host",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cyberluke/NAI-Lattice"
+rust-version = "1.99"
+
+[workspace.dependencies]
+# ── canonical ledger / identity ────────────────────────────────────────────
+blake3 = "1.5"
+crc32c = "0.6"
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }
+ulid = { version = "1.1", features = ["serde"] }
+# ── async runtime / IPC ────────────────────────────────────────────────────
+tokio = { version = "1.40", features = ["full"] }
+tokio-util = "0.7"
+bytes = "1.7"
+# named-pipe primitives (Win32_System_Pipes)
+windows = { version = "0.58", features = [
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_Foundation",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
+] }
+# ── protocol / serialization ───────────────────────────────────────────────
+prost = "0.13"
+prost-types = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# ── observability ─────────────────────────────────────────────────────────
+tracing-appender = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+
+[profile.test]
+# MSVC link.exe (VS2022 14.44) hits LNK1318 "Unexpected PDB error; LIMIT" on the
+# combined Tantivy + SurrealKV test symbol graph. Building test binaries without
+# debuginfo avoids generating the oversized Program Database entirely.
+debug = false
+
+[profile.bench]
+lto = true
+codegen-units = 1

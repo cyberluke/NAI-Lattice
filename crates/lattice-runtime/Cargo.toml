@@ -1,0 +1,28 @@
+[package]
+name = "lattice-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NAI Lattice runtime: wires ledger + hotstore + CAS + AAF and dispatches NAF/1 capabilities."
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+lattice-protocol = { path = "../lattice-protocol" }
+lattice-ledger = { path = "../lattice-ledger" }
+lattice-cas = { path = "../lattice-cas" }
+lattice-hotstore = { path = "../lattice-hotstore" }
+lattice-hotstore-surrealkv = { path = "../lattice-hotstore-surrealkv" }
+lattice-aaf = { path = "../lattice-aaf" }
+lattice-vector = { path = "../lattice-vector" }
+lattice-search = { path = "../lattice-search" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+base64.workspace = true
+prost.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

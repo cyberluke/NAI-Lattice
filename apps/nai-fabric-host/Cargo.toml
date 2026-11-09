@@ -1,0 +1,38 @@
+[package]
+name = "nai-fabric-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NAI Ambient Fabric per-user host: serves NAF/1 over the Windows named pipe."
+
+[[bin]]
+name = "nai-fabric-host"
+path = "src/main.rs"
+
+[dependencies]
+lattice-core = { path = "../../crates/lattice-core" }
+lattice-protocol = { path = "../../crates/lattice-protocol" }
+lattice-runtime = { path = "../../crates/lattice-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+prost.workspace = true
+bytes.workspace = true
+crc32c.workspace = true
+blake3.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_Security_Authorization",
+] }

@@ -1,0 +1,13 @@
+[package]
+name = "lattice-hotstore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HotStore trait: immutable-by-construction KV keyspace abstraction over production hot stores (SurrealKV/Fjall)."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+bytes.workspace = true
