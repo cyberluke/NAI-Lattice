@@ -310,6 +310,38 @@ export class NafClient {
     this.pendings.clear();
     this.queue.length = 0;
   }
+
+  /**
+   * Read a range of canonical events from the fabric ledger (`event.read_range`).
+   * Resumes via `after` (exclusive runtime_sequence); filters apply server-side.
+   * AAF: the read-back delta the runtime contract already advertised.
+   */
+  async eventReadRange(args: {
+    after?: number;
+    limit?: number;
+    namespace?: string;
+    event_type?: string;
+    entity_id?: string;
+    correlation_id?: string;
+  }): Promise<DispatchResult> {
+    return this.dispatch('event.read_range', args ?? {});
+  }
+
+  /** Append a canonical event with an optional idempotency key. */
+  async eventAppend(
+    args: {
+      namespace: string;
+      event_type: string;
+      entity_id?: string;
+      payload?: unknown;
+      timestamp_utc_ms?: number;
+      correlation_id?: string;
+      durability?: 'durable' | 'batched';
+    },
+    idempotencyKey?: string,
+  ): Promise<DispatchResult> {
+    return this.dispatch('event.append', args ?? {}, idempotencyKey);
+  }
 }
 
 export { MAX_FRAME_BYTES };

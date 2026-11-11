@@ -317,7 +317,7 @@ pub fn recover(
 }
 
 /// Extract the embedded `Event` from a segment frame, if decodable.
-fn decode_event(frame: &pb::Frame) -> Result<Option<pb::Event>, RecoveryError> {
+pub fn decode_event(frame: &pb::Frame) -> Result<Option<pb::Event>, RecoveryError> {
     match pb::Event::decode(frame.protobuf_event.as_slice()) {
         Ok(ev) => Ok(Some(ev)),
         Err(_) => Ok(None), // unknown payload preserved; not a corruption by itself

@@ -27,7 +27,7 @@ use lattice_protocol::pb;
 use prost::Message;
 use tokio::sync::Mutex;
 
-use crate::segment::SegmentWriter;
+use crate::segment::{decode_event, SegmentWriter};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerError {
@@ -45,6 +45,35 @@ pub enum LedgerError {
     DurabilityDowngrade { requested: Durability },
     #[error("recovery: {0}")]
     Recovery(#[from] segment::RecoveryError),
+}
+
+/// Filter + pagination for a canonical event scan (fabric re-read delta).
+#[derive(Debug, Clone, Default)]
+pub struct EventScanFilter {
+    /// Resume from an exclusive runtime sequence.
+    pub after: Option<u64>,
+    /// Bound the result set count.
+    pub limit: Option<u64>,
+    /// Exact namespace match.
+    pub namespace: Option<String>,
+    /// Exact event_type match.
+    pub event_type: Option<String>,
+    /// Exact entity_id URI match.
+    pub entity_id: Option<String>,
+    /// Exact correlation_id match.
+    pub correlation_id: Option<String>,
+}
+
+/// List `.segment` files in a (sealed) directory, oldest-first by filename.
+fn list_segment_files(dir: &Path) -> Result<Vec<PathBuf>, LedgerError> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)?
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e == "segment").unwrap_or(false))
+        .collect();
+    files.sort();
+    Ok(files)
 }
 
 /// Config for the ledger.
@@ -155,6 +184,81 @@ impl Ledger {
     /// Last committed runtime sequence (reserved order, after crash recovery).
     pub async fn last_sequence(&self) -> u64 {
         self.active.lock().await.next_seq.saturating_sub(1)
+    }
+
+    /// Read-only scan over canonical events across ALL segments (sealed + active),
+    /// in ascending `runtime_sequence` order. This is the replay/rebuild path
+    /// projections and fabric clients use to reconstruct state from the ledger.
+    ///
+    /// A sealed segment's footer is ignored by `recover` (read-only), so a scan
+    /// never mutates anything. Applied filters run after the merge; `after`
+    /// resumes from an exclusive sequence (cursor pagination), `limit` bounds the
+    /// result set.
+    pub fn scan_events(&self, filter: &EventScanFilter) -> Result<Vec<CanonicalEvent>, LedgerError> {
+        #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy)]
+        struct SeqKey(u64);
+        // Collect (sequence, event-pb-frame) tuples across all segments.
+        let mut collected: Vec<(u64, pb::Frame)> = Vec::new();
+        // 1) Sealed segments, oldest first (date dirs + lexicographic file names are
+        //    already in sealing order).
+        let sealed_dir = self.config.root.join("ledger").join("sealed");
+        if sealed_dir.exists() {
+            let mut day_dirs: Vec<_> = std::fs::read_dir(&sealed_dir)?
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .collect();
+            day_dirs.sort();
+            for day in day_dirs {
+                for path in list_segment_files(&day)? {
+                    let (frames, _tail, _hwm, _trunc) = segment::recover(&path)?;
+                    collected.extend(frames.into_iter().map(|f| (f.runtime_sequence, f)));
+                }
+            }
+        }
+        // 2) Active segment (current appended frames).
+        let (frames, _tail, _hwm, _trunc) = segment::recover(&self.active_path)?;
+        collected.extend(frames.into_iter().map(|f| (f.runtime_sequence, f)));
+        // Merge-sort by sequence (dedupe identical sequence).
+        collected.sort_by_key(|(seq, _)| SeqKey(*seq));
+        collected.dedup_by_key(|(seq, _)| SeqKey(*seq));
+        // Apply filters + pagination.
+        let mut out = Vec::new();
+        for (_, frame) in collected {
+            let Some(ev) = decode_event(&frame)? else { continue };
+            if let Some(after) = filter.after {
+                if ev.runtime_sequence <= after {
+                    continue;
+                }
+            }
+            if let Some(ns) = &filter.namespace {
+                if ev.namespace != *ns {
+                    continue;
+                }
+            }
+            if let Some(et) = &filter.event_type {
+                if ev.event_type != *et {
+                    continue;
+                }
+            }
+            if let Some(ent) = &filter.entity_id {
+                if ev.entity_id_uri != *ent {
+                    continue;
+                }
+            }
+            if let Some(corr) = &filter.correlation_id {
+                if ev.correlation_id != *corr {
+                    continue;
+                }
+            }
+            out.push(proto_to_canonical(&ev));
+            if let Some(limit) = filter.limit {
+                if out.len() as u64 >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Append one canonical event with the requested durability. Never
@@ -515,5 +619,56 @@ mod tests {
         assert_eq!(seqs.len(), total as usize, "sequences must be unique");
         assert_eq!(seqs[0], 1);
         assert_eq!(seqs[total as usize - 1], total as u64);
+    }
+
+    /// Fabric re-read delta: `scan_events` reconstructs events from both
+    /// active and sealed segments, filtered + paginated, in sequence order.
+    #[tokio::test]
+    async fn scan_events_reconstructs_across_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LedgerConfig {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let ledger = Ledger::open(cfg.clone()).unwrap();
+        for ts in 1..=5_i64 {
+            let mut e = event(0, ts);
+            e.namespace = "npilot".into();
+            e.event_type = "conversation.turn.created".into();
+            e.payload_bytes = format!(r#"{{"seq":{ts}}}"#).into_bytes();
+            e.entity_id = Some(GlobalId::entity("npilot", "conv-abcd"));
+            ledger.append(e, Durability::Durable).await.unwrap();
+        }
+        // All 5 events readable in sequence order.
+        let all = ledger
+            .scan_events(&EventScanFilter {
+                namespace: Some("npilot".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(all.len(), 5);
+        let seqs: Vec<u64> = all.iter().map(|e| e.runtime_sequence).collect();
+        let mut sorted = seqs.clone();
+        sorted.sort_unstable();
+        assert_eq!(seqs, sorted, "scan must be in sequence order");
+        // after=2 → resumes from seq 4 onward (exclusive) → 5-3 = 2 events.
+        let resumed = ledger
+            .scan_events(&EventScanFilter {
+                after: Some(3),
+                limit: Some(2),
+                namespace: Some("npilot".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resumed.len(), 2);
+        assert_eq!(resumed[0].runtime_sequence, 4);
+        // event_type filter narrows.
+        let typed = ledger
+            .scan_events(&EventScanFilter {
+                event_type: Some("conversation.turn.created".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(typed.len(), 5);
     }
 }
