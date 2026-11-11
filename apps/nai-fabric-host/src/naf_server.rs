@@ -5,47 +5,65 @@
 //! crc + blake3) mirrors `lattice_protocol`.
 
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bytes::{Buf, BytesMut};
 use prost::Message;
 
+use lattice_gastown::GastownService;
 use lattice_protocol::pb;
 use lattice_runtime::LatticeRuntime;
 
 use crate::handle_connection;
 
-/// Per-user NAF/1 pipe name (`\\.\pipe\NAI.AmbientFabric.NAF1.<sid-hash>`).
+/// Per-user NAF/1 pipe name (`\\.\pipe\NAI.AmbientFabric.NAF1.<sid-hash>`),
+/// owned by the current user SID (§5: SID-based identity, not USERNAME text).
 pub(crate) struct ServerPipe;
 
 impl ServerPipe {
     pub(crate) fn pipe_name() -> String {
-        let user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
-        let h = blake3::hash(user.as_bytes()).to_hex().to_string();
+        let sid = crate::win_acl::current_user_sid_string()
+            .unwrap_or_else(|| "unknown".into());
+        let h = blake3::hash(sid.as_bytes()).to_hex().to_string();
         format!(r"\\.\pipe\NAI.AmbientFabric.NAF1.{}", &h[..6])
     }
 }
 
-/// Serve connections forever on `pipe_name`.
-pub(crate) fn serve(rt: Arc<LatticeRuntime>, pipe_name: &str) {
+/// Serve connections forever on every endpoint name (canonical SID pipe + legacy
+/// alias), each in its own accept thread, all routing to the SAME dispatcher and
+/// domain state. Exactly one persistent singleton owns all names.
+pub(crate) fn serve(
+    rt: Arc<LatticeRuntime>,
+    gastown: Arc<Mutex<GastownService>>,
+    pipe_names: &[String],
+) {
     #[cfg(windows)]
     {
-        loop {
-            match accept_pipe_client(pipe_name) {
-                Ok(mut stream) => {
-                    let rt = rt.clone();
-                    std::thread::spawn(move || handle_connection(&rt, &mut stream));
+        let mut handles = Vec::new();
+        for name in pipe_names.iter().cloned() {
+            let rt = rt.clone();
+            let gastown = gastown.clone();
+            handles.push(std::thread::spawn(move || {
+                loop {
+                    match accept_pipe_client(&name) {
+                        Ok(mut stream) => {
+                            let rt = rt.clone();
+                            let gastown = gastown.clone();
+                            std::thread::spawn(move || handle_connection(&rt, &gastown, &mut stream));
+                        }
+                        Err(e) => {
+                            tracing::warn!("pipe accept error ({name}): {e}");
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("pipe accept error: {e}");
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-            }
+            }));
         }
+        for h in handles { let _ = h.join(); }
     }
     #[cfg(not(windows))]
     {
-        let _ = (rt, pipe_name);
+        let _ = (rt, pipe_names, gastown);
         panic!("NAF pipe server requires Windows");
     }
 }
@@ -63,6 +81,17 @@ use windows::core::PCWSTR;
     let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
     // PIPE_ACCESS_DUPLEX == 0x3 (windows-rs 0.58 exposes access mode as raw).
     let pipe_access_duplex = FILE_FLAGS_AND_ATTRIBUTES(0x3);
+    // Current-user-only pipe DACL (Lattice §5): only the owner SID can connect.
+    let mut owner_sd: *mut core::ffi::c_void = std::ptr::null_mut();
+    let mut attrs: Option<windows::Win32::Security::SECURITY_ATTRIBUTES> = None;
+    if let Some(sid) = crate::win_acl::current_user_sid_string() {
+        if let Some(sd) = crate::win_acl::current_user_only_descriptor(&sid) {
+            owner_sd = sd;
+            attrs = crate::win_acl::security_attributes_for(sd);
+        }
+    }
+    let lp_sa: Option<*const windows::Win32::Security::SECURITY_ATTRIBUTES> =
+        attrs.as_ref().map(|a| a as *const _);
     let handle = unsafe {
         CreateNamedPipeW(
             PCWSTR(wide.as_ptr()),
@@ -72,9 +101,12 @@ use windows::core::PCWSTR;
             65536,
             65536,
             0,
-            None,
+            lp_sa,
         )
     };
+    if !owner_sd.is_null() {
+        unsafe { crate::win_acl::free_security_descriptor(owner_sd); }
+    }
     if handle.is_invalid() {
         return Err(std::io::Error::last_os_error());
     }
@@ -124,24 +156,38 @@ impl Write for PipeClientStream {
 pub(crate) type PipeClientStream = std::io::Cursor<Vec<u8>>;
 
 /// Read one length-prefixed NAF frame from a `Read` stream.
+///
+/// Routes every server frame through the CANONICAL `lattice_protocol::frame`
+/// decoder, which validates BLAKE3 + CRC32C and enforces `MAX_FRAME_BYTES`
+/// before any allocation (NAF-004). This removes the previous duplicate decoder
+/// that skipped integrity/hash checks and allocated from an unvalidated length.
 pub(crate) fn read_naf_frame(
     stream: &mut impl Read,
     buf: &mut BytesMut,
 ) -> std::io::Result<WireFrame> {
     loop {
+        // Pull the length header (4 bytes).
         if buf.len() < 4 {
             let mut hdr = [0u8; 4];
             let n = stream.read(&mut hdr)?;
             if n == 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"));
+                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof before frame header"));
             }
             buf.extend_from_slice(&hdr[..n]);
             continue;
         }
-        let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-        let total = 4 + len;
+        let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64;
+        // Bounded: reject absurd lengths BEFORE reading/allocation.
+        if len > lattice_protocol::frame::MAX_FRAME_BYTES {
+            return Err(std::io::Error::other(format!(
+                "frame too large: {len} > {}",
+                lattice_protocol::frame::MAX_FRAME_BYTES
+            )));
+        }
+        let total = 4 + len as usize;
         if buf.len() < total {
-            let mut chunk = vec![0u8; total - buf.len()];
+            let need = total - buf.len();
+            let mut chunk = vec![0u8; need]; // bounded by MAX_FRAME_BYTES check above
             let n = stream.read(&mut chunk)?;
             if n == 0 {
                 return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof mid-frame"));
@@ -149,42 +195,29 @@ pub(crate) fn read_naf_frame(
             buf.extend_from_slice(&chunk[..n]);
             continue;
         }
-        let body = buf.split_to(total);
-        let frame: pb::Frame =
-            pb::Frame::decode(&body[4..]).map_err(|e| std::io::Error::other(e.to_string()))?;
-        if frame.magic != lattice_protocol::FRAME_MAGIC {
-            return Err(std::io::Error::other("bad frame magic"));
+        // Use the canonical incremental decoder for full-frame validation
+        // (magic, CRC32C, BLAKE3, size). Errors reject the frame; caller breaks.
+        let mut frames = Vec::new();
+        lattice_protocol::frame::decode_frames(buf, &mut frames).map_err(|e| {
+            std::io::Error::other(format!("frame rejected by canonical codec: {e:?}"))
+        })?;
+        if frames.is_empty() {
+            return Err(std::io::Error::other("invalid frame (no complete frame decoded)"));
         }
-        return Ok(WireFrame {
-            payload: BytesMut::from(&frame.protobuf_event[..]),
-        });
+        let frame = frames.remove(0);
+        return Ok(WireFrame { payload: BytesMut::from(&frame.payload[..]) });
     }
 }
 
-/// Encode an envelope as a NAF frame (length-prefixed, magic, crc, blake3).
+/// Encode an envelope as a NAF frame via the CANONICAL codec (same framing,
+/// integrity and limits in both directions).
 pub(crate) fn encode_naf(env: &pb::Envelope) -> std::io::Result<Vec<u8>> {
     let payload = env.encode_to_vec();
-    let mut frame = pb::Frame {
-        magic: lattice_protocol::FRAME_MAGIC,
-        format_version: 1,
-        frame_length: payload.len() as u64,
-        runtime_sequence: 0,
-        event_id: String::new(),
-        protobuf_event: payload,
-        crc32c: 0,
-        frame_blake3: Vec::new(),
-    };
-    let mut inner = Vec::new();
-    let _ = frame.encode(&mut inner).map_err(|e| std::io::Error::other(e.to_string()))?;
-    frame.crc32c = crc32c::crc32c(&inner);
-    let hash = blake3::hash(&inner);
-    frame.frame_blake3 = hash.as_bytes().to_vec();
-    let mut out = Vec::new();
-    let _ = frame.encode(&mut out).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let mut wire = Vec::with_capacity(4 + out.len());
-    wire.extend_from_slice(&(out.len() as u32).to_le_bytes());
-    wire.extend_from_slice(&out);
-    Ok(wire)
+    if payload.len() as u64 > lattice_protocol::frame::MAX_FRAME_BYTES {
+        return Err(std::io::Error::other("envelope exceeds max frame bytes"));
+    }
+    lattice_protocol::frame::encode_frame(1, 0, "", &payload)
+        .map_err(|e| std::io::Error::other(format!("encode failed: {e:?}")))
 }
 
 /// A digit span helper for the caller.
