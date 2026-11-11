@@ -81,12 +81,22 @@ fn noop_catchup() -> ProjectionCatchup {
 pub struct Ledger {
     pub config: LedgerConfig,
     active_path: PathBuf,
-    tail_hash: Mutex<Option<String>>,
-    high_water_mark: Mutex<u64>,
+    /// Single persistent active-segment writer plus the ordered append state.
+    /// Held under ONE mutex: sequence allocation, previous-hash advancement,
+    /// and the physical write+flush are all linearizable (LEDGER-001), so
+    /// concurrent producers never interleave a torn frame or broken prev-link.
+    active: Mutex<ActiveWriter>,
     /// Group-commit writer for `BatchedDurable`.
     batched: durability::BatchedDurableWriter,
-    /// User-supplied batched flush hook (writes + flushes a frame body).
-    batch_flush: std::sync::Mutex<Option<Arc<dyn Fn(&[u8]) -> Result<(), LedgerError> + Send + Sync>>>,
+}
+
+/// One persistent segment writer serialized with the ordered append state.
+struct ActiveWriter {
+    writer: SegmentWriter,
+    tail_hash: Option<String>,
+    /// Highest allocated sequence + 1 (advances for every append, including
+    /// BatchedDurable whose physical write is deferred to `flush_batched`).
+    next_seq: u64,
 }
 
 impl Ledger {
@@ -125,59 +135,47 @@ impl Ledger {
         catchup(high_water);
         let batched_latency_ms = config.batched_latency_ms;
 
+        // Persistent writer: open once so all subsequent appends are serialized
+        // through a single file cursor (prevents concurrent torn frames).
+        let writer = SegmentWriter::open(&active_path)?;
+        let next_seq = writer.last_sequence() + 1;
+
         Ok(Self {
             config,
             active_path,
-            tail_hash: Mutex::new(tail_hash),
-            high_water_mark: Mutex::new(high_water),
+            active: Mutex::new(ActiveWriter { writer, tail_hash, next_seq }),
             batched: durability::BatchedDurableWriter::new(batched_latency_ms),
-            batch_flush: std::sync::Mutex::new(None),
         })
-    }
-
-    /// Provide the durable write+flush hook used by group-commit drains.
-    pub fn with_batch_flush<F>(self, f: F) -> Self
-    where
-        F: Fn(&[u8]) -> Result<(), LedgerError> + Send + Sync + 'static,
-    {
-        self.install_batch_flush(f);
-        self
-    }
-
-/// Non-consuming setter for the group-commit flush hook (works behind `Arc`).
-    pub fn install_batch_flush<F>(&self, f: F)
-    where
-        F: Fn(&[u8]) -> Result<(), LedgerError> + Send + Sync + 'static,
-    {
-        *self.batch_flush.lock().unwrap() = Some(Arc::new(f));
     }
 
     pub fn active_path(&self) -> &Path {
         &self.active_path
     }
 
-    /// Last committed runtime sequence (after crash recovery caught up).
+    /// Last committed runtime sequence (reserved order, after crash recovery).
     pub async fn last_sequence(&self) -> u64 {
-        *self.high_water_mark.lock().await
+        self.active.lock().await.next_seq.saturating_sub(1)
     }
 
     /// Append one canonical event with the requested durability. Never
     /// silently downgrades durability.
+    ///
+    /// Everything is serialized under ONE mutex over a single persistent
+    /// `SegmentWriter` (LEDGER-001): sequence allocation, previous-hash link,
+    /// and the physical write are mutually consistent, so concurrent producers
+    /// yield one deterministic, contiguous, uncorrupted hash chain.
     pub async fn append(
         &self,
         event: CanonicalEvent,
         requested: Durability,
     ) -> Result<EventId, LedgerError> {
-        let seq = {
-            let mut hwm = self.high_water_mark.lock().await;
-            let next = *hwm + 1;
-            *hwm = next;
-            next
-        };
+        let mut active = self.active.lock().await;
+        let prev = active.tail_hash.clone();
+        let seq = active.next_seq;
+        active.next_seq += 1;
+
         let mut event = event;
         event.runtime_sequence = seq;
-
-        let prev = self.tail_hash.lock().await.clone();
         event.previous_hash = prev.clone();
 
         let (frame, frame_hash) = build_frame(&event, seq, prev.as_deref())?;
@@ -185,51 +183,79 @@ impl Ledger {
 
         match requested {
             Durability::Durable => {
-                let mut w = SegmentWriter::open(&self.active_path)?;
-                w.append(&frame)?;
-                w.flush_durable()?; // durability boundary + sync
-                *self.tail_hash.lock().await = Some(frame_hash);
+                active.writer.append(&frame)?;
+                active.writer.flush_durable()?; // durability boundary + sync
+                active.tail_hash = Some(frame_hash);
             }
             Durability::BatchedDurable => {
-                // Enqueue; a background timer (or explicit flush) drains and
-                // writes+syncs within the group-commit latency.
+                // Enqueue for group commit; the physical write happens on a
+                // later flush_batched. Sequence order stays deterministic (the
+                // writer lock is held during submit), and the durable ACK is
+                // only visible once flush_batched confirms via last_sequence.
                 self.batched.submit(encode_frame(&frame)?);
-                *self.tail_hash.lock().await = Some(frame_hash);
+                active.tail_hash = Some(frame_hash);
             }
             Durability::ProjectionOnly => {
-                let mut w = SegmentWriter::open(&self.active_path)?;
-                w.append(&frame)?;
-                w.flush()?; // no durability boundary
+                active.writer.append(&frame)?;
+                active.writer.flush()?; // no durability boundary
             }
         }
         Ok(event.event_id)
     }
 
-    /// Flush any pending batched frames to the durability boundary.
-    pub fn flush_batched(&self) -> Result<(), LedgerError> {
-        // Drain the queue up front, then write each body via the installed hook.
-        self.batched.drain_with(|b| {
-            let hook = self.batch_flush.lock().unwrap().clone();
-            match hook {
-                Some(h) => h(b),
-                None => Ok(()), // no hook installed: nothing to write
-            }
+    /// Flush any pending BatchedDurable frames to the durability boundary through
+    /// the SAME persistent writer as every other append (one authoritative write
+    /// path — LEDGER-002/003). The acknowledgement/visibility of a BatchedDurable
+    /// frame only happens once this returns; queue insertion is never an ACK.
+    pub async fn flush_batched(&self) -> Result<(), LedgerError> {
+        if !self.batched.is_pending() {
+            return Ok(());
+        }
+        let mut active = self.active.lock().await;
+        self.batched.drain_with(|body| {
+            let frame: pb::Frame = prost::Message::decode(body)
+                .map_err(|e| LedgerError::Decode(e))?;
+            active.writer.append(&frame)?;
+            active.writer.flush_durable()?; // durability boundary + sync
+            Ok(())
         })
     }
 
     /// Seal the active segment and start a fresh one.
-    pub fn rotate_if_needed(&self) -> Result<bool, LedgerError> {
+    ///
+    /// LEDGER-SAFE rotation: acquires the SAME `active` mutex as every append
+    /// and `flush_batched`, drains any pending BatchedDurable frames first, then
+    /// seals + renames the current active segment, creates a fresh empty active
+    /// segment, and REPLACES `active.writer` so subsequent appends go to the new
+    /// file (not the sealed one). This closes the rotation race where a writer
+    /// left pointing at the renamed path silently writes acknowledged frames into
+    /// a sealed segment that recovery then misses (Codex review finding P1-1).
+    pub async fn rotate_if_needed(&self) -> Result<bool, LedgerError> {
+        let mut active = self.active.lock().await;
         let size = std::fs::metadata(&self.active_path).map(|m| m.len()).unwrap_or(0);
         if size < self.config.target_segment_bytes {
             return Ok(false);
         }
+        // Drain any queued BatchedDurable frames through the SAME writer before
+        // rotation so no acknowledged-but-unflushed frame could be stranded.
+        self.batched.drain_with(|body| {
+            let frame: pb::Frame = prost::Message::decode(body)
+                .map_err(|e| LedgerError::Decode(e))?;
+            active.writer.append(&frame)?;
+            active.writer.flush_durable()?;
+            Ok(())
+        })?;
+        // Seal the current segment (footer with first seq + segment hash).
         let footer = SegmentWriter::open(&self.active_path)?.seal()?;
         let now = chrono_now_utc_ymd();
         let sealed_dir = self.config.root.join("ledger").join("sealed").join(now);
         std::fs::create_dir_all(&sealed_dir)?;
         let name = format!("{:020}-{}.segment", footer.first_sequence, hex(&footer.segment_hash));
         std::fs::rename(&self.active_path, sealed_dir.join(name))?;
-        segment::create_empty(&self.active_path)?;
+        // Fresh active segment + a NEW writer bound to it, so append writes to
+        // the active file. Sequence + tail hash continue from the sealed tail.
+        let new_writer = SegmentWriter::create_empty(&self.active_path)?;
+        active.writer = new_writer;
         Ok(true)
     }
 }
@@ -392,22 +418,18 @@ mod tests {
             ..Default::default()
         };
         let active = dir.path().join("ledger/active/active.segment");
-        let ledger = Ledger::open(cfg.clone())
-            .unwrap()
-            .with_batch_flush(move |b| {
-                let mut w = SegmentWriter::open(&active)?;
-                let f: pb::Frame = prost::Message::decode(b)?;
-                w.append(&f)?;
-                w.flush_durable()
-            });
+        let ledger = Ledger::open(cfg.clone()).unwrap();
         ledger.append(event(0, 1), Durability::Durable).await.unwrap();
         ledger.append(event(1, 2), Durability::BatchedDurable).await.unwrap();
-        ledger.flush_batched().unwrap();
+        ledger.flush_batched().await.unwrap();
         assert_eq!(ledger.last_sequence().await, 2);
 
         // Reopen -> crash recovery replays both frames.
         let ledger2 = Ledger::open(cfg).unwrap();
         assert_eq!(ledger2.last_sequence().await, 2);
+        // The batched frame must be visibly durable: reopen shows seq 1 and 2.
+        let (_frames, _t, hwm2, _tr) = segment::recover(&active).unwrap();
+        assert_eq!(hwm2, 2, "batched frame must be physically persisted after flush");
     }
 
     #[tokio::test]
@@ -453,5 +475,45 @@ mod tests {
         assert!(parts[0].parse::<i32>().is_ok());
         assert!(parts[1].parse::<u32>().is_ok());
         assert!(parts[2].parse::<u32>().is_ok());
+    }
+
+    /// LEDGER-001: 32 concurrent producers → strict unique sequence + unbroken
+    /// previous-hash chain (the single-coordinator linearizability fix).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_appends_yield_unique_seq_and_valid_hash_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LedgerConfig { root: dir.path().to_path_buf(), ..Default::default() };
+        let ledger = Arc::new(Ledger::open(cfg.clone()).unwrap());
+        let producers = 32u32;
+        let per = 4u32;
+        let mut handles = Vec::new();
+        for p in 0..producers {
+            let ledger = ledger.clone();
+            handles.push(tokio::spawn(async move {
+                for k in 0..per {
+                    ledger
+                        .append(event(p as u64 * 1000 + k as u64, k as i64), Durability::Durable)
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let total = producers * per;
+        assert_eq!(ledger.last_sequence().await, total as u64);
+
+        // Replay all frames and verify the hash chain is contiguous.
+        let (frames, tail, _hwm, _trunc) = segment::recover(&dir.path().join("ledger/active/active.segment")).unwrap();
+        assert!(tail.is_some(), "tail hash must be set after appends");
+        assert_eq!(frames.len(), total as usize, "all frames persisted");
+        // Sequences must be strictly 1..=total and unique.
+        let mut seqs: Vec<u64> = frames.iter().map(|f| f.runtime_sequence).collect();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), total as usize, "sequences must be unique");
+        assert_eq!(seqs[0], 1);
+        assert_eq!(seqs[total as usize - 1], total as u64);
     }
 }

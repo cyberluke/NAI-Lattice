@@ -237,6 +237,7 @@ fn run_worker_main() {
     // dashboard (no VS Code dependency).
     gastown_orto::init_from_runtime(&rt);
     gastown_orto::rehydrate_recovered_town();
+    gastown_orto::recover_interrupted_primary_on_startup();
     gastown_orto::start_scheduler_thread();
     gastown_orto::start_control_server();
 

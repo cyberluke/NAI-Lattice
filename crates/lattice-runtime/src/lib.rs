@@ -26,6 +26,11 @@ pub struct RuntimeConfig {
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
+        // Optional env override lets an isolated accept/acceptance singleton run
+        // against a disposable root instead of the live per-user fabric root.
+        if let Some(root) = std::env::var_os("NAI_LATTICE_ROOT") {
+            return Self { root: PathBuf::from(root), ledger_segment_bytes: 128 * 1024 * 1024 };
+        }
         let local = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
@@ -91,19 +96,9 @@ impl LatticeRuntime {
             batched_latency_ms: 25,
         };
         let ledger = Arc::new(Ledger::open(ledger_cfg)?);
-        // Wire the group-commit flush hook to actually append+flush to the
-        // active segment, so `BatchedDurable` frames are durably persisted.
-        let active = ledger.active_path().to_path_buf();
-        ledger.install_batch_flush(
-            move |body: &[u8]| -> Result<(), lattice_ledger::LedgerError> {
-                let frame: lattice_protocol::pb::Frame = prost::Message::decode(body)
-                    .map_err(|e| lattice_ledger::LedgerError::Decode(e))?;
-                let mut w = lattice_ledger::segment::SegmentWriter::open(&active)?;
-                w.append(&frame)?;
-                w.flush_durable()?;
-                Ok(())
-            },
-        );
+        // BatchedDurable frames are flushed through the ledger's OWN persistent
+        // writer via `Ledger::flush_batched` — one authoritative write path
+        // (LEDGER-002/003). No external flush hook is installed.
 
         // Content-addressed object store.
         let cas = Arc::new(ObjectStore::new(local.join("cas"))?);
@@ -193,7 +188,10 @@ impl LatticeRuntime {
     /// Flush any pending group-committed (batched) ledger frames to the
     /// durability boundary. Safe to call from any thread.
     pub fn flush_hotstore(&self) {
-        let _ = self.ledger.flush_batched();
+        // Flush pending BatchedDurable ledger frames through the ledger's own
+        // persistent writer (one authoritative write path) via the runtime's
+        // internal executor.
+        let _ = self.rt.block_on(self.ledger.flush_batched());
         let _ = self.hot.flush();
     }
 

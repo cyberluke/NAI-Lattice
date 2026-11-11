@@ -13,6 +13,12 @@ path = "src/main.rs"
 lattice-runtime = { path = "../../crates/lattice-runtime" }
 lattice-ledger = { path = "../../crates/lattice-ledger" }
 lattice-cas = { path = "../../crates/lattice-cas" }
+lattice-gastown = { path = "../../crates/lattice-gastown" }
+lattice-protocol = { path = "../../crates/lattice-protocol" }
 serde_json.workspace = true
+serde.workspace = true
+prost.workspace = true
+blake3.workspace = true
+rusqlite = { version = "0.31", features = ["bundled"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true }

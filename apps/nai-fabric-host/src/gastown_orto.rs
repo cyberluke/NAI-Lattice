@@ -899,8 +899,12 @@ pub(crate) fn dispatch_orto(
                     imported.push(crate::project::ImportedMessage::new("import:text", 0, "assistant", blob.trim()));
                 }
             }
-            match crate::project::create_project(store.as_ref(), &name, &repo, &objective, sessions, imported) {
-                Ok(p) => serde_json::json!({"ok": true, "project_id": p.project_id, "name": p.name, "repo_path": p.repo_path, "imported_messages": project_transcript_count(store.as_ref(), &p.project_id)}),
+            match crate::project::create_project_roots(
+                store.as_ref(),
+                &name, &repo, &objective, sessions, imported,
+                &args["resource_roots"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<Vec<_>>()).unwrap_or_default(),
+            ) {
+                Ok(p) => serde_json::json!({"ok": true, "project_id": p.project_id, "name": p.name, "repo_path": p.repo_path, "resource_roots": p.resource_roots, "imported_messages": project_transcript_count(store.as_ref(), &p.project_id)}),
                 Err(e) => serde_json::json!({"ok": false, "error": e}),
             }
         }
@@ -944,6 +948,27 @@ pub(crate) fn dispatch_orto(
                 depends_on_index: vec![],
             }], lattice_gastown::orchestration::state::MergeMode::ReviewThenLand, false, None);
             let new_bead = store.list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(convoy_id.as_str())).map(|b| b.bead_id.clone());
+            // P0-D: attach TASK-SPECIFIC acceptance gates (from the caller or stored
+            // per bead) so the Quality Oracle scores the actual task, not infra.
+            let gates_arg: Vec<serde_json::Value> = args["gates"].as_array().cloned().unwrap_or_default();
+            if let Some(nb) = &new_bead {
+                if let Some(mut b) = store.get_bead(nb) {
+                    b.metadata["bt_gates"] = if !gates_arg.is_empty() {
+                        serde_json::Value::Array(gates_arg)
+                    } else {
+                        // P0-D default: task-specific acceptance gates derived from
+                        // the primary-bead recovery objective (not infra self-tests).
+                        serde_json::json!([
+                            {"id":"artifacts_recovered","status":"UNVERIFIED","evidence":"original artifacts + provenance located"},
+                            {"id":"dim55_producer_traced","status":"UNVERIFIED","evidence":"dimension 55 first actual runtime producer identified"},
+                            {"id":"execution_granularity","status":"UNVERIFIED","evidence":"original execution granularity from source-backed evidence"},
+                            {"id":"cpu_parity","status":"UNVERIFIED","evidence":"faithful CPU diagnostic / independently verifiable equivalence"},
+                            {"id":"no_fabrication","status":"UNVERIFIED","evidence":"results + parity limits recorded without fabricated claims"}
+                        ])
+                    };
+                    store.put_bead(&b);
+                }
+            }
             // Serial gate across convoys: blocks on the prior primary.
             if let (Some(nb), Some(prior_id)) = (&new_bead, prior.map(|b| b.bead_id.clone())) {
                 let _ = store.put_dependency_if_valid(&lattice_gastown::orchestration::state::Dependency { bead_id: nb.clone(), depends_on_bead_id: prior_id.clone(), kind: lattice_gastown::orchestration::state::DependencyKind::Blocks });
@@ -953,6 +978,114 @@ pub(crate) fn dispatch_orto(
             p.updated_unix_ms = crate::now_unix_ms();
             let _ = store.hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
             serde_json::json!({"ok": true, "bead_id": new_bead.unwrap_or_default(), "convoy_id": convoy_id})
+        }
+        "gt.project.dispatch_corrective" => {
+            // P0-1/P0-2/P0-G: dispatch a corrective child UNDER the project's
+            // active primary, on a real rig, carrying the primary's OWN
+            // task-specific gates + a concrete plan. The child is threaded to the
+            // original primary (never an orphan), reuses its 5 gates, and when it
+            // produces evidence the auto-governor reviews that evidence and (on
+            // verified 10/10) stamps + terminalizes the primary.
+            let pid = args["project_id"].as_str().unwrap_or("");
+            let Some(mut p) = crate::project::load_project(store.as_ref(), pid) else {
+                return serde_json::json!({"ok": false, "error": "project not found"});
+            };
+            // Primary = the active bead (walk to the primary Issue under a convoy).
+            let primary_id = p.active_bead_id.clone()
+                .or_else(|| p.convoy_ids.iter().find_map(|cid| store.as_ref().list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == lattice_gastown::orchestration::state::BeadType::Issue).map(|b| b.bead_id.clone())));
+            let Some(primary_id) = primary_id else {
+                return serde_json::json!({"ok": false, "error": "no active primary bead"});
+            };
+            let Some(primary) = store.as_ref().get_bead(&primary_id) else {
+                return serde_json::json!({"ok": false, "error": "primary bead missing"});
+            };
+            // Task-specific gates: the primary's OWN accepted gates (its bt_gates).
+            let owner_gates: Vec<serde_json::Value> = primary.metadata.get("bt_gates")
+                .and_then(|g| g.as_array()).cloned().unwrap_or_else(|| {
+                    // Deterministic B1 fallback (the five original TaoAvatar gates).
+                    vec![
+                        serde_json::json!({"id":"artifacts_recovered","status":"UNVERIFIED","evidence":"none"}),
+                        serde_json::json!({"id":"dim55_producer_traced","status":"UNVERIFIED","evidence":"none"}),
+                        serde_json::json!({"id":"execution_granularity","status":"UNVERIFIED","evidence":"none"}),
+                        serde_json::json!({"id":"cpu_diagnostic_parity","status":"UNVERIFIED","evidence":"none"}),
+                        serde_json::json!({"id":"no_fabrication","status":"UNVERIFIED","evidence":"none"}),
+                    ]
+                });
+            // Real rig: explicit, else the project's, else the primary's, else first.
+            let rig = if !args["rig_id"].as_str().unwrap_or("").is_empty() { args["rig_id"].as_str().unwrap_or("").to_string() }
+                else if let Some(pr) = p.rig_ids.first() { pr.clone() }
+                else { primary.rig_id.clone().unwrap_or_else(|| store.as_ref().list_rigs().first().map(|r| r.rig_id.clone()).unwrap_or_default()) };
+            let instruct = args["instructions"].as_str().map(str::to_string)
+                .unwrap_or_else(|| primary.body.clone().unwrap_or_else(|| "Recover the primary's objective with executed evidence; no fabrication.".to_string()));
+            let plan_body = serde_json::json!({
+                "title": &primary.title, "instructions": instruct,
+                "required_evidence": owner_gates.iter().filter_map(|g| g.get("id").and_then(|x| x.as_str()).map(str::to_string)).collect::<Vec<_>>(),
+                "acceptance_criteria": owner_gates.iter().filter_map(|g| g.get("id").and_then(|x| x.as_str()).map(str::to_string)).collect::<Vec<_>>(),
+                "parent_primary": primary_id, "task_gates": owner_gates,
+            }).to_string();
+            let mut meta = serde_json::json!({"corrective_plan": plan_body.clone(), "parent_primary": primary_id, "inquisitor_first_pass": true});
+            meta["bt_gates"] = serde_json::Value::Array(owner_gates.clone());
+            let cb = lattice_gastown::orchestration::state::Bead::create(
+                lattice_gastown::orchestration::state::BeadType::Issue,
+                &format!("corrective: {}", primary.title),
+                Some(&plan_body),
+                None,
+                vec!["gt:corrective".to_string()],
+                meta,
+                Some(&rig),
+                Some(&primary_id),
+                Some("mayor"),
+            );
+            let cid = cb.bead_id.clone();
+            store.as_ref().put_bead(&cb);
+            p.updated_unix_ms = crate::now_unix_ms();
+            let _ = store.as_ref().hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
+            // Dispatch immediately through the reconciler (Mayor → DeepSeek/Codex).
+            if let Some(o) = ORCH.get() {
+                let _ = o.tick(&HostAgentRunner);
+            }
+            serde_json::json!({"ok": true, "corrective_bead_id": cid, "primary": primary_id, "rig_id": rig, "gates": owner_gates.len()})
+        }
+        "gt.project.delete" => {
+            let id = args["project_id"].as_str().unwrap_or("");
+            let removed = crate::project::delete_project(store.as_ref(), id);
+            serde_json::json!({"ok": removed, "project_id": id, "removed": removed})
+        }
+        "gt.project.set_bead_gates" => {
+            let bead = args["bead_id"].as_str().unwrap_or("");
+            let gates: Vec<serde_json::Value> = args["gates"].as_array().cloned().unwrap_or_default();
+            if let Some(mut b) = store.get_bead(bead) {
+                b.metadata["bt_gates"] = serde_json::Value::Array(gates.clone());
+                store.put_bead(&b);
+                serde_json::json!({"ok": true, "bead_id": bead, "gates": gates})
+            } else {
+                serde_json::json!({"ok": false, "error": "bead not found"})
+            }
+        }
+        "gt.project.set_resource_roots" => {
+            // P0 (multi-repo): set/refresh the project's allowed RESOURCE ROOTS.
+            // A real project like TaoAvatar spans several repos (MNN framework,
+            // TaoAvatar-NNR-MNN model, plus Downloads/resources). This is the
+            // authoritative allow-list the implementers + Inquisitor use to judge
+            // whether a linked session / artifact belongs to this project.
+            let id = args["project_id"].as_str().unwrap_or("");
+            if let Some(mut p) = crate::project::load_project(store.as_ref(), id) {
+                let roots: Vec<String> = args["resource_roots"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                if roots.is_empty() {
+                    return serde_json::json!({"ok": false, "error": "resource_roots must be a non-empty array"});
+                }
+                // Always include the primary repo path.
+                let mut merged: Vec<String> = vec![p.repo_path.clone()];
+                for r in &roots { if !merged.contains(r) { merged.push(r.clone()); } }
+                p.resource_roots = merged.clone();
+                p.updated_unix_ms = crate::now_unix_ms();
+                let _ = store.as_ref().hot_put(&format!("gastown/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
+                serde_json::json!({"ok": true, "project_id": id, "resource_roots": merged})
+            } else {
+                serde_json::json!({"ok": false, "error": "project not found"})
+            }
         }
         "gt.project.set_active_bead" => {
             // Serial gate: mark the ONE primary bead that is allowed to run next.
@@ -985,6 +1118,45 @@ pub(crate) fn dispatch_orto(
                 p.updated_unix_ms = crate::now_unix_ms();
                 let _ = store.hot_put(&format!("gastown/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
                 serde_json::json!({"ok": true, "active_bead_id": bead, "project_id": id, "serial_gate": "1-active-primary"})
+            } else {
+                serde_json::json!({"ok": false, "error": "project not found"})
+            }
+        }
+        "gt.project.set_session_links" => {
+            // Replace the project's linked sessions with the given (on-topic,
+            // user-confirmed) list. FIXES session pollution: only sessions that
+            // actually belong to the project's repos/roots should be linked; the
+            // Inquisitor bootstrap + message viewer read these. Off-topic
+            // sessions (e.g. the Gas Town dev repo) are dropped here.
+            let id = args["project_id"].as_str().unwrap_or("");
+            if let Some(mut p) = crate::project::load_project(store.as_ref(), id) {
+                let links: Vec<String> = args["session_links"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                p.session_links = links.clone();
+                p.updated_unix_ms = crate::now_unix_ms();
+                let _ = store.as_ref().hot_put(&format!("gastown/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
+                serde_json::json!({"ok": true, "project_id": id, "session_links": links})
+            } else {
+                serde_json::json!({"ok": false, "error": "project not found"})
+            }
+        }
+        "gt.project.append_context" => {
+            // Import an on-topic evidence/context message into the project's
+            // durable transcript (source `file:<name>`), so the Inquisitor sees
+            // REAL executed evidence for the active bead — not polluted session
+            // chats. `text` is the message body; `name` a short id (e.g. the file).
+            let id = args["project_id"].as_str().unwrap_or("");
+            let name = args["name"].as_str().unwrap_or("context");
+            let text = args["text"].as_str().unwrap_or("");
+            if text.trim().is_empty() {
+                return serde_json::json!({"ok": false, "error": "text is empty"});
+            }
+            if let Some(p) = crate::project::load_project(store.as_ref(), id) {
+                let seq = crate::project::project_transcript(store.as_ref(), id).len() as u64;
+                let m = crate::project::ImportedMessage::new(&format!("file:{name}"), seq, "assistant", text.trim());
+                crate::project::append_transcript(store.as_ref(), id, &m);
+                serde_json::json!({"ok": true, "project_id": id, "imported": name, "source": m.source_session, "seq": seq})
             } else {
                 serde_json::json!({"ok": false, "error": "project not found"})
             }
@@ -1039,6 +1211,55 @@ pub(crate) fn dispatch_orto(
                 }
                 None => serde_json::json!({"ok": false, "error": "project not found"}),
             }
+        }
+        "gt.dashboard.universal" => {
+            // UNIVERSAL dashboard: one payload for ALL projects + every primary
+            // bead + its task-specific gates (with PASS/UNVERIFIED status) + the
+            // active-primary / serial-gate state, so the UI shows the whole
+            // front of work at once (not only the currently selected project).
+            let beads = store.list_beads();
+            let deps = store.list_dependencies();
+            let projects = crate::project::list_projects(store.as_ref());
+            let mut out_projects: Vec<serde_json::Value> = Vec::new();
+            let mut all_primaries: Vec<serde_json::Value> = Vec::new();
+            for p in projects.iter() {
+                let mut convoys: Vec<serde_json::Value> = Vec::new();
+                let mut project_primaries: Vec<serde_json::Value> = Vec::new();
+                for cid in &p.convoy_ids {
+                    let members: Vec<serde_json::Value> = beads.iter()
+                        .filter(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()))
+                        .map(|b| serde_json_to_value(b.clone()))
+                        .collect();
+                    let blocks: Vec<serde_json::Value> = deps.iter()
+                        .filter(|d| d.kind == lattice_gastown::orchestration::state::DependencyKind::Blocks && members.iter().any(|m| m["bead_id"] == serde_json::json!(d.bead_id)))
+                        .map(|d| serde_json::json!({"bead": d.bead_id, "awaits": d.depends_on_bead_id, "kind": "blocks"}))
+                        .collect();
+                    // Flatten primaries (issue beads in this convoy) into the universal list.
+                    for m in members.iter().filter(|m| m["bead_type"] == serde_json::json!("issue")) {
+                        project_primaries.push(m.clone());
+                    }
+                    convoys.push(serde_json::json!({"convoy_id": cid, "beads": members, "blocks_edges": blocks}));
+                }
+                // Gate progress for the active primary (the honest "how done" signal).
+                let active_gates = beads.iter()
+                    .find(|b| Some(b.bead_id.as_str()) == p.active_bead_id.as_deref())
+                    .and_then(|b| b.metadata.get("bt_gates").and_then(|g| g.as_array()).cloned())
+                    .unwrap_or_default();
+                let passed = active_gates.iter().filter(|g| g.get("status").and_then(|s| s.as_str()) == Some("PASS")).count();
+                out_projects.push(serde_json::json!({
+                    "project_id": p.project_id, "name": p.name, "repo_path": p.repo_path,
+                    "objective": p.objective, "active_bead_id": p.active_bead_id,
+                    "completed_primary_beads": p.completed_primary_beads,
+                    "gpu_quarantine": p.gpu_quarantine,
+                    "active_gate_total": active_gates.len(), "active_gate_passed": passed,
+                    "convoys": convoys, "primaries": project_primaries,
+                }));
+                all_primaries.extend(project_primaries);
+            }
+            serde_json::json!({
+                "ok": true, "project_count": projects.len(), "projects": out_projects,
+                "all_primaries": all_primaries, "inquisitor": crate::inquisitor::inquisitor_state(store.as_ref()),
+            })
         }
         _ => serde_json::json!({"error": format!("method not found: {method}")}),
     }
@@ -1757,8 +1978,31 @@ pub(crate) fn start_control_server() {
                         let input = crate::inquisitor::InquisitorInput {
                             objective,
                             hook,
-                            task: parse_body(&body).and_then(|b| b["task"].clone().as_object().map(|o| serde_json::Value::Object(o.clone())))
-                                .unwrap_or_else(|| serde_json::json!({"phase":"acceptance"})),
+                            task: {
+                                // P0-D: attach the ACTIVE primary bead's task-specific
+                                // acceptance gates (from its durable `bt_gates` metadata)
+                                // so the Quality Oracle scores the task, not infra self-tests.
+                                let mut t = parse_body(&body).and_then(|b| b["task"].clone().as_object().map(|o| serde_json::Value::Object(o.clone())))
+                                    .unwrap_or_else(|| serde_json::json!({"phase":"acceptance"}));
+                                let pid = parse_body(&body).and_then(|b| b["project_id"].as_str().map(str::to_string));
+                                if let (Some(p), Some(store_ref)) = (pid.as_ref().and_then(|x| crate::project::load_project(&store, x)), Some(&store)) {
+                                    // Prefer the explicit task.bead id, else the project's
+                                    // active primary — so a REVISE on a specific primary
+                                    // uses ITS task-specific gates even when no active pointer.
+                                    let explicit = t.get("bead").or(t.get("bead_id")).and_then(|b| b.as_str()).map(str::to_string);
+                                    let bid = explicit.or_else(|| p.active_bead_id.clone());
+                                    if let Some(bid) = bid {
+                                        if let Some(b) = store_ref.get_bead(&bid) {
+                                            if let Some(g) = b.metadata.get("bt_gates") {
+                                                t["task_gates"] = g.clone();
+                                            } else if !t["task_gates"].is_array() {
+                                                t["task_gates"] = serde_json::json!([]);
+                                            }
+                                        }
+                                    }
+                                }
+                                t
+                            },
                             executor_report: serde_json::json!({"state":"verifying"}),
                             evidence: evidence.iter().filter_map(|e| e.as_str().map(str::to_string)).collect(),
                             verified_facts,
@@ -1782,10 +2026,89 @@ pub(crate) fn start_control_server() {
                         };
                         let provider = parse_body(&body).and_then(|b| b["provider"].as_str().map(str::to_string)).unwrap_or_else(|| "codex".into());
                         let decision = crate::inquisitor::run_inquisitor(&store, &input, &provider);
+                        // P0-B: a REVISE verdict is NOT the end — it must automatically
+                        // continue the SAME primary bead with a CHANGED corrective plan,
+                        // dispatched back through the existing Mayor/reconciler/DeepSeek
+                        // gateway. No human approval, no manual report transfer.
+                        let mut corrective = serde_json::json!(null);
+                        if decision.action == "dispatch_next_task" {
+                            if let Some(pid) = parse_body(&body).and_then(|b| b["project_id"].as_str().map(str::to_string)) {
+                                if let Some(mut p) = crate::project::load_project(&store, &pid) {
+                                    // The primary bead this correction belongs to.
+                                    let primary = p.active_bead_id.clone().filter(|b| store.get_bead(b).is_some())
+                                        .or_else(|| p.convoy_ids.iter().find_map(|cid| store.list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == lattice_gastown::orchestration::state::BeadType::Issue).map(|b| b.bead_id.clone())));
+                                    // New corrective iteration = fresh bead (bounded
+                                    // execution) chained under the SAME primary, not an
+                                    // identical re-dispatch of the failed primary.
+                                    let followup_title = decision.next_task.as_ref().map(|nt| nt.title.clone()).unwrap_or_else(|| "corrective: continue primary".to_string());
+                                    // Load the OWNER primary's accepted task gates so the
+                                    // corrective (and its later review) is scored against them.
+                                    let owner_gates: Vec<serde_json::Value> = primary.as_deref()
+                                        .and_then(|bid| store.get_bead(bid))
+                                        .and_then(|b| b.metadata.get("bt_gates").and_then(|g| g.as_array()).cloned())
+                                        .unwrap_or_default();
+                                    // P0-1/P0-4: a corrective NEVER carries an empty plan. When
+                                    // the model returns REVISE without a concrete next_task, we
+                                    // synthesize a bounded, changed-hypothesis task against the
+                                    // primary's OWN gates so the Polecat produces NEW evidence
+                                    // instead of repeating an identical (empty) instruction.
+                                    let plan = decision.next_task.as_ref().map(|nt| serde_json::json!({
+                                        "title": nt.title,
+                                        "instructions": nt.instructions,
+                                        "required_evidence": nt.required_evidence,
+                                        "acceptance_criteria": nt.acceptance_criteria,
+                                        "parent_primary": primary,
+                                        "task_gates": owner_gates,
+                                    }).to_string()).unwrap_or_else(|| serde_json::json!({
+                                        "title": "continue primary with changed evidence hypothesis",
+                                        "instructions": "Re-run the gate verification for the owner primary with a changed hypothesis or new supporting evidence; produce executed evidence for each task gate.",
+                                        "required_evidence": owner_gates.iter().filter_map(|g| g.get("id").and_then(|x| x.as_str()).map(str::to_string)).collect::<Vec<_>>(),
+                                        "acceptance_criteria": ["each task gate has executed evidence", "Inquisitor re-review against owner primary"],
+                                        "parent_primary": primary,
+                                        "task_gates": owner_gates,
+                                    }).to_string());
+let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
+                                    else { store.list_rigs().first().map(|r| r.rig_id.clone()).unwrap_or_default() };
+                                    // Corrective must use a REAL rig so the reconciler can
+                                    // dispatch it to a Polecat — a fictitious rig never runs.
+                                    let mut cb_meta = serde_json::json!({"corrective_plan": plan, "inquisitor_first_pass": true});
+                                    if !owner_gates.is_empty() { cb_meta["bt_gates"] = serde_json::Value::Array(owner_gates.clone()); }
+                                    let cb = lattice_gastown::orchestration::state::Bead::create(
+                                        lattice_gastown::orchestration::state::BeadType::Issue,
+                                        &format!("corrective: {followup_title}"),
+                                        Some(plan.as_str()),
+                                        None,
+                                        vec!["gt:corrective".to_string()],
+                                        cb_meta,
+                                        Some(corrective_rig.as_str()),
+                                        primary.as_deref(),
+                                        Some("mayor"),
+                                    );
+                                    let cid = cb.bead_id.clone();
+                                    store.put_bead(&cb);
+                                    // Corrective iterations are a CONTINUATION of the
+                                    // primary, not a downstream gate: they must dispatch
+                                    // immediately even though the prior attempt failed. No
+                                    // `blocks` edge to the failed primary (that would stall
+                                    // it on the unresolved 10/10). Parent=primary expresses
+                                    // ownership for the project view.
+                                    let _ = primary;
+                                    // Record the correction so the project view surfaces it.
+                                    p.updated_unix_ms = crate::now_unix_ms();
+                                    let _ = store.hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
+                                    // Dispatch it through the reconciler (Mayor → DeepSeek).
+                                    if let Some(o) = ORCH.get() {
+                                        let _ = o.tick(&HostAgentRunner);
+                                    }
+                                    corrective = serde_json::json!({"corrective_bead_id": cid, "primary": primary, "plan": serde_json::from_str::<serde_json::Value>(&plan).unwrap_or(serde_json::Value::String(plan))});
+                                }
+                            }
+                        }
                         let mut out = serde_json::json!({"ok":true});
                         if let (Some(o), Some(d)) = (out.as_object_mut(), serde_json::to_value(&decision).ok().and_then(|d| d.as_object().cloned())) {
                             for (k, v) in d { o.insert(k, v); }
                         }
+                        if let Some(c) = corrective.as_object() { if !c.is_empty() { out["corrective"] = serde_json::to_value(c).unwrap_or(serde_json::json!({})); } }
                         write_resp(&mut stream, &out);
                         return;
                     } else if path_mutates(&path) {
@@ -1869,6 +2192,128 @@ fn write_html<W: std::io::Write>(w: &mut W, html: &str) {
     let _ = w.write_all(resp.as_bytes());
 }
 
+/// Map a raw orchestration `BeadEvent` into a normalized engineering transition
+/// event (P0-E) carrying the correlation fields the UI needs: project/convoy/
+/// primary/execution bead ids, attempt id, event id, timestamp and status.
+///
+/// It reuses the DURABLE event stream as the source of truth (never fabricates a
+/// transition) and enriches each raw event with project ownership resolved from
+/// the store, so the frontend can place the activity on the right primary (B1).
+/// Sensitive model prompts / credentials are never copied into the stream — only
+/// a bounded human-readable summary plus evidence ids.
+#[allow(clippy::too_many_arguments)]
+fn derive_transition(
+    store: &OrchestrationStore,
+    ev: &lattice_gastown::orchestration::state::BeadEvent,
+    proj_id: Option<&str>,
+) -> serde_json::Value {
+    use lattice_gastown::orchestration::state::BeadEvent;
+    // Project + convoy + primary correlation (resolved once per event).
+    let owner = crate::inquisitor::governor::resolve_owner_primary(store, ev.bead_id.as_deref());
+    let primary_id = owner.as_ref().map(|b| b.bead_id.clone());
+    let convoy_id = owner.as_ref().and_then(|b| b.parent_bead_id.clone())
+        .filter(|p| store.get_bead(p).map(|b| b.bead_type == lattice_gastown::orchestration::state::BeadType::Convoy).unwrap_or(false));
+    let proj = proj_id.map(str::to_string)
+        .or_else(|| crate::project::find_project_for_bead(store, primary_id.as_deref().unwrap_or_default()).map(|p| p.project_id));
+    // Execution bead = the bead the worker was running (the event's bead, or its
+    // assignee if this is an agent event).
+    let exec_id = ev.bead_id.clone().or_else(|| ev.agent_id.clone());
+    // Attempt identity: the execution bead's dispatch counter (immutable history).
+    let attempt_id = store.get_bead(ev.bead_id.as_deref().unwrap_or_default())
+        .map(|b| b.dispatch_attempts).unwrap_or_default();
+    let rig = store.get_bead(ev.bead_id.as_deref().unwrap_or_default())
+        .and_then(|b| b.rig_id).or_else(|| ev.rig_id.clone());
+    // Map the raw event / status into a typed transition. Order matters: a
+    // status_changed to failed/closed is an execution terminal, a dispatch is a
+    // MAYOR_DISPATCHED, an inquisitor label is an INQUISITOR event, etc. Falls
+    // back to a generic EXECUTION_* so nothing is dropped, but nothing is faked.
+    let e = ev.event.to_ascii_lowercase();
+    let to = ev.data.get("to").and_then(|v| v.as_str()).unwrap_or_default();
+    let actor = ev.data.get("actor").and_then(|v| v.as_str()).unwrap_or_default();
+    let status = if to.eq_ignore_ascii_case("closed") { "complete" }
+        else if to.eq_ignore_ascii_case("failed") { "failed" }
+        else if to.eq_ignore_ascii_case("in_progress") || to.eq_ignore_ascii_case("in_review") { "in_progress" }
+        else if to.eq_ignore_ascii_case("open") { "retry" }
+        else if e.contains("blocked") { "blocked" }
+        else { "pending" };
+    // Typed transition derived from the durable event — never fabricated.
+    let kind = if e.contains("dispatch") || e.contains("mayor") { "MAYOR_DISPATCHED" }
+        else if e.contains("inquisitor") || e.contains("review") && (actor.eq_ignore_ascii_case("inquisitor") || e.contains("verdict")) { "INQUISITOR_REVIEWED" }
+        else if e.contains("corrective") || actor.eq_ignore_ascii_case("inquisitor") { "CORRECTION_CREATED" }
+        else if e.contains("convoy") || e.contains("bulk_bead") { "EVIDENCE_INGESTED" }
+        else if e.contains("gate") || e.contains("quality") || e.contains("verified") { "QUALITY_GATE_UPDATED" }
+        else if to.eq_ignore_ascii_case("failed") { "EXECUTION_FAILED" }
+        else if to.eq_ignore_ascii_case("closed") { "POLECAT_COMPLETED" }
+        else if to.eq_ignore_ascii_case("in_progress") && actor.eq_ignore_ascii_case("mayor") { "MAYOR_DISPATCHED" }
+        else if to.eq_ignore_ascii_case("open") { "EXECUTION_FAILED" }
+        else if to.eq_ignore_ascii_case("in_review") { "POLECAT_TOOL_EXECUTED" }
+        else if e.contains("tool") || e.contains("file") { "POLECAT_TOOL_EXECUTED" }
+        else if e.contains("evidence") || e.contains("artifact") { "EVIDENCE_INGESTED" }
+        else if e.contains("blocked") { "EXECUTION_BLOCKED" }
+        else { "EXECUTION_STARTED" };
+    // Bounded, safe summary: the worker's recorded reason/proves, never the full
+    // prompt or credentials.
+    let reason = ev.data.get("bounded_reason").and_then(|v| v.as_str())
+        .or_else(|| ev.data.get("reason").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let summary = if !reason.is_empty() { reason.to_string() }
+        else if let Some(body) = store.get_bead(ev.bead_id.as_deref().unwrap_or_default()).and_then(|b| b.body) {
+            body.chars().take(220).collect::<String>()
+        } else { ev.event.clone() };
+    // Right after kind/reason: verify the reason is forwarded (bounded).
+    serde_json::json!({
+        "event_type": kind,
+        "status": status,
+        "project_id": proj.unwrap_or_default(),
+        "convoy_id": convoy_id.unwrap_or_default(),
+        "primary_bead_id": primary_id.unwrap_or_default(),
+        "execution_bead_id": exec_id.unwrap_or_default(),
+        "attempt_id": attempt_id,
+        "event_id": ev.event_id,
+        "timestamp": ev.created_at,
+        "ts_epoch_ms": lattice_gastown::orchestration::reconciler::parse_iso_ms(&ev.created_at).unwrap_or(0),
+        "rig_id": rig.unwrap_or_default(),
+        "summary": summary,
+        "evidence_refs": [],
+    })
+}
+
+/// Build the liveness envelope: which beads are currently NON-TERMINAL (open /
+/// in_progress / in_review), how long they have been in that state, and the
+/// most recent event seen — so the frontend can tell "work is advancing" from
+/// "it has stalled". Also the current wall-clock so the client can age items.
+fn sse_liveness(store: &OrchestrationStore, now_ms: i64) -> serde_json::Value {
+    use lattice_gastown::orchestration::state::BeadStatus;
+    let in_flight: Vec<serde_json::Value> = store.list_beads().into_iter()
+        .filter(|b| b.status == BeadStatus::Open || b.status == BeadStatus::InProgress || b.status == BeadStatus::InReview)
+        .map(|b| {
+            let age_ms = now_ms.saturating_sub(parse_iso_or_now(&b.updated_at, now_ms));
+            let attempts = b.dispatch_attempts;
+            let status = b.status.as_str();
+            let rig = b.rig_id.clone().unwrap_or_default();
+            // Most recent event for this bead (bounded by the per-bead index).
+            let last_event = store.events_for_bead(&b.bead_id).pop().map(|e| e.created_at).unwrap_or_default();
+            serde_json::json!({
+                "bead_id": b.bead_id, "title": b.title, "status": status,
+                "attempts": attempts, "rig": rig,
+                "in_state_ms": age_ms, "last_event_at": last_event,
+            })
+        })
+        .collect();
+    let running = in_flight.len();
+    serde_json::json!({
+        "type": "liveness", "now_epoch_ms": now_ms,
+        "in_flight": running,
+        "beads": in_flight,
+        "any_advancing": running > 0,
+    })
+}
+
+/// ISO timestamp -> epoch ms, falling back to `now` so ages never go negative.
+fn parse_iso_or_now(s: &str, now_ms: i64) -> i64 {
+    lattice_gastown::orchestration::reconciler::parse_iso_ms(s).unwrap_or(now_ms)
+}
+
 /// Real-time Server-Sent-Events stream of the durable audit event log. The
 /// connection is kept open and deltas (new BeadEvents since the client's `since`
 /// count) are pushed as they appear. Real persisted state streaming — not a
@@ -1885,12 +2330,29 @@ fn notify_sse<W: std::io::Write>(w: &mut W, town_id: &str, last_event_id: &str) 
     if let Some(store) = store_snapshot {
         let evs = store.events_for_town(town_id);
         seen = evs.len();
-        let _ = w.write_all(format!("id: {seen}\r\nevent: sync\ndata: {}\r\n\r\n", serde_json::json!({"count": seen})).as_bytes());
+        // Heartbeat = liveness only (not engineering activity). The `id:` cursor
+        // is the durable event-log count, so a reconnect replays missed events
+        // idempotently and the frontend can advance a stable cursor.
+        let _ = w.write_all(format!("id: {seen}\r\nevent: sync\ndata: {}\r\n\r\n", serde_json::json!({"count": seen, "cursor": seen})).as_bytes());
+        // Liveness envelope (P0-E observability): "is work moving or stalled?"
+        // Reported on connect and refreshed periodically below.
+        let liveness = sse_liveness(&store, lattice_gastown::orchestration::reconciler::parse_iso_ms(
+            &lattice_gastown::orchestration::state::now()).unwrap_or(0));
+        let _ = w.write_all(format!("id: {seen}\r\nevent: liveness\ndata: {}\r\n\r\n", serde_json::to_string(&liveness).unwrap_or_default()).as_bytes());
         if from < evs.len() {
+            // Replay the missed window as typed transition events (P0-E) — each
+            // carries project/convoy/primary/execution correlation so the UI can
+            // place it on the correct primary (B1) and dedupe on reconnect.
+            for ev in &evs[from..] {
+                let t = derive_transition(&store, ev, None);
+                let payload = serde_json::to_string(&t).unwrap_or_default();
+                let _ = w.write_all(format!("id: {seen}\r\nevent: transition\ndata: {payload}\r\n\r\n").as_bytes());
+            }
+            // Legacy raw batch for any client that still parses `event: events`.
             let payload = serde_json::to_string(&evs[from..]).unwrap_or_else(|_| "[]".into());
             let _ = w.write_all(format!("id: {seen}\r\nevent: events\ndata: {}\r\n\r\n", payload).as_bytes());
+            let _ = w.flush();
         }
-        let _ = w.flush();
     }
     // Long-poll-ish keep-alive: read for a bounded time, re-pushing new deltas
     // if the event log grew. A background scheduler thread appends events.
@@ -1901,11 +2363,23 @@ fn notify_sse<W: std::io::Write>(w: &mut W, town_id: &str, last_event_id: &str) 
         if let Some(store) = store2 {
             let evs = store.events_for_town(town_id);
             if evs.len() > seen {
+                // Push each new durable event as a typed transition (P0-E).
+                for ev in &evs[seen..evs.len()] {
+                    let t = derive_transition(&store, ev, None);
+                    let payload = serde_json::to_string(&t).unwrap_or_default();
+                    let _ = w.write_all(format!("id: {}\r\nevent: transition\ndata: {payload}\r\n\r\n", evs.len()).as_bytes());
+                }
                 let new_payload = serde_json::to_string(&evs[seen..evs.len()]).unwrap_or_else(|_| "[]".into());
                 let _ = w.write_all(format!("id: {}\r\nevent: events\ndata: {}\r\n\r\n", evs.len(), new_payload).as_bytes());
                 let _ = w.flush();
                 seen = evs.len();
             }
+            // Periodic liveness: refresh the in-flight / stalled signal so the
+            // dashboard always shows whether work is advancing or is idle.
+            let liveness = sse_liveness(&store, lattice_gastown::orchestration::reconciler::parse_iso_ms(
+                &lattice_gastown::orchestration::state::now()).unwrap_or(0));
+            let _ = w.write_all(format!("id: {seen}\r\nevent: liveness\ndata: {}\r\n\r\n", serde_json::to_string(&liveness).unwrap_or_default()).as_bytes());
+            let _ = w.flush();
         }
     }
     // Writer drops (SSE client reconnects).
@@ -2065,6 +2539,57 @@ pub(crate) fn rehydrate_recovered_town() {
             "Gas Town orchestration recovered from durable state (crash recovery)",
         );
     }
+}
+
+/// Auto-continue (restart recovery) — FAITHFUL to P0-C: a host/worker restart
+/// is NOT a retry-budget reset. We DO NOT re-open failed primary beads and DO NOT
+/// reset `dispatch_attempts`/`rework_count`; exhausted executions stay exhausted
+/// (their failure history is preserved). A restart only resumes work that was
+/// INTERRUPTED mid-flight (in_progress with an expired lease, or staged work that
+/// never got its completion ingested) — never a failed execution, and never by
+/// erasing attempt history.
+///
+/// Corrective continuation after a real failure is owned by the Inquisitor/Mayor:
+/// it must issue a CHANGED hypothesis/plan as a new corrective iteration under the
+/// same primary bead (new bounded execution), not repeat an identical dispatch.
+pub(crate) fn recover_interrupted_primary_on_startup() {
+    let Some(orch) = ORCH.get() else { return };
+    let store = orch.store();
+    if store.list_towns().is_empty() { return; }
+    let now_ms = crate::now_unix_ms();
+    let lease_ms = store.hot_get("gastown/lease_ms").and_then(|s| s.parse::<i64>().ok()).unwrap_or(120_000);
+    // 1) Resume INTERRUPTED (not failed) in-flight primary work: in_progress whose
+    //    lease expired on the dead process. Attempt history is preserved.
+    let mut resumed = 0usize;
+    let in_flight: Vec<lattice_gastown::orchestration::state::Bead> = store.list_beads().into_iter()
+        .filter(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::InProgress)
+        .collect();
+    for mut b in in_flight {
+        // Only resume when we have a numeric lease watermark; otherwise leave it
+        // untouched (do not guess and hand it to a second worker).
+        let last_beat = b.metadata.get("last_lease_beat").and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<i64>().ok());
+        if let Some(beat) = last_beat {
+            if now_ms - beat >= lease_ms {
+                b.status = lattice_gastown::orchestration::state::BeadStatus::Open;
+                b.metadata.as_object_mut().map(|m| m.insert("resumed_at".to_string(), serde_json::json!(now_ms)));
+                store.put_bead(&b);
+                resumed += 1;
+            }
+        }
+    }
+    // 2) Do NOT touch Failed primaries here — exhaustion stays visible; the
+    //    Inquisitor/Mayor must produce a changed corrective plan (new iteration)
+    //    to continue. This keeps failure-history intact and avoids repeating an
+    //    identical (possibly non-idempotent) operation after a reboot.
+    if resumed > 0 {
+        tracing::info!(resumed = %resumed, "auto-continue: resumed lease-expired in-flight work (failed primaries untouched, retry budget preserved)");
+    }
+    // 3) Arm one reconciliation round so resumed work actually dispatches. This is
+    //    NOT a retry-budget reset — it only lets a genuinely interrupted execution
+    //    pick back up (with its real attempt history intact).
+    let _ = orch.tick(&HostAgentRunner);
+    tracing::info!(pre_dispatch = %store.list_beads().iter().filter(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Open).count(), "auto-continue: reconciliation armed after startup");
 }
 
 #[cfg(test)]

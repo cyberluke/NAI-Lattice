@@ -140,6 +140,16 @@ impl SegmentWriter {
         Ok(frame.runtime_sequence)
     }
 
+    /// Last runtime sequence in the segment (0 when empty).
+    pub fn last_sequence(&self) -> u64 {
+        self.last_sequence
+    }
+
+    /// Event count in the segment (0 when empty).
+    pub fn event_count(&self) -> u64 {
+        self.event_count
+    }
+
     /// Flush to OS + durability boundary (fsync / FlushFileBuffers equivalent).
     pub fn flush_durable(&mut self) -> Result<(), LedgerError> {
         self.file.flush()?;
@@ -277,8 +287,9 @@ pub fn recover(
             return Err(RecoveryError::Corrupt(offset as u64, "frame blake3 mismatch".into()));
         }
         // Hash-chain: the event inside carries previous_hash; must match the
-        // prior frame's own hash (the tail).
+        // prior frame's actual hash (the parent tail), not its stored prev.
         if let Some(ev) = decode_event(&frame)? {
+            let own_hash = blake3::hash(&vbuf).to_hex().to_string();
             if let Some(prev) = &previous_hash {
                 if !ev.previous_hash.is_empty() && &ev.previous_hash != prev {
                     return Err(RecoveryError::Corrupt(
@@ -290,9 +301,9 @@ pub fn recover(
                     ));
                 }
             }
-            if !ev.previous_hash.is_empty() {
-                previous_hash = Some(ev.previous_hash.clone());
-            }
+            // Advance the tracked parent hash to THIS frame's own hash so the
+            // next frame's previous_hash is validated against its true parent.
+            previous_hash = Some(own_hash);
             last_seq = ev.runtime_sequence;
         }
         tail_hash = Some(blake3::hash(&vbuf).to_hex().to_string());
