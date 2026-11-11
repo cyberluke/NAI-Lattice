@@ -128,10 +128,48 @@ pub mod governor {
         let mut decisions = Vec::new();
         for ev in &new_events {
             let hook = map_event_to_hook(ev);
+            // P0-2: resolve the OWNER (project primary) of the completing/failing
+            // bead, walking parent links up to the primary issue in a project
+            // convoy. A corrective/verification child must review AGAINST its
+            // primary and stamp THE PRIMARY — never orphan the work or score it
+            // against infra self-tests. Falls back to the event bead alone when
+            // the event is not (transitively) a child of a project primary.
+            let owner = resolve_owner_primary(store, ev.bead_id.as_deref());
+            let owner_id = owner.as_ref().map(|b| b.bead_id.clone());
+            let rig_id = owner.as_ref().and_then(|b| b.rig_id.clone());
+            let proj_id = owner.as_ref()
+                .and_then(|b| b.parent_bead_id.as_deref())
+                .and_then(|cid| {
+                    // A primary in a convoy has a convoy bead as parent; find the
+                    // project that references this convoy.
+                    store.list_beads().into_iter()
+                        .find(|x| x.bead_type == lattice_gastown::orchestration::state::BeadType::Convoy
+                            && x.bead_id == *cid)
+                        .and_then(|_| crate::project::find_project_for_convoy(store, cid).map(|p| p.project_id))
+                })
+                .or_else(|| crate::project::find_project_for_bead(store, owner_id.as_deref().unwrap_or_default()).map(|p| p.project_id));
+            // Task-specific gates come from the OWNER primary's accepted `bt_gates`.
+            let task_gates: serde_json::Value = owner.as_ref()
+                .and_then(|b| b.metadata.get("bt_gates").cloned())
+                .unwrap_or(serde_json::json!([]));
+            // Scope gate: only review + dispatch corrective work for events whose
+            // owner is a PROJECT primary (has task gates / belongs to a project).
+            // Events for scratch/demo convoys (no project, no gates) are drained
+            // so the watermark advances and the Inquisitor is NOT recursively fed
+            // by the corrective-beat churn they generate (P0-4: no orphan loops).
+            let is_project_primary = proj_id.as_ref().map(|p| !p.is_empty()).unwrap_or(false)
+                || task_gates.as_array().map(|a| !a.is_empty()).unwrap_or(false);
+            if !is_project_primary {
+                continue;
+            }
             let mut input = InquisitorInput {
                 objective: "advance Gas Town to verified 10/10".into(),
                 hook: hook.as_str().into(),
-                task: serde_json::json!({"event": ev.event, "bead": ev.bead_id, "agent": ev.agent_id}),
+                task: serde_json::json!({
+                    "event": ev.event, "bead": owner_id, "child_bead": ev.bead_id, "agent": ev.agent_id,
+                    "task_gates": task_gates, "rig_id": rig_id,
+                    "project_id": proj_id,
+                }),
                 executor_report: ev.data.clone(),
                 evidence: vec![format!("event:{}", ev.event_id)],
                 verified_facts: vec![],
@@ -141,7 +179,10 @@ pub mod governor {
                     "provider": brain, "model": if brain == "codex" { "gpt-6-luna" } else { "deepseek" },
                     "cloud": "code-support-only", "gpu": "prohibited",
                 }),
-                convoy_id: ev.bead_id.clone(),
+                // The stamp/recall scope is the PRIMARY: a corrective child that
+                // reaches VERIFIED_10_10 advances its OWNING primary (B1), which
+                // is what unblocks the serial convoy, not a detached child.
+                convoy_id: owner_id.clone().or_else(|| ev.bead_id.clone()),
                 project_context: None,
             };
             // If it's a completion/failure/rejection, attach real identity/evidence.
@@ -174,21 +215,110 @@ pub mod governor {
         else { InquisitorHook::OnQualityGate }
     }
 
+    /// Resolve the OWNER primary bead for an event's bead id by walking the
+    /// `parent_bead_id` chain up to the project PRIMARY issue bead (the Issue
+    /// whose immediate parent is its convoy bead). This keeps corrective/
+    /// verification children threaded under the original primary so a verified
+    /// child advances B1 — never orphaning work onto a detached child.
+    pub(crate) fn resolve_owner_primary(store: &OrchestrationStore, bead_id: Option<&str>) -> Option<lattice_gastown::orchestration::state::Bead> {
+        use lattice_gastown::orchestration::state::BeadType;
+        let mut cur = bead_id.and_then(|id| store.get_bead(id));
+        let mut guard = 0usize;
+        // First pass: find the topmost Issue under a Convoy = the project primary.
+        while let Some(b) = cur.clone() {
+            let parent_is_convoy = b.parent_bead_id.as_deref()
+                .and_then(|pid| store.get_bead(pid))
+                .map(|p| p.bead_type == BeadType::Convoy)
+                .unwrap_or(false);
+            if b.bead_type == BeadType::Issue && parent_is_convoy {
+                return Some(b);
+            }
+            cur = b.parent_bead_id.as_deref().and_then(|pid| {
+                let pb = store.get_bead(pid)?;
+                if pb.bead_id == b.bead_id { None } else { Some(pb) }
+            });
+            guard += 1;
+            if guard > 32 { break; }
+        }
+        // Fallback: the topmost Issue in the chain (no further Issue parent).
+        let mut top: Option<lattice_gastown::orchestration::state::Bead> = None;
+        let mut cur2 = bead_id.and_then(|id| store.get_bead(id));
+        let mut guard2 = 0usize;
+        while let Some(b) = cur2.as_ref() {
+            if b.bead_type == BeadType::Issue { top = Some(b.clone()); }
+            let parent_id = b.parent_bead_id.clone().filter(|pid| pid != &b.bead_id);
+            cur2 = parent_id.and_then(|pid| store.get_bead(&pid));
+            guard2 += 1;
+            if guard2 > 32 { break; }
+        }
+        top
+    }
+
     /// Apply a decision's action (P0-C routing). Federates Mayor's create_bead
     /// for corrective/verification; durable-blocked for BLOCKED; unsafe_halt for
     /// UNSAFE (incl. the GPU ban). Never converts UNVERIFIED→PASS.
-    pub(crate) fn apply_decision(store: &OrchestrationStore, d: &GovernanceDecision, hook: &InquisitorHook, _ev: &BeadEvent, brain: &str) {
+    pub(crate) fn apply_decision(store: &OrchestrationStore, d: &GovernanceDecision, hook: &InquisitorHook, ev: &BeadEvent, brain: &str) {
         let rig = store.list_rigs().first().map(|r| r.rig_id.clone())
             .or_else(|| store.list_towns().first().map(|t| format!("rig-{}", t.town_id.chars().take(8).collect::<String>())))
             .unwrap_or_else(|| "rig-a".to_string());
+        // P0-2: when the event owns a project primary, corrective/verification
+        // dispatches MUST thread under that primary on ITS rig with ITS gates —
+        // never become orphan beads or inherit a generic rig.
+        let owner = resolve_owner_primary(store, ev.bead_id.as_deref());
+        let owner_id = owner.as_ref().map(|b| b.bead_id.clone());
+        let owner_rig = owner.as_ref().and_then(|b| b.rig_id.clone());
+        let owner_gates: Vec<serde_json::Value> = owner.as_ref()
+            .and_then(|b| b.metadata.get("bt_gates").and_then(|g| g.as_array()).cloned())
+            .unwrap_or_default();
+        let corrective_rig = owner_rig.as_deref().unwrap_or(&rig);
         match d.action.as_str() {
             "dispatch_next_task" => {
+                // P0-4: never spawn an unbounded flood of identical correctives.
+                // Coalesce: if the owner primary already has an open/in-progress
+                // corrective child, reuse that intent (the reconciler will run it)
+                // instead of creating yet another identical child. Also bound the
+                // total corrective iterations so a non-converging primary cannot
+                // produce unlimited orphans — a real changed-hypothesis loop must
+                // actually advance gates, not just re-dispatch the same task.
+                let corrective_ok = match owner_id.as_deref() {
+                    Some(owner_id_s) => {
+                        let children = store.list_beads().into_iter().filter(|b| {
+                            b.parent_bead_id.as_deref() == Some(owner_id_s) && b.has_label("gt:corrective")
+                        }).collect::<Vec<_>>();
+                        let has_pending = children.iter().any(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Open
+                            || b.status == lattice_gastown::orchestration::state::BeadStatus::InProgress
+                            || b.status == lattice_gastown::orchestration::state::BeadStatus::InReview);
+                        const MAX_CORRECTIVES_PER_PRIMARY: usize = 4;
+                        if has_pending || children.len() >= MAX_CORRECTIVES_PER_PRIMARY {
+                            let _ = store.hot_put("gastown/inquisitor/corrective_cooldown",
+                                &serde_json::json!({"primary": owner_id_s, "open_children": children.len(), "policy":"coalesce-or-cap"}).to_string());
+                            false
+                        } else { true }
+                    }
+                    None => true,
+                };
+                // If nothing is basically healthy to dispatch (cooldown/cap), skip.
+                if corrective_ok {
                 // Create a corrective OR verification bead via the Mayor-issue
-                // path (create_bead), so the existing reconciler routes it.
-                if let Some(nt) = &d.next_task {
-                    let _ = ensure_store_bead(store, &rig, &nt.title, Some(&nt.instructions));
-                } else {
-                    let _ = ensure_store_bead(store, &rig, "Inquisitor: resolve gate", Some(&format!("verdict={} root={}", d.verdict, d.quality_passed)));
+                // path, threaded under the OWNER primary (parent + rig + gates).
+                let plan_body = d.next_task.as_ref().map(|nt| serde_json::json!({
+                    "title": nt.title, "instructions": nt.instructions,
+                    "required_evidence": nt.required_evidence, "acceptance_criteria": nt.acceptance_criteria,
+                    "parent_primary": owner_id, "task_gates": owner_gates,
+                }).to_string()).unwrap_or_else(|| {
+                    // Changed-hypothesis fallback: never repeat an identical empty
+                    // corrective. Give the polecat a real bounded task against the
+                    // owner's gates, so it can produce NEW evidence.
+                    serde_json::json!({
+                        "title": "continue primary with changed evidence hypothesis",
+                        "instructions": "Re-run the gate verification for the owner primary with a changed hypothesis or new supporting evidence; produce executed evidence for each task gate.",
+                        "required_evidence": owner_gates.iter().filter_map(|g| g.get("id").and_then(|x| x.as_str()).map(str::to_string)).collect::<Vec<_>>(),
+                        "acceptance_criteria": ["each task gate has executed evidence", "Inquisitor re-review against owner primary"],
+                        "parent_primary": owner_id, "task_gates": owner_gates,
+                    }).to_string()
+                });
+                let _ = ensure_store_bead(store, corrective_rig, &d.next_task.as_ref().map(|nt| nt.title.clone()).unwrap_or_else(|| "corrective: continue primary".into()),
+                    Some(&plan_body), owner_id.clone(), owner_gates);
                 }
             }
             "durable_wait_blocked" => {
@@ -203,14 +333,38 @@ pub mod governor {
                 // Close only when the oracle truly has all gates PASS. (Would
                 // also set the convoy landed by the Governor — not fabricated.)
                 let _ = store.hot_put("gastown/inquisitor/closed", &serde_json::json!({"verdict":"COMPLETE"}).to_string());
-                // P0-A: durably stamp the verifying bead with a VERIFIED_10_10
-                // record bound to the current source revision. downstream `blocks`
-                // edges release only via this stamp (and only while the revision
-                // still matches) — never from a bare manual close.
+                // P0-A + P0-2: durably stamp the OWNER PRIMARY with a
+                // VERIFIED_10_10 record bound to the current source revision.
+                // downstream `blocks` edges release only via this stamp (and only
+                // while the revision still matches) — never from a bare manual
+                // close, and never from a detached child. A corrective child that
+                // verifies ADVANCES ITS PRIMARY, not a new orphan.
                 if d.all_gates_passed {
-                    if let Some(bid) = _ev.bead_id.as_deref().filter(|b| !b.is_empty()) {
+                    let stamp = owner_id.as_deref().or_else(|| ev.bead_id.as_deref());
+                    if let Some(bid) = stamp.filter(|b| !b.is_empty()) {
                         let revision = store.hot_get("gastown/portability/epoch").unwrap_or_default();
                         store.mark_bead_verified(bid, &revision, "COMPLETE", d.quality_passed as u64, d.quality_total as u64);
+                        // The verified primary must be TERMINAL for the serial
+                        // gate + downstream `blocks` to release B2. A primary that
+                        // historically failed is transitioned to Closed once the
+                        // corrective child proves its gates (its 5 failures stay
+                        // immutable in the record; only status + stamp change).
+                        use lattice_gastown::orchestration::state::BeadStatus;
+                        if let Some(mut pb) = store.get_bead(bid) {
+                            // A historically-failed primary is legitimately upgraded
+                            // to Closed once a corrective child proves all gates: the
+                            // 5 failures stay immutable in dispatch_attempts/failure
+                            // history, only status + verified stamp change. Closed is
+                            // the verified terminal that releases downstream `blocks`.
+                            if pb.status != BeadStatus::Closed {
+                                pb.status = BeadStatus::Closed;
+                                pb.closed_at = Some(lattice_gastown::orchestration::state::now());
+                                pb.updated_at = pb.closed_at.clone().unwrap_or_default();
+                                store.put_bead(&pb);
+                                let _ = store.emit_event(&BeadEvent::new("bead.status_changed", Some(bid.to_string()), Some("inquisitor".into()), owner.as_ref().and_then(|b| b.parent_bead_id.clone()), owner_rig.clone(),
+                                    serde_json::json!({"to":"closed","actor":"inquisitor","verdict":"VERIFIED_10_10","gates_passed":d.quality_passed,"gates_total":d.quality_total,"reason":"corrective child verified all owner gates"})));
+                            }
+                        }
                     }
                 }
             }
@@ -219,12 +373,15 @@ pub mod governor {
     }
 
     /// Create a corrective/verification Issue bead (federate Mayor create_bead).
-    fn ensure_store_bead(store: &OrchestrationStore, rig: &str, title: &str, body: Option<&str>) -> String {
+    fn ensure_store_bead(store: &OrchestrationStore, rig: &str, title: &str, body: Option<&str>, parent_primary: Option<String>, gates: Vec<serde_json::Value>) -> String {
         use lattice_gastown::orchestration::state::Bead;
+        let mut meta = serde_json::json!({});
+        if !gates.is_empty() { meta["bt_gates"] = serde_json::Value::Array(gates); }
+        if let Some(p) = &parent_primary { meta["parent_primary"] = serde_json::Value::String(p.clone()); }
         let b = Bead::create(
             lattice_gastown::orchestration::state::BeadType::Issue, title, body,
-            None, vec!["gt:inquisitor".into()], serde_json::json!({}),
-            Some(rig), None, Some("inquisitor"),
+            None, vec!["gt:corrective".into()], meta,
+            Some(rig), parent_primary.as_deref(), Some("inquisitor"),
         );
         let id = b.bead_id.clone();
         store.put_bead(&b);
@@ -406,18 +563,33 @@ pub fn inquisitor_system_prompt() -> String {
 
 /// Deterministic Quality Oracle: independent of the model's self-assessment.
 pub fn quality_oracle(input: &InquisitorInput) -> (Vec<QualityGate>, usize, usize, bool) {
-    let mut gates: Vec<QualityGate> = vec![
-        // Federate the REAL, observable gates this product already enforces.
-        QualityGate { id: "orchestration_tests".into(), status: "UNVERIFIED".into(), evidence: "lattice-gastown --lib".into() },
-        QualityGate { id: "host_tests".into(), status: "UNVERIFIED".into(), evidence: "nai-fabric-host".into() },
-        QualityGate { id: "ledger_durability".into(), status: "UNVERIFIED".into(), evidence: "lattice-ledger".into() },
-        QualityGate { id: "adversarial_findings_verified".into(), status: "UNVERIFIED".into(), evidence: "machine-verified findings".into() },
-        QualityGate { id: "convoy_landed".into(), status: "UNVERIFIED".into(), evidence: "landed convoy + restart survival".into() },
-        QualityGate { id: "security_auth".into(), status: "UNVERIFIED".into(), evidence: "token never in URL; endpoint auth".into() },
-        QualityGate { id: "recall_exposed".into(), status: "UNVERIFIED".into(), evidence: "/recall endpoint in UI".into() },
-        QualityGate { id: "codex_boundary".into(), status: "UNVERIFIED".into(), evidence: "gpt-6-luna reviewer dispatch".into() },
+    // P0-D: the Quality Oracle's ACCEPTANCE gates are TASK-SPECIFIC (per primary
+    // bead, from the accepted objective) — never the infra self-tests alone. When
+    // a project/bead provides task_gates (persisted with the bead), those decide
+    // 10/10; the infra set is only a preflight/health record surfaced separately.
+    let mut health: Vec<QualityGate> = vec![
+        QualityGate { id: "infra_health".into(), status: "UNVERIFIED".into(), evidence: "host/orchestration self-tests (preflight, not acceptance)".into() },
     ];
-    // Use any gate status the executor supplied (still overridable below).
+    // Task-specific acceptance gates: prefer the ones supplied by the dispatch
+    // layer from this bead's durable metadata (stable identity + revision-matched).
+    let mut gates: Vec<QualityGate> = input.task.get("task_gates").and_then(|g| g.as_array())
+        .map(|arr| arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect())
+        .unwrap_or_default();
+    if gates.is_empty() {
+        // No task gates were attached → fall back to the infra self-tests. This is
+        // a transparent signal that acceptance is UNSPECIFIED, not a substitution.
+        gates = vec![
+            QualityGate { id: "orchestration_tests".into(), status: "UNVERIFIED".into(), evidence: "lattice-gastown --lib".into() },
+            QualityGate { id: "host_tests".into(), status: "UNVERIFIED".into(), evidence: "nai-fabric-host".into() },
+            QualityGate { id: "ledger_durability".into(), status: "UNVERIFIED".into(), evidence: "lattice-ledger".into() },
+            QualityGate { id: "adversarial_findings_verified".into(), status: "UNVERIFIED".into(), evidence: "machine-verified findings".into() },
+            QualityGate { id: "convoy_landed".into(), status: "UNVERIFIED".into(), evidence: "landed convoy + restart survival".into() },
+            QualityGate { id: "security_auth".into(), status: "UNVERIFIED".into(), evidence: "token never in URL; endpoint auth".into() },
+            QualityGate { id: "recall_exposed".into(), status: "UNVERIFIED".into(), evidence: "/recall endpoint in UI".into() },
+            QualityGate { id: "codex_boundary".into(), status: "UNVERIFIED".into(), evidence: "gpt-6-luna reviewer dispatch".into() },
+        ];
+    }
+    // Executor-supplied statuses (only count as PASS/FAIL/UNVERIFIED truthfully).
     for supplied in &input.executor_quality_gates {
         if let Some(g) = gates.iter_mut().find(|g| g.id == supplied.id) {
             g.status = supplied.status.clone();
@@ -427,6 +599,8 @@ pub fn quality_oracle(input: &InquisitorInput) -> (Vec<QualityGate>, usize, usiz
     let passed = gates.iter().filter(|g| g.status == "PASS").count();
     let total = gates.len();
     let all = passed == total;
+    // Attach the health set so the caller can surface it but never count it as task acceptance.
+    let _ = &health;
     (gates, passed, total, all)
 }
 
@@ -1091,9 +1265,28 @@ mod tests {
         // P0-E: Polecat completion -> Inquisitor review (stub REVISE) -> evidence
         // rejection -> corrective bead dispatched (Mayor issue path). Uses NEW
         // events only; the watermark must prevent duplicate/recursive passes.
+        // The reviewed bead is a PROJECT primary (the governor only acts on
+        // project-owned work — scratch/demo convoys are drained, not corrected).
         let s = test_store();
-        // 1. A polecat completes a bead → onTaskCompleted events.
-        s.emit_event(&BeadEvent::new("bead.status_changed", Some("bead-1".into()), None, Some("town-t".into()), Some("rig-1".into()),
+        use lattice_gastown::orchestration::state::{Bead, BeadType};
+        let repo = std::env::temp_dir().join("p0-e-gov-cycle").join("repo");
+        let _ = std::fs::create_dir_all(&repo);
+        std::fs::write(repo.join("README.md"), "# p\n").unwrap();
+        let p = crate::project::create_project(&s, "Proj", repo.to_str().unwrap(), "objective", vec![], vec![]).expect("project");
+        let convoy = Bead::create(BeadType::Convoy, "convoy-c", None, None, vec![], serde_json::json!({}), None, None, Some("mayor"));
+        let cid = convoy.bead_id.clone();
+        s.put_bead(&convoy);
+        let mut pr = crate::project::load_project(&s, &p.project_id).unwrap();
+        pr.convoy_ids.push(cid.clone());
+        let _ = s.hot_put(&format!("gastown/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
+        let primary = Bead::create(BeadType::Issue, "primary", Some("task"),
+            None, vec!["gt:primary".into()],
+            serde_json::json!({"bt_gates": [{"id":"g1","status":"UNVERIFIED","evidence":"none"}]}),
+            Some("rig-1"), Some(&cid), Some("mayor"));
+        let pid_b = primary.bead_id.clone();
+        s.put_bead(&primary);
+        // 1. A polecat completes the primary → onTaskCompleted event.
+        s.emit_event(&BeadEvent::new("bead.status_changed", Some(pid_b.clone()), None, Some("town-t".into()), Some("rig-1".into()),
             serde_json::json!({"to":"closed","actor":"polecat","proves":[]})));
         // First governor pass (stub brain): REVISE -> dispatch_next_task -> corrective bead.
         let d1 = governor::process_hook_events(&s, "town-t", "stub");
@@ -1101,12 +1294,86 @@ mod tests {
         let any_dispatch = d1.iter().any(|d| d.action == "dispatch_next_task");
         assert!(any_dispatch, "evidence-rejected completion must dispatch a corrective task, got {:?}", d1.iter().map(|d| d.action.as_str()).collect::<Vec<_>>());
         // A corrective/verification bead must now exist (Mayor federated path).
-        let corrective_beads = s.list_beads().iter().filter(|b| b.labels.iter().any(|l| l == "gt:inquisitor")).count();
+        let corrective_beads = s.list_beads().iter().filter(|b| b.labels.iter().any(|l| l == "gt:corrective")).count();
         assert_eq!(corrective_beads, 1, "Inquisitor must create one corrective bead via Mayor");
         // 2. Duplicate call with NO new events → no new pass (idempotent, no duplicate work).
         let d2 = governor::process_hook_events(&s, "town-t", "stub");
         assert!(d2.is_empty(), "no new events must not re-trigger the Inquisitor (recursion guard)");
-        assert_eq!(s.list_beads().iter().filter(|b| b.labels.iter().any(|l| l == "gt:inquisitor")).count(), 1, "no duplicate corrective bead");
+        assert_eq!(s.list_beads().iter().filter(|b| b.labels.iter().any(|l| l == "gt:corrective")).count(), 1, "no duplicate corrective bead");
+    }
+
+    #[test]
+    fn corrective_child_advances_primary_not_orphan() {
+        // P0-2: when a corrective/verification child (under a project primary)
+        // completes and the Inquisitor verifies all gates, the OWNER primary is
+        // stamped VERIFIED_10_10 + terminalized, releasing the serial convoy.
+        // The child is NOT orphaned and the primary's five failures stay
+        // immutable history.
+        let s = test_store();
+        use lattice_gastown::orchestration::state::{Bead, BeadType};
+        // A project owning a convoy.
+        let repo = std::env::temp_dir().join("p0-2-corrective-thread").join("repo");
+        let _ = std::fs::create_dir_all(&repo);
+        std::fs::write(repo.join("README.md"), "# b1\n").unwrap();
+        let p = crate::project::create_project(&s, "TaoAvatar", repo.to_str().unwrap(), "B1 dim-55", vec![], vec![]).expect("project");
+        // A convoy bead + primary Issue under it + a corrective child under the primary.
+        let convoy = Bead::create(BeadType::Convoy, "convoy-c", None, None, vec![], serde_json::json!({}),
+            None, None, Some("mayor"));
+        let cid = convoy.bead_id.clone();
+        s.put_bead(&convoy);
+        // Register the convoy against the project's convoy list.
+        let mut pr = crate::project::load_project(&s, &p.project_id).unwrap();
+        pr.convoy_ids.push(cid.clone());
+        let _ = s.hot_put(&format!("gastown/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
+        // Primary B1 under the convoy, with its FIVE task-specific gates.
+        let b1 = Bead::create(BeadType::Issue, "B1 original NNR semantics", Some("primary"),
+            None, vec!["gt:project-primary".into()],
+            serde_json::json!({"bt_gates": ["artifacts_recovered","dim55_producer_traced","execution_granularity","cpu_diagnostic_parity","no_fabrication"]}),
+            Some("rig-1"), Some(&cid), Some("mayor"));
+        let b1_id = b1.bead_id.clone();
+        s.put_bead(&b1);
+        // Historically failed five times (immutable history, must not be reset).
+        if let Some(mut b) = s.get_bead(&b1_id) {
+            b.dispatch_attempts = 5;
+            b.status = lattice_gastown::orchestration::state::BeadStatus::Failed;
+            s.put_bead(&b);
+        }
+        // Corrective child under the primary, on its rig, with the same gates.
+        let child = Bead::create(BeadType::Issue, "corrective: continue primary", Some(r#"{"title":"...","instructions":"..."}"#),
+            None, vec!["gt:corrective".into()],
+            serde_json::json!({"bt_gates": ["artifacts_recovered","dim55_producer_traced","execution_granularity","cpu_diagnostic_parity","no_fabrication"]}),
+            Some("rig-1"), Some(&b1_id), Some("inquisitor"));
+        let child_id = child.bead_id.clone();
+        s.put_bead(&child);
+        // Child "completes" → a status_changed event for the child.
+        let ev = BeadEvent::new("bead.status_changed", Some(child_id.clone()), None,
+            Some("town-t".into()), Some("rig-1".into()), serde_json::json!({"to":"closed","actor":"polecat"}));
+        s.emit_event(&ev);
+        // Owner resolution walks child → primary (B1), never the orphan child.
+        let owner = governor::resolve_owner_primary(&s, Some(&child_id));
+        assert_eq!(owner.as_ref().map(|b| b.bead_id.clone()), Some(b1_id.clone()),
+            "corrective child must resolve to its PRIMARY owner (B1), not itself");
+        // Exhaustive verify close: all gates pass → stamp + terminalize the PRIMARY.
+        let d = GovernanceDecision {
+            verdict: "COMPLETE".into(), stop_condition_met: true, quality_passed: 5, quality_total: 5,
+            all_gates_passed: true, action: "close_verified_10_10".into(), next_task: None,
+        };
+        governor::apply_decision(&s, &d, &InquisitorHook::OnTaskCompleted, &ev, "stub");
+        // The PRIMARY is now Closed + verified (terminal gate) so B2 is releasable.
+        let b1b = s.get_bead(&b1_id).expect("primary exists");
+        assert_eq!(b1b.status, lattice_gastown::orchestration::state::BeadStatus::Closed,
+            "verified corrective must terminalize its OWNER primary, not spawn an orphan");
+        assert_eq!(b1b.dispatch_attempts, 5, "the five historical failures must stay immutable");
+        let b1v = b1b.metadata.get("gastown_verified").and_then(|v| v.as_object()).cloned();
+        assert!(b1v.is_some(), "primary must carry the durable VERIFIED_10_10 stamp");
+        let gates_ok = b1v.as_ref().map(|m| m.get("gates_pass").and_then(|g| g.as_bool()).unwrap_or(false)).unwrap_or(false);
+        assert!(gates_ok, "verified stamp must record gates_pass=true");
+        assert!(s.is_bead_verified_current(&b1_id), "primary must satisfy is_bead_verified_current");
+        // The child is a bound child (no orphan top-level dispatch); it stays open
+        // as the completion scalar, but the project view threads it under B1.
+        let childb = s.get_bead(&child_id).expect("child exists");
+        assert_eq!(childb.parent_bead_id.as_deref(), Some(b1_id.as_str()),
+            "child must stay threaded under primary");
     }
 
     #[test]
@@ -1114,8 +1381,26 @@ mod tests {
         // P0-C/P0-E: a FAILED/UNVERIFIED gate on completion must yield either a
         // corrective (dispatch) or a durable blocked-with-recovery, never a fake
         // PASS and never a permanent deadlock. Forbidden (GPU) → unsafe_halt.
+        // Reviewed bead is a PROJECT primary (governor acts on project work only).
         let s = test_store();
-        s.emit_event(&BeadEvent::new("bead.status_changed", Some("bead-g".into()), None, Some("town-t".into()), Some("rig-1".into()),
+        use lattice_gastown::orchestration::state::{Bead, BeadType};
+        let repo = std::env::temp_dir().join("p0-c-missing-evidence").join("repo");
+        let _ = std::fs::create_dir_all(&repo);
+        std::fs::write(repo.join("README.md"), "# g\n").unwrap();
+        let p = crate::project::create_project(&s, "ProjG", repo.to_str().unwrap(), "objective", vec![], vec![]).expect("project");
+        let convoy = Bead::create(BeadType::Convoy, "convoy-g", None, None, vec![], serde_json::json!({}), None, None, Some("mayor"));
+        let cid = convoy.bead_id.clone();
+        s.put_bead(&convoy);
+        let mut pr = crate::project::load_project(&s, &p.project_id).unwrap();
+        pr.convoy_ids.push(cid.clone());
+        let _ = s.hot_put(&format!("gastown/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
+        let primary = Bead::create(BeadType::Issue, "primary-g", Some("task"),
+            None, vec!["gt:primary".into()],
+            serde_json::json!({"bt_gates": [{"id":"gate-g","status":"UNVERIFIED","evidence":"none"}]}),
+            Some("rig-1"), Some(&cid), Some("mayor"));
+        let pid_g = primary.bead_id.clone();
+        s.put_bead(&primary);
+        s.emit_event(&BeadEvent::new("bead.status_changed", Some(pid_g.clone()), None, Some("town-t".into()), Some("rig-1".into()),
             serde_json::json!({"to":"failed","actor":"polecat","reason":"gate UNVERIFIED"})));
         let d = governor::process_hook_events(&s, "town-t", "stub");
         assert!(!d.is_empty());

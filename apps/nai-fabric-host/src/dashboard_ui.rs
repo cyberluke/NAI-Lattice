@@ -39,6 +39,16 @@ td,th{padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
 .conn{font-size:11px;padding:2px 8px;border-radius:10px}
 .conn-ok{background:#3fb95022;color:#3fb950}.conn-err{background:#f8514922;color:#f85149}.conn-warn{background:#d2992222;color:#e3b341}
 hr{border:none;border-top:1px solid var(--line);margin:10px 0}
+/* Kanban board */
+#kanban .col{background:#0d111710;border:1px solid var(--line);border-radius:8px;padding:6px}
+#kanban .kcol{display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.card{background:#161b22;border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px;position:relative}
+.card .ctitle{font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px}
+.card .cmeta{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-top:4px}
+.card.stale{border-color:#f85149;box-shadow:0 0 0 1px #f8514933}
+.card.active{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok)}
+.card .cbtn{background:#21262d;border:1px solid var(--line);border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer;margin-left:auto}
+.card .cbtn:hover{filter:brightness(1.2)}
 </style></head><body>
 <header>
   <h1>🐈‍⬛ NAI Inquisitor</h1>
@@ -47,7 +57,7 @@ hr{border:none;border-top:1px solid var(--line);margin:10px 0}
     <label style="margin:0">Project</label>
     <select id="proj_pick" onchange="openProject(this.value)"><option value="">— choose project —</option></select>
     <button class="alt" onclick="newProjectMode()">+ New Project</button>
-    <span class="badge">SSE <span id="sse_state" class="conn conn-warn">connecting…</span></span>
+    <span class="badge">SSE <span id="sse_state" class="conn conn-warn">idle</span></span>
   </div>
   <div class="sub">
     <span id="townsel">town ?</span> ·
@@ -58,6 +68,17 @@ hr{border:none;border-top:1px solid var(--line);margin:10px 0}
     <button onclick="saveToken()">Save</button>
   </div>
 </header>
+
+<div class="panel" id="universal">
+  <h2>Universal — all projects <span class="tick">every project + its active primary + gate progress (not just the selected one)</span></h2>
+  <div id="uni_reload" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+    <button class="alt" onclick="renderUniversal()">↻ refresh</button>
+    <span class="tick" id="uni_meta"></span>
+  </div>
+  <table id="uni_projects" style="margin-bottom:10px"><tr><th>Project</th><th>Active primary</th><th>Status</th><th>Gates (active)</th><th>Done count</th></tr></table>
+  <div class="tick" style="margin:4px 0 2px">ALL primaries (across every convoy/project):</div>
+  <table id="uni_primaries"><tr><th>Project</th><th>Primary</th><th>Status</th><th>Dispatch</th><th>Gates</th><th>Awaits (blocks)</th></tr></table>
+</div>
 
 <div class="grid">
   <!-- LEFT: New Project / active project header + context -->
@@ -101,11 +122,19 @@ hr{border:none;border-top:1px solid var(--line);margin:10px 0}
   <div>
     <div class="panel">
       <h2>Project Kanban <span id="projbeadcount" class="badge">0</span><span class="tick">Queued → Active → Verified (10/10)</span></h2>
-      <table id="projkanban"><tr><th>Title</th><th>Status</th><th>Dispatch</th><th>Blocks→</th></tr></table>
+      <div id="kanban" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div class="col"><div class="kcol"><b>Queued</b> <span class="tick" id="kc_q"></span></div><div id="kq"></div></div>
+        <div class="col"><div class="kcol"><b>Active</b> <span class="tick" id="kc_a"></span></div><div id="ka"></div></div>
+        <div class="col"><div class="kcol"><b>Verified</b> <span class="tick" id="kc_v"></span></div><div id="kv"></div></div>
+      </div>
     </div>
     <div class="panel">
       <h2>Live Engineering Stream <span class="tick">Mayor / Polecat / Inquisitor / Refinery</span></h2>
-      <div id="stream">(connecting to /events…)</div>
+      <div id="livelihood" class="callout" style="margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="conn conn-warn" id="liveness_state">seeking…</span>
+        <span id="liveness_text" class="tick">(waiting for liveness signal)</span>
+      </div>
+      <div id="stream" data-placeholder="1"><span class="dim">Live engineering stream idle — transitions appear here (Polecat / Inquisitor / Mayor).</span></div>
     </div>
     <div class="panel">
       <h2>History <span class="tick">recent events</span></h2>
@@ -137,6 +166,15 @@ hr{border:none;border-top:1px solid var(--line);margin:10px 0}
       <button class="alt" onclick="recallSession(document.getElementById('recallsel').value)">Show context</button>
       <div id="recallctx" class="tick" style="max-height:120px;overflow:auto;margin-top:6px"></div>
     </div>
+  </div>
+</div>
+
+<!-- Human resolver: human actions for a blocked/failed/active primary -->
+<div id="resolver" style="display:none;position:fixed;inset:0;background:#000a;z-index:1100;align-items:center;justify-content:center">
+  <div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;max-width:820px;width:94%;max-height:88vh;display:flex;flex-direction:column;padding:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px"><b>Resolve task <span id="rs_title" class="tick"></span></b><button class="alt" onclick="document.getElementById('resolver').style.display='none'">✕</button></div>
+    <div id="rs_body" style="overflow:auto;flex:1"></div>
+    <div id="rs_log" class="tick" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"></div>
   </div>
 </div>
 
@@ -220,27 +258,114 @@ async function refreshProjectHeader(){
   el.innerHTML=`<b>${p.name}</b><br/>`+
     `<div class="tick">obj: ${p.objective||'(none)'}</div>`+
     `<div class="tick mono">repo: ${p.repo_path||''}</div>`+
+    `<div class="tick mono">roots: ${(p.resource_roots&&p.resource_roots.length)?p.resource_roots.join(' ; '):'(none — add resource_roots)'}</div>`+
     `convoy: ${convoy?convoy.bead_id.slice(0,12):'—'} · active primary: ${p.active_bead_id?p.active_bead_id.slice(0,12):'—'}<br/>`+
     `gpu quarantine: ${(p.gpu_quarantine||[]).join(', ')||'none'}`;
   $('task_log').textContent='';
 }
 
 async function refreshProjectKanban(){
-  const tb=$('projkanban');
-  if(!activeProject){tb.innerHTML='<tr><th>Title</th><th>Status</th><th>Dispatch</th><th>Blocks→</th></tr><tr><td colspan=4 class="tick">open a project (Create & Open or choose one above)</td></tr>';$('projbeadcount').textContent='0';return;}
+  const kb=$('kanban');
+  if(!activeProject){kb.innerHTML='<span class="tick">open a project (Create & Open or choose one above)</span>';$('projbeadcount').textContent='0';return;}
   const r=await jpost('/project',{method:'gt.project.view',args:{project_id:activeProject}});
   let beads=[];const blocks=[];let active='';
   if(r&&r.ok){active=r.active_bead_id||'';(r.convoys||[]).forEach(c=>{(c.beads||[]).forEach(b=>beads.push(b));(c.blocks_edges||[]).forEach(e=>blocks.push(e));});}
   $('projbeadcount').textContent=beads.length;
   const awaitLabel={};blocks.forEach(e=>awaitLabel[e.bead]=e.awaits);
   const done=(r&&r.ok)?(r.completed_primary_beads||[]):[];
-  tb.innerHTML='<tr><th>Title</th><th>Status</th><th>Dispatch</th><th>Blocks→</th></tr>'+
-    (beads.length?beads.slice().reverse().map(b=>{
-      const da=b.dispatch_attempts||0;
-      const mark=(b.bead_id===active)?' ⚡active':(done.includes(b.bead_id)?' ✓10/10':'');
-      const aw=awaitLabel[b.bead_id];
-      return `<tr><td>${b.title||'(untitled)'}${mark}<span class="tick">${b.bead_id.slice(0,8)}</span></td><td>${badge(b.status)}</td><td>${da}x</td><td class="mono">${aw?aw.slice(0,8):'-'}</td></tr>`;
-    }).join(''):'<tr><td colspan=4 class="tick">no beads yet — add tasks below or run Mayor</td></tr>');
+  const card=(b,flavor)=>{
+    const da=b.dispatch_attempts||0;
+    const status=b.status||'';
+    const isActive=(b.bead_id===active);
+    // active+failed confusion → show "⚠ blocked" not a green ⚡
+    const stateTag = isActive
+      ? (status==='in_progress'||status==='in_review' ? ' <span class="ok">● active</span>'
+         : status==='failed' ? ' <span class="bad">● active/blocked</span>'
+         : ' <span class="ok">● active</span>')
+      : (done.includes(b.bead_id) ? ' <span class="ok">✓10/10</span>':'');
+    const aw=awaitLabel[b.bead_id];
+    const stale = (status==='in_review'||status==='in_progress') && da>=5 ? 'stale' : (isActive&&status==='failed'?'stale':'');
+    const body=(b.body||'').replace(/\\n/g,' ').slice(0,90);
+    return `<div class="card ${isActive&&(status==='in_progress'||status==='in_review')?'active':''} ${stale}">
+      <div class="ctitle">${(b.title||'(untitled)')}${stateTag}</div>
+      <div class="cmeta"><span>${badge(status)}</span><span>${da}x</span>${aw?`<span class="mono">blocks→${aw.slice(0,8)}</span>`:''}</div>
+      ${body?`<div class="tick" style="margin-top:4px;color:var(--muted)">${body}</div>`:''}
+      <div class="cmeta"><span class="mono">${b.bead_id.slice(0,8)}</span><button class="cbtn" onclick="viewBeadMessages('${b.bead_id}','${(b.title||'').replace(/'/g,'')}')">view messages</button><button class="cbtn" style="background:#3fb95033;border-color:#3fb95066" onclick="openResolver('${b.bead_id}','${(b.title||'').replace(/'/g,'')}')">resolve</button></div>
+    </div>`;
+  };
+  const q=[],a=[],v=[];
+  beads.forEach(b=>{
+    if(b.status==='closed'){v.push(b);}
+    else if(b.status==='in_progress'||b.status==='in_review'){a.push(b);}
+    else if(b.status==='open'||b.status==='failed'){a.push(b);} // active primary or failed lands in Active (so you see it)
+    else q.push(b);
+  });
+  const fill=(el,arr,hint)=>{el.innerHTML=arr.length?arr.map(x=>card(x)).join(''):`<span class="tick">${hint}</span>`;return arr.length;};
+  fill(document.getElementById('kq'),q,'nothing queued');
+  const nA=fill(document.getElementById('ka'),a,'nothing in active flight');
+  fill(document.getElementById('kv'),v,'none verified yet');
+  document.getElementById('kc_q').textContent=q.length;
+  document.getElementById('kc_a').textContent=nA;
+  document.getElementById('kc_v').textContent=v.length;
+  // Live tick: ages/staleness are re-rendered on each refresh.
+  refreshKanbanAges();
+}
+// Age each card's state via a lightweight 2s timer (liveness observability).
+function refreshKanbanAges(){/* ages are driven by the liveness envelope / stream; keep hook */}
+
+// View the messages tied to a bead: its objective body + the project's linked
+// Kilo session transcript(s). Surface as a modal so you can read what a task is
+// about and what discussion/evidence exists behind it.
+async function viewBeadMessages(beadId,title){
+  let modal=document.getElementById('bead_modal');
+  if(!modal){modal=document.createElement('div');modal.id='bead_modal';
+    modal.style.cssText='position:fixed;inset:0;background:#000a;z-index:1000;display:flex;align-items:center;justify-content:center;';
+    modal.addEventListener('click',e=>{if(e.target===modal){modal.style.display='none';}});
+    modal.innerHTML='<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;max-width:860px;width:92%;max-height:86vh;display:flex;flex-direction:column;padding:14px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px"><b id="bm_title"></b><button class="alt" onclick="document.getElementById(\'bead_modal\').style.display=\'none\'">✕</button></div>'
+      +'<div id="bm_body" style="overflow:auto;flex:1;font-size:12px"></div></div>';
+    document.body.appendChild(modal);
+  }
+  document.getElementById('bm_title').textContent=title||beadId.slice(0,8);
+  document.getElementById('bm_body').innerHTML='<span class="tick">loading messages…</span>';
+  modal.style.display='flex';
+  // The bead's own objective + any metadata
+  const r=await jpost('/project',{method:'gt.project.view',args:{project_id:activeProject}});
+  let bead=null;if(r&&r.ok){r.convoys.forEach(c=>(c.beads||[]).forEach(b=>{if(b.bead_id===beadId)bead=b;}));}
+  let h='';
+  if(bead){
+    h+=`<div class="callout" style="margin-bottom:8px"><b>Objective:</b> ${bead.body||'(none)'}</div>`;
+    const gates=(bead.metadata&&bead.metadata.bt_gates)||[];
+    if(gates.length){h+='<div class="tick">Gates:'+gates.map(g=>` <span class="${g.status==='PASS'?'ok':'warn'}">${g.id}:${g.status==='PASS'?'✓':'~'}</span>`).join('')+'</div>';}
+    h+='<div style="margin-top:6px" class="tick">status '+badge(bead.status)+' · dispatch '+bead.dispatch_attempts+'x</div>';
+  }
+  // The project's ON-TOPIC transcript: durable imported evidence (from the
+  // project's resource roots), NOT the raw /recall session list — so off-topic
+  // workspaces (e.g. the Gas Town dev repo) never leak under a project bead.
+  try{
+    if(activeProject){
+      const bc=await jpost('/project',{method:'gt.project.bootstrap_context',args:{project_id:activeProject}});
+      const ctx=(bc&&bc.bootstrap&&bc.bootstrap.imported_context_messages)||[];
+      const proj=(bc&&bc.bootstrap&&bc.bootstrap.project)||{};
+      if(ctx.length){
+        h+='<div style="margin-top:10px"><b>Project evidence context</b> <span class="tick">(from resource roots only — no off-topic workspaces)</span></div>';
+        // Show most recent first; label each by source + hash.
+        ctx.slice().reverse().forEach(m=>{
+          const rootOk=(m.source||'').startsWith('file:')||(m.source||'').startsWith('import:');
+          const head=(m.text||'').replace(/\\n/g,' ').slice(0,160);
+          h+=`<div style="margin-top:6px;padding-left:6px;border-left:3px solid ${m.role==='user'?'#58a6ff':'#3fb950'}">
+            <div class="tick">${m.source||m.role} · seq ${m.seq} · <span class="mono">${(m.hash||'').slice(0,12)}</span> ${rootOk?'<span class="ok">in-project</span>':'<span class="bad">unverified source</span>'}</div>
+            <div class="tick" style="color:var(--fg)">${m.role==='user'?'🧑':'🤖'} ${head}${((m.text||0).length>160)?'…':''}</div>
+          </div>`;
+        });
+      } else {
+        h+='<div class="tick" style="margin-top:8px">no on-topic project evidence yet</div>';
+      }
+    } else {
+      h+='<div class="tick" style="margin-top:8px">open a project first</div>';
+    }
+  }catch(e){ h+='<div class="bad">evidence context failed: '+String(e)+'</div>'; }
+  document.getElementById('bm_body').innerHTML=h||'<span class="tick">no details</span>';
 }
 
 async function addTask(){
@@ -335,28 +460,51 @@ async function recallSession(id){
 
 // ---- SSE via fetch stream (EventSource cannot send Authorization header) ----
 let SSE_CTRL=null;
+let SSE_LAST_ID=0; // durable event-log cursor: replay missed events on reconnect
 async function startSSE(){
   if(SSE_CTRL){SSE_CTRL.abort();SSE_CTRL=null;}
   const st=$('sse_state');
   st.textContent='connecting…'; st.className='conn conn-warn';
   const label=(t)=>{st.textContent=t;};
   try{
-    const resp=await fetch('/events',{headers:{'Authorization':'Bearer '+currentToken}});
+    const headers={'Authorization':'Bearer '+currentToken};
+    if(SSE_LAST_ID>0)headers['Last-Event-ID']=String(SSE_LAST_ID);
+    const resp=await fetch('/events',{headers});
     if(resp.status===401){label('auth required');st.className='conn conn-err';scheduleSSE(3000);return;}
     if(!resp.ok||!resp.body){label('sse '+resp.status);st.className='conn conn-err';scheduleSSE(3000);return;}
-    label('connected'); st.className='conn conn-ok';
+    // Connected: the transport is live — the placeholder is cleared, heartbeat
+    // is only liveness, and any `transition`s update the stream below.
+    label('live'); st.className='conn conn-ok';
+    const streamEl=$('stream');
+    if(streamEl && streamEl.dataset.placeholder && streamEl.children.length===0){streamEl.innerHTML='';delete streamEl.dataset.placeholder;}
     const reader=resp.body.getReader();
     const dec=new TextDecoder();
     SSE_CTRL=new AbortController();
     let buf='';
+    let evType=''; let evId=''; let evData=null;
+    const flush=()=>{
+      if(evType==='transition'||evType==='events'||evType==='sync'||evType==='liveness'){
+        if(evId){const n=parseInt(evId,10); if(!isNaN(n)&&n>SSE_LAST_ID)SSE_LAST_ID=n;}
+        if(evData!=null){onSSEMessage(evType,evData);}
+        if(evType==='sync'){ // heartbeat: liveness only, no stream entry needed
+        }
+      }
+      evType=''; evId=''; evData=null;
+    };
     while(true){
       const {done,value}=await reader.read();
       if(done)break;
       buf+=dec.decode(value,{stream:true});
       let i;
-      while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.startsWith('data:')){onSSEMessage(line.slice(5).trim());}}
+      while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).replace(/\r$/,'');buf=buf.slice(i+1);
+        if(!line){flush();continue;}
+        if(line.startsWith('event:')){evType=line.slice(6).trim();}
+        else if(line.startsWith('id:')){evId=line.slice(3).trim();}
+        else if(line.startsWith('data:')){evData=line.slice(5).trim();}
+      }
     }
-    // stream ended → reconnect
+    flush();
+    // stream ended → reconnect (replays from SSE_LAST_ID)
     label('reconnecting…'); st.className='conn conn-err'; scheduleSSE(2000);
   }catch(e){
     label('reconnecting…'); st.className='conn conn-err'; scheduleSSE(2000);
@@ -364,14 +512,166 @@ async function startSSE(){
 }
 let sseTimer=null;
 function scheduleSSE(ms){if(sseTimer)clearTimeout(sseTimer);sseTimer=setTimeout(startSSE,ms);}
-function onSSEMessage(data){
+// Idempotent render: dedupe by event_id so replayed transitions never duplicate.
+let SSE_SEEN=new Set();
+// Liveness observability: last liveness payload + a live timer that ages items.
+let LSSE=null; const AGED=new Date().getTime();
+function fmtAgo(ms){ if(!ms&&ms!==0)return ''; const s=Math.max(0,Math.floor(ms/1000)); if(s<2)return 'just now'; if(s<120)return s+'s ago'; const m=Math.floor(s/60); if(m<120)return m+'m ago'; const h=Math.floor(m/60); return h+'h ago'; }
+function setLivenessState(cls,txt){const el=$('liveness_state');if(el){el.textContent=txt;el.className='conn '+cls;}}
+function renderLiveness(obj){
+  const txt=$('liveness_text'); if(!txt)return;
+  const inF=(obj&&obj.beads)||[]; const now=obj&&obj.now_epoch_ms||Date.now();
+  if(!inF.length){ setLivenessState('conn-ok','idle'); txt.innerHTML='<span class="ok">● all work settled</span> — no bead in progress/in_review right now.'; LSSE={state:'idle'}; return; }
+  // Age the in-flight items; flag any that have been stuck in-state too long.
+  const ordered=inF.slice().sort((a,b)=>(b.in_state_ms||0)-(a.in_state_ms||0));
+  const oldest=ordered[0]; const oldestAge=(oldest.in_state_ms||0);
+  const blue=oldest.in_state_ms<60000;
+  const newestSeen = now - (obj.lastSeenEpoch||now);
+  const actives=ordered.map(b=>`<span title="${b.bead_id} (${b.rig})" class="${b.status==='in_review'?'ok':'warn'}">${b.title?b.title.split(' ')[0]:''}#${(b.bead_id||'').slice(0,8)} ${fmtAgo(b.in_state_ms)}</span>`).join(' · ');
+  setLivenessState(blue?'conn-ok':'conn-warn', `▲ ${inF.length} in flight`);
+  const warn= inF.some(b=>b.in_state_ms>90000) ? '<span class="bad">↻ stalled? 90s+ no transition</span>' : '<span class="ok">✔ advancing</span>';
+  txt.innerHTML=`oldest ${oldest.title?('“'+oldest.title.split('').slice(0,24).join('')+'”'):''} ${fmtAgo(oldestAge)} ${blue?'':'(stale)'} · ${actives} · ${warn}`;
+  LSSE={state: inF.length?'running':(obj.any_advancing?'running':'idle')};
+}
+function onSSEMessage(evType,data){
+  let obj=null; try{obj=JSON.parse(data);}catch(e){obj=null;}
+  if(!obj)return;
+  // Liveness frames update the observability status line (not the stream box).
+  if(evType==='liveness'||obj.type==='liveness'){
+    renderLiveness(obj);
+    // Refresh ages every 2s while a frame is present (client-side ticking).
+    if(!window.__liveTimer){window.__liveTimer=setInterval(()=>{ if(LSSE&&LSSE.state==='running'){renderLiveness(LSSE._last||{beads:[]});} },2000);}
+    LSSE._last=obj;
+    return;
+  }
   const box=$('stream'); if(!box)return;
-  if(box.childElementCount>80){box.innerHTML='';}
-  const d=document.createElement('div'); d.textContent=(data||'').slice(0,170); box.prepend(d);
+  // `sync` and `events` are SSE bookkeeping/backlog frames — they advance the
+  // reconnect cursor but must NEVER appear as stream rows. Only `transition`
+  // (derived engineering events) belong in the visible stream.
+  if(evType==='sync'||evType==='events') return;
+  if(obj.event_id){
+    if(SSE_SEEN.has(obj.event_id))return; // idempotent on reconnect
+    SSE_SEEN.add(obj.event_id); if(SSE_SEEN.size>200)SSE_SEEN=new Set([...SSE_SEEN].slice(-100));
+  }
+  if(box.childElementCount>80){box.innerHTML='';box.dataset.placeholder='1';}
+  const et=obj.event_type||evType||'sync';
+  const kindClass=['POLECAT_STARTED','POLECAT_TOOL_EXECUTED','POLECAT_COMPLETED','EXECUTION_FAILED','EXECUTION_BLOCKED','EXECUTION_STARTED'].includes(et)?'tw-polecat'
+    :(et==='INQUISITOR_REVIEWED'?'tw-inq':(et==='CORRECTION_CREATED'||et==='MAYOR_DISPATCHED'?'tw-corr':(et==='QUALITY_GATE_UPDATED'||et==='EVIDENCE_INGESTED'?'tw-ev':'tw-sync')));
+  const d=document.createElement('div');
+  d.className='tw '+kindClass;
+  const primary=(obj.primary_bead_id||'').slice(0,8);
+  const exec=(obj.execution_bead_id||'').slice(0,8);
+  const ago=obj.ts_epoch_ms?fmtAgo(Date.now()-obj.ts_epoch_ms):'';
+  d.innerHTML=`<b>${et}</b> ${primary?'<span class="mono">#'+primary+'</span>':''}${exec?'<span class="mono">→'+exec+'</span>':''} <span class="mono">a${obj.attempt_id??''}</span> <span class="tw-sum">${(obj.summary||'').slice(0,120)}</span> ${ago?`<span class="tick" style="color:var(--muted)">${ago}</span>`:''}`;
+  d.dataset.ts=obj.ts_epoch_ms||'';
+  box.prepend(d);
+  // Refresh the age labels every 2s (no full re-render, just the visible stream).
+  if(!window.__streamTimer){window.__streamTimer=setInterval(()=>{Array.prototype.forEach.call(box.children,(el)=>{if(!el.dataset||!el.dataset.ts)return;const t=el.querySelector('.tick');if(t)t.textContent=fmtAgo(Date.now()-parseInt(el.dataset.ts,10));});},2000);}
+}
+
+// ---- Universal dashboard: ALL projects + ALL primaries + gate progress ----
+async function renderUniversal(){
+  const pj=$('uni_projects'), pr=$('uni_primaries'), meta=$('uni_meta');
+  if(!pj||!pr)return;
+  pj.innerHTML='<tr><th>Project</th><th>Active primary</th><th>Status</th><th>Gates (active)</th><th>Done count</th></tr>';
+  pr.innerHTML='<tr><th>Project</th><th>Primary</th><th>Status</th><th>Dispatch</th><th>Gates</th><th>Awaits (blocks)</th></tr>';
+  if(meta)meta.textContent='…';
+  const r=await jpost('/project',{method:'gt.dashboard.universal',args:{}});
+  if(!(r&&r.ok&&Array.isArray(r.projects))){pj.innerHTML+='<tr><td colspan="5" class="bad">'+(r&&r.error||'unavailable')+'</td></tr>';if(meta)meta.textContent='error';return;}
+  if(meta)meta.textContent=`${r.project_count} projects · ${(r.all_primaries||[]).length} primaries · last verdict ${(r.inquisitor&&r.inquisitor.verdict)||'…'}`;
+  // Project rows
+  for(const p of r.projects){
+    const activeId=(p.active_bead_id||'');
+    const act = activeId? (p.primaries||[]).find(b=>b.bead_id===activeId):null;
+    const gatesN=(p.active_gate_total||0), gatesP=(p.active_gate_passed||0);
+    const done=p.completed_primary_beads?p.completed_primary_beads.length:0;
+    const s = act?(act.status||''):(r.inquisitor&&r.inquisitor.verdict)||'';
+    const sg = gatesN? (gatesP===gatesN?'<span class="ok">'+gatesP+'/'+gatesN+' MET</span>':'<span class="warn">'+gatesP+'/'+gatesN+'</span>') : '<span class="tick">—</span>';
+    pj.innerHTML+=`<tr><td><b>${p.name}</b><div class="tick mono">${(p.project_id||'').slice(0,20)}</div>${p.resource_roots&&p.resource_roots.length?`<div class="tick" style="color:var(--muted)">roots: ${p.resource_roots.map(r=>{const n=r.split(/[\\/]/).filter(Boolean).pop()||r;return n;}).join(', ')}</div>`:''}<div class="tick mono">${(p.repo_path||'').slice(0,46)}</div></td>`
+      +`<td>${act?act.title:'<span class="tick">(none)</span>'}</td>`
+      +`<td>${badge(s)}</td><td>${sg}</td><td>${done}</td></tr>`;
+    // Primaries of this project
+    for(const b of (p.primaries||[])){
+      const gates=(b.metadata&&b.metadata.bt_gates)||[];
+      const pass=gates.filter(g=>g.status==='PASS').length;
+      const chips=gates.map(g=>`<span title="${g.evidence||''}" style="margin-right:3px" class="${g.status==='PASS'?'ok':'warn'}">${(g.id||'').slice(0,16)}:${g.status==='PASS'?'✓':'~'}</span>`).join('');
+      const blocks=(p.convoys||[]).flatMap(c=>(c.blocks_edges||[])).filter(e=>e.bead===b.bead_id).map(e=>e.awaits||'').join(',')||'';
+      pr.innerHTML+=`<tr><td class="tick">${p.name}</td><td>${b.title}${b.bead_id===activeId?' <span class="ok">(active)</span>':''}</td>`
+        +`<td>${badge(b.status)}</td><td>${b.dispatch_attempts}</td>`
+        +`<td>${gates.length? (pass===gates.length?'<span class="ok">'+pass+'/'+gates.length+' ✓</span>':'<span class="warn">'+pass+'/'+gates.length+'</span>')+' '+chips :'<span class="tick">no gates</span>'}</td>`
+        +`<td class="mono">${blocks||''}</td></tr>`;
+    }
+  }
+}
+
+// ---- Human resolver: re-issue corrective / mark gate / advance serial / roots ----
+let RS={beadId:'',title:''};
+async function openResolver(beadId,title){
+  RS.beadId=beadId; RS.title=title||'';
+  document.getElementById('rs_title').textContent=(title||beadId.slice(0,8));
+  const m=document.getElementById('resolver'); m.style.display='flex';
+  // Load the bead's current gates (from project view) so the human can edit them.
+  let gates=[]; 
+  if(activeProject){ const r=await jpost('/project',{method:'gt.project.view',args:{project_id:activeProject}});
+    if(r&&r.ok) r.convoys.forEach(c=>(c.beads||[]).forEach(b=>{if(b.bead_id===beadId) gates=(b.metadata&&b.metadata.bt_gates)||[];})); }
+  const gateCk=gates.length?gates.map((g,i)=>`<div style="margin:2px 0;display:flex;gap:6px;align-items:center"><input type="checkbox" id="rs_gate_${i}" data-id="${g.id.replace(/"/g,'')}" ${g.status==='PASS'?'checked':''}/><b>${g.id}</b> <span class="tick">${g.status}</span><input id="rs_ev_${i}" placeholder="evidence (executed)" style="flex:1" value="${(g.evidence||'').replace(/"/g,'')}"/></div>`).join(''):'<span class="tick">no gates attached to this bead yet</span>';
+  document.getElementById('rs_body').innerHTML=`
+    <div class="callout" style="margin-bottom:10px"><b>${beadId.slice(0,8)}</b> — blocked: ${RS.title||''}</div>
+    <div class="tick" style="margin:6px 0 3px">1) Re-issue a corrective (new hypothesis) → sends a fresh engineer to redo work with your instructions</div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+      <input id="rs_instr" placeholder="new hypothesis / instructions for the engineer (default uses the task objective)" style="flex:1"/>
+      <button onclick="rsCorrective()">▸ dispatch corrective</button>
+    </div>
+    <div class="tick" style="margin:6px 0 3px">2) Manually mark gates PASS (only when you have real executed evidence; the loop's oracle also checks)</div>
+    <div id="rs_gates" style="margin-bottom:8px">${gateCk}</div>
+    <button onclick="rsMarkGates()">✓ save gate status</button>
+    <div class="tick" style="margin:10px 0 3px">3) Advance the serial gate — make THIS the active primary / the next to run</div>
+    <button onclick="rsSetActive()">▶ set as active primary</button>
+    <div class="tick" style="margin:10px 0 3px">4) Edit the project's allowed resource roots (multi-repo)</div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input id="rs_roots" placeholder="comma-separated roots, e.g. <workspace>\MNN, <workspace>\TaoAvatar-NNR-MNN" style="flex:1"/>
+      <button onclick="rsSetRoots()">save roots</button>
+    </div>
+    `;
+}
+async function rsCorrective(){
+  document.getElementById('rs_log').textContent='dispatching corrective…';
+  const r=await jpost('/project',{method:'gt.project.dispatch_corrective',args:{project_id:activeProject, instructions:document.getElementById('rs_instr').value.trim()}});
+  document.getElementById('rs_log').innerHTML=r&&r.ok?`<span class="ok">corrective ${r.corrective_bead_id?r.corrective_bead_id.slice(0,8):''} dispatched for #${RS.title||RS.beadId.slice(0,8)}</span>`:`<span class="bad">${r&&r.error||'dispatch failed'}</span>`;
+}
+async function rsMarkGates(){
+  const gates=[]; let i=0;
+  while(document.getElementById('rs_gate_'+i)){
+    const cb=document.getElementById('rs_gate_'+i);
+    const pass=cb.checked;
+    const id=(cb.dataset&&cb.dataset.id)||('gate_'+i);
+    const ev=document.getElementById('rs_ev_'+i).value.trim();
+    gates.push({id:id, status:pass?'PASS':'UNVERIFIED', evidence:ev||'human-confirmed'});
+    i++;
+  }
+  document.getElementById('rs_log').textContent='saving gate status: '+gates.map(g=>g.id).join(', ');
+  const r=await jpost('/project',{method:'gt.project.set_bead_gates',args:{bead_id:RS.beadId, gates}});
+  document.getElementById('rs_log').innerHTML=r&&r.ok?`<span class="ok">gates saved (${gates.length})</span>`:`<span class="bad">${r&&r.error||'save failed'}</span>`;
+  refreshProjectKanban();
+}
+async function rsSetActive(){
+  document.getElementById('rs_log').textContent='setting active primary…';
+  const r=await jpost('/project',{method:'gt.project.set_active_bead',args:{project_id:activeProject, bead_id:RS.beadId}});
+  document.getElementById('rs_log').innerHTML=r&&r.ok?`<span class="ok">${RS.title||RS.beadId.slice(0,8)} is now the active primary (serial gate ${r.serial_gate||''})</span>`:`<span class="bad">${r&&r.error||'set failed'}</span>`;
+  refreshProjectKanban();
+}
+async function rsSetRoots(){
+  const raw=document.getElementById('rs_roots').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!raw.length){document.getElementById('rs_log').innerHTML='<span class="bad">enter at least one root</span>';return;}
+  document.getElementById('rs_log').textContent='saving resource roots…';
+  const r=await jpost('/project',{method:'gt.project.set_resource_roots',args:{project_id:activeProject, resource_roots:raw}});
+  document.getElementById('rs_log').innerHTML=r&&r.ok?`<span class="ok">roots updated: ${(r.resource_roots||[]).join(' ; ')}</span>`:`<span class="bad">${r&&r.error||'save failed'}</span>`;
+  renderUniversal(); refreshProjectHeader();
 }
 
 async function init(){
   startSSE();
+  renderUniversal();
   await refreshProjectPicker();
   await loadRecallSessionsForProject();
   if(activeProject && $('proj_pick')&&[...$('proj_pick').options].some(o=>o.value===activeProject)){
@@ -379,6 +679,11 @@ async function init(){
   } else {
     // no active project yet: keep SSE + stream running regardless
   }
+  // Periodic refresh: keep the Kanban board + universal view + Inquisitor live.
+  setInterval(()=>{
+    renderUniversal();
+    if(activeProject){ refreshProjectKanban(); renderInquisitor(); renderOracle(); renderMemory(); }
+  }, 4000);
 }
 document.querySelector('#tokenbar button')?.addEventListener('click',saveToken);
 init();

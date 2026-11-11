@@ -57,12 +57,30 @@ impl BatchedDurableWriter {
         F: FnMut(&[u8]) -> Result<(), LedgerError>,
     {
         let mut q = self.queue.lock().unwrap();
-        let mut collected = Vec::new();
+        // For a FAILED flush we must not lose acknowledged-but-unpersisted
+        // frames: pop ONE, flush it; if it fails, re-queue this frame plus any
+        // that were already popped (they were never durably written) and bail.
+        // This makes the caller's retry durable instead of silently dropping
+        // frames (Codex review finding P1-3).
+        let mut survivors: Vec<Vec<u8>> = Vec::new();
         while let Some(body) = q.pop_front() {
-            collected.push(body);
-        }
-        for body in &collected {
-            flush(body)?;
+            match flush(&body) {
+                Ok(()) => {}
+                Err(e) => {
+                    // Re-push this failing frame and every already-popped member
+                    // back to the front (FIFO order) so nothing is lost.
+                    survivors.push(body);
+                    let mut ordered: Vec<Vec<u8>> = Vec::new();
+                    while let Some(b) = q.pop_front() {
+                        survivors.push(b);
+                    }
+                    survivors.reverse();
+                    for b in survivors {
+                        q.push_front(b);
+                    }
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
@@ -72,6 +90,11 @@ impl BatchedDurableWriter {
     /// the queue is drained with no durability (caller must supply the writer).
     pub fn is_pending(&self) -> bool {
         !self.queue.lock().unwrap().is_empty()
+    }
+
+    /// Number of frames awaiting durable persistence (tests/diagnostics).
+    pub fn pending_len(&self) -> usize {
+        self.queue.lock().unwrap().len()
     }
 }
 
@@ -83,5 +106,38 @@ impl GroupCommitPolicy {
             }
             GroupCommitPolicy::NoBatching => BatchedDurableWriter::new(0),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_with_failure_preserves_unflushed_frames() {
+        // Regression for the Codex review finding P1-3: a mid-drain flush
+        // failure must not lose acknowledged-but-unpersisted queued frames.
+        let w = BatchedDurableWriter::new(25);
+        w.submit(vec![1, 1, 1]);
+        w.submit(vec![2, 2, 2]);
+        w.submit(vec![3, 3, 3]);
+        let mut flushed = Vec::new();
+        // Fail on the second flush.
+        let res = w.drain_with(|body| {
+            if body[0] == 2 {
+                return Err(LedgerError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, "simulated flush failure")));
+            }
+            flushed.push(body.to_vec());
+            Ok(())
+        });
+        assert!(res.is_err(), "flush failure must surface");
+        assert_eq!(flushed, vec![vec![1, 1, 1]], "the successfully flushed frame is recorded");
+        // Frames 2 and 3 must still be in the queue (not lost).
+        assert_eq!(w.pending_len(), 2, "unflushed frames are preserved for retry");
+        // A subsequent drain (after the failure resolves) persists the remainder.
+        let res2 = w.drain_with(|body| { flushed.push(body.to_vec()); Ok(()) });
+        assert!(res2.is_ok());
+        assert_eq!(w.pending_len(), 0);
+        assert_eq!(flushed, vec![vec![1, 1, 1], vec![2, 2, 2], vec![3, 3, 3]], "recovery persists all frames in order");
     }
 }

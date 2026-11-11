@@ -186,6 +186,11 @@ fn circuit_breaker_open(store: &OrchestrationStore, now_ms: i64) -> bool {
         .list_beads()
         .into_iter()
         .filter(|b| {
+            // P0-B/C: a CORRECTIVE iteration (new bounded plan) is not penalised by
+            // the breaker — it represents a CHANGED hypothesis, so it must be able to
+            // dispatch even after the identical prior strategy exhausted the breaker.
+            // Everything else that keeps failing identical strategies trips the gate.
+            if b.has_label("gt:corrective") { return false; }
             if b.status.is_terminal() || b.dispatch_attempts == 0 {
                 return false;
             }

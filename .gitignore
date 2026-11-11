@@ -15,3 +15,8 @@ Cargo.lock.orig
 
 # Generated protobuf bindings (produced by build.rs; schemas live in /protos)
 **/src/proto_gen
+
+# TS packages: dependencies and generated build output (src/ + lockfile reproduce them)
+node_modules/
+**/node_modules/
+packages/naf-client-ts/dist/

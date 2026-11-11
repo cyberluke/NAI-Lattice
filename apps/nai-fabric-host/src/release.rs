@@ -298,10 +298,42 @@ pub fn release_main(args: Vec<String>) {
         "list" | "ls" => cmd_list(),
         "rollback" => cmd_rollback(),
         "launch" => cmd_launch(),
+        "autostart" => cmd_autostart(&rest[1..]),
+        "unautostart" => cmd_autostart(&[String::from("off")]),
         "status" => cmd_status(),
         other => {
-            println!("{}", serde_json::json!({"ok":false,"error":format!("unknown release subcommand: {other}"),"available":["install","list","rollback","launch","status"]}));
+            println!("{}", serde_json::json!({"ok":false,"error":format!("unknown release subcommand: {other}"),"available":["install","list","rollback","launch","autostart","status"]}));
             std::process::exit(2);
         }
     }
+}
+
+/// Register / unregister Windows Task-Scheduler auto-start for the Gas Town host
+/// so the Inquisitor singleton autostarts at logon and (via
+/// `recover_interrupted_primary_on_startup`) CONTINUES its active primary beads
+/// after a PC reboot. `gastown-release autostart [on|off]` (default `on`).
+fn cmd_autostart(args: &[String]) -> ! {
+    let on = args.first().map(|s| s.as_str()) != Some("off");
+    let task = "NAIInquisitorHost";
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gastown-release.exe"));
+    if on {
+        // AtLogon, run as current interactive user (no admin), hidden window.
+        let qexe = exe.to_str().unwrap_or("gastown-release.exe");
+        let status = std::process::Command::new("schtasks")
+            .args(["/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR"])
+            .arg(format!("\"{qexe}\" launch"))
+            .args(["/RL", "LIMITED", "/IT"])
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("{}", serde_json::json!({"ok":true,"autostart":"on","task":task,"command":qexe,"note":"Task Scheduler ONLOGON auto-start registered; host resumes active beads at logon"})),
+            other => println!("{}", serde_json::json!({"ok":false,"error":format!("schtasks create failed: {:?}", other), "task":task})),
+        }
+    } else {
+        let status = std::process::Command::new("schtasks").args(["/Delete", "/F", "/TN", task]).status();
+        match status {
+            Ok(s) if s.success() => println!("{}", serde_json::json!({"ok":true,"autostart":"off","task":task})),
+            other => println!("{}", serde_json::json!({"ok":false,"error":format!("schtasks delete failed: {:?}", other), "task":task})),
+        }
+    }
+    std::process::exit(0);
 }

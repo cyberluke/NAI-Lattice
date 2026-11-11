@@ -1359,6 +1359,45 @@ impl OrchestrationStore {
         }
     }
 
+    /// Emit a durable `bead.status_changed` transition event correlated to the
+    /// bead (P0-E). This is the single source for the SSE stream's real
+    /// engineering transitions (pollcat start/done/fail, retry, review). The
+    /// `proves` field carries a bounded, safe summary — never credentials or
+    /// complete model prompts.
+    pub fn emit_bead_status(
+        &self,
+        bead_id: &str,
+        actor: &str,
+        to: &str,
+        reason: Option<&str>,
+        proves: Option<&str>,
+        town_id: Option<&str>,
+    ) {
+        let Some(b) = self.get_bead(bead_id) else { return };
+        let agent_id = b.assignee_agent_bead_id.clone();
+        let rig_id = b.rig_id.clone().or_else(|| agent_id.as_ref().and_then(|a| self.get_agent(a).and_then(|ag| ag.rig_id)));
+        // Town: use the explicit live town when supplied (loopback /events uses
+        // "town-default"); otherwise fall back to the rig's town, else the
+        // well-known live town so the SSE stream (which filters by town) sees it.
+        let town = town_id.map(str::to_string).filter(|t| !t.is_empty())
+            .or_else(|| b.rig_id.as_deref().and_then(|r| self.get_rig(r).map(|rig| rig.town_id)))
+            .unwrap_or_else(|| "town-default".to_string());
+        let ev = BeadEvent::new(
+            "bead.status_changed",
+            Some(bead_id.to_string()),
+            agent_id,
+            Some(town),
+            rig_id,
+            serde_json::json!({
+                "to": to,
+                "actor": actor,
+                "bounded_reason": reason.map(str::to_string).unwrap_or_default(),
+                "proves": proves.map(str::to_string).unwrap_or_default(),
+            }),
+        );
+        self.emit_event(&ev);
+    }
+
     /// Events for a bead, oldest first (audit timeline).
     pub fn events_for_bead(&self, bead_id: &str) -> Vec<BeadEvent> {
         self.events_for_idx(&format!("event_bead/{bead_id}"))
@@ -1854,6 +1893,12 @@ impl OrchestrationStore {
             .map(|v| String::from_utf8_lossy(&v.0).into_owned())
     }
 
+    /// Durably remove a raw key from the HotStore (used by the host overlay to
+    /// delete stale aggregate records, e.g. a deprecated project). No-op if absent.
+    pub fn hot_delete(&self, key: impl Into<String>) {
+        let _ = self.hot.delete(&HotKey(key.into().into_bytes()));
+    }
+
     // ────────────────────────────────────────────────
     // State-mutating helpers used by the orchestrator dispatcher (faithful to
     // upstream `beads.ts` / `agents.ts` / `review-queue.ts` / `actions.ts`).
@@ -1874,12 +1919,23 @@ impl OrchestrationStore {
             b.closed_at = Some(now());
         }
         if status == BeadStatus::Failed {
-            if let Some(r) = reason {
+            if let Some(r) = reason.as_deref() {
                 b.metadata["failure_reason"] = serde_json::json!(r);
             }
         }
-        let _ = actor;
+        let to = match status { BeadStatus::Closed => "closed", BeadStatus::Failed => "failed", BeadStatus::InReview => "in_review", BeadStatus::InProgress => "in_progress", BeadStatus::Open => "open" };
+        let btitle = b.title.clone();
+        let bid = b.bead_id.clone();
+        let reason_cl = reason.clone();
+        let actor_name = if actor.is_empty() { "system".to_string() } else { actor };
         self.put_bead(&b);
+        // P0-E: durable transition emitted for real status changes (reconciler /
+        // Governor / control paths that flow through update_bead_status). The
+        // scheduler's direct dispatch/done paths emit their own richer events;
+        // this covers terminal (closed/failed) and review transitions not caught
+        // elsewhere, so the SSE stream always reflects real engineering activity.
+        self.emit_bead_status(&bid, &actor_name, to,
+            reason_cl.as_deref(), Some(&btitle), None);
         if b.status.is_terminal() {
             self.update_convoy_progress_for(&b.bead_id);
         }

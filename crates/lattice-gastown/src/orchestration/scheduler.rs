@@ -770,7 +770,15 @@ impl Orchestrator {
             b.dispatch_attempts += 1;
             b.last_dispatch_attempt_at = Some(now());
             b.updated_at = now();
+            let btitle = b.title.clone();
+            let bid = b.bead_id.clone();
             self.store.put_bead(&b);
+            // P0-E: durable transition — Mayor dispatched a Polecat onto the bead.
+            self.store.emit_bead_status(
+                &bid, "mayor", "in_progress",
+                Some("dispatched to polecat"), Some(&btitle),
+                Some(&ctx.town.town_id),
+            );
         }
 
         let rig = self.store.get_rig(rig_id);
@@ -865,7 +873,16 @@ impl Orchestrator {
                 let n = b.metadata["rework_count"].as_u64().unwrap_or(0) + 1;
                 b.metadata["rework_count"] = serde_json::json!(n);
                 b.metadata["last_rework_at"] = serde_json::json!(now());
+                let bid = b.bead_id.clone();
+                let btitle = b.title.clone();
                 self.store.put_bead(&b);
+                // P0-E: durable transition — execution did not complete; reopened
+                // for bounded retry (bounded by reconciler cooldown).
+                self.store.emit_bead_status(
+                    &bid, "polecat", "open",
+                    Some("execution incomplete — reopened for retry"), Some(&btitle),
+                    None,
+                );
             }
         }
     }
@@ -891,7 +908,16 @@ impl Orchestrator {
         if let Some(mut b) = self.store.get_bead(&bead.bead_id) {
             b.status = BeadStatus::InReview;
             b.updated_at = now();
+            let bid = b.bead_id.clone();
+            let btitle = b.title.clone();
             self.store.put_bead(&b);
+            // P0-E: Polecat completed → produced evidence, submitted for review.
+            self.store.emit_bead_status(
+                &bid, "polecat", "in_review",
+                res.summary.as_deref(),
+                Some(&btitle),
+                None,
+            );
         }
         self.store.unhook_agent(&agent.bead_id);
         self.store.update_agent_status(agent.bead_id.clone(), AgentStatus::Idle, None);
@@ -907,12 +933,20 @@ impl Orchestrator {
                     b.status = BeadStatus::Closed;
                     b.closed_at = Some(now());
                     b.updated_at = now();
+                    let sid = b.bead_id.clone();
+                    let stitle = b.title.clone();
                     self.store.put_bead(&b);
                     // Verified closure: Refinery reviewed + merged the MR. Stamp a
                     // durable VERIFIED_10_10 bound to the current epoch so this
                     // release (unlike a bare manual close) unlocks downstream.
                     let epoch = self.store.hot_get("gastown/portability/epoch").unwrap_or_default();
                     self.store.mark_bead_verified(&src, &epoch, "COMPLETE", 8, 8);
+                    // P0-E: durable transition — Resource verified & closed by review.
+                    self.store.emit_bead_status(
+                        &sid, "refinery", "closed",
+                        Some("reviewed + merged — verified 10/10"), Some(&stitle),
+                        None,
+                    );
                 }
             }
         }
