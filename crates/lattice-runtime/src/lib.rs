@@ -242,6 +242,11 @@ impl LatticeRuntime {
             )
             .unwrap()),
             "event.append" => self.on_event_append(&args, producer, idempotency_key).await,
+            // Read back the canonical ledger. The capability contract advertises
+            // `event.read_range` (MINIMUM_CAPABILITIES) but the committed runtime
+            // lacked it — this closes that gap (AAF: the read delta that was
+            // already declared). `event.scan` is an alias for a full-list scan.
+            "event.read_range" | "event.range" => self.on_event_range(&args).await,
             "artifact.put" => self.on_artifact_put(&args).await,
             "artifact.open" => self.on_artifact_open(&args).await,
             "artifact.verify" => self.on_artifact_verify(&args).await,
@@ -399,6 +404,48 @@ impl LatticeRuntime {
         Ok(serde_json::to_vec(&serde_json::json!({
             "event_id": event_id.to_string(),
             "duplicated": false
+        }))
+        .unwrap())
+    }
+
+    /// `event.range { after?, limit?, namespace?, event_type?, entity_id?,
+    /// correlation_id? }` — fabric re-read over the canonical ledger. Returns
+    /// events in ascending runtime_sequence order. This is how projections
+    /// rebuild and how clients verify durable imports (§8/§9 re-read delta).
+    async fn on_event_range(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        use lattice_ledger::EventScanFilter;
+        let filter = EventScanFilter {
+            after: args.get("after").and_then(|a| a.as_u64()),
+            limit: args.get("limit").and_then(|l| l.as_u64()).map(|l| l.min(10_000)),
+            namespace: args.get("namespace").and_then(|n| n.as_str()).map(str::to_string),
+            event_type: args.get("event_type").and_then(|e| e.as_str()).map(str::to_string),
+            entity_id: args.get("entity_id").and_then(|e| e.as_str()).map(str::to_string),
+            correlation_id: args.get("correlation_id").and_then(|c| c.as_str()).map(str::to_string),
+        };
+        let events = self.ledger.scan_events(&filter)?;
+        let out: Vec<serde_json::Value> = events
+            .into_iter()
+            .map(|ev| {
+                serde_json::json!({
+                    "runtime_sequence": ev.runtime_sequence,
+                    "event_id": ev.event_id.to_string(),
+                    "timestamp_utc_ms": ev.timestamp_utc_ms,
+                    "namespace": ev.namespace,
+                    "entity_id": ev.entity_id.as_ref().map(|g| g.uri),
+                    "event_type": ev.event_type,
+                    "correlation_id": ev.correlation_id,
+                    "causation_id": ev.causation_id,
+                    "producer_app": ev.producer_app,
+                    "payload": serde_json::from_slice::<serde_json::Value>(&ev.payload_bytes)
+                        .unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect();
+        let high = out.len();
+        let _ = high;
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "events": out,
+            "next_after": out.last().and_then(|e| e["runtime_sequence"].as_u64()),
         }))
         .unwrap())
     }
