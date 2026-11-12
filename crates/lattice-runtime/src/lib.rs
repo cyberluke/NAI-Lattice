@@ -558,7 +558,7 @@ impl LatticeRuntime {
         collection: &str,
         delta: &serde_json::Value,
         producer: &str,
-        idempotency_key: Option<&str>,
+        _idempotency_key: Option<&str>,
     ) -> Result<serde_json::Value, RuntimeError> {
         let mut ev = build_event_from_json(
             &serde_json::json!({
