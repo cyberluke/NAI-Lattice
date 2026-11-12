@@ -342,6 +342,132 @@ export class NafClient {
   ): Promise<DispatchResult> {
     return this.dispatch('event.append', args ?? {}, idempotencyKey);
   }
+
+  // ---- collection.v1 (Mastra canonical persistence) ----
+
+  /** Register / additively evolve a collection schema (Mastra CollectionSchema). */
+  async collectionEnsureSchema(schema: unknown): Promise<DispatchResult> {
+    return this.dispatch('collection.schema.ensure', { schema });
+  }
+
+  async collectionFindOne<T extends Record<string, unknown>>(
+    collection: string,
+    where: Record<string, unknown>,
+  ): Promise<DispatchResult & { row?: T | null }> {
+    return this.dispatch('collection.find_one', { collection, where }) as Promise<
+      DispatchResult & { row?: T | null }
+    >;
+  }
+
+  async collectionFindMany<T extends Record<string, unknown>>(
+    collection: string,
+    where: Record<string, unknown>,
+    opts?: { order_by?: [string, 'asc' | 'desc'][]; limit?: number },
+  ): Promise<DispatchResult & { rows?: T[] }> {
+    return this.dispatch('collection.find_many', {
+      collection,
+      where,
+      order_by: opts?.order_by ?? [],
+      limit: opts?.limit ?? undefined,
+    }) as Promise<DispatchResult & { rows?: T[] }>;
+  }
+
+  async collectionCount(
+    collection: string,
+    where: Record<string, unknown>,
+  ): Promise<DispatchResult & { count?: number }> {
+    return this.dispatch('collection.count', { collection, where }) as Promise<
+      DispatchResult & { count?: number }
+    >;
+  }
+
+  async collectionUpsert<T extends Record<string, unknown>>(
+    collection: string,
+    row: Partial<T>,
+    conflictKeys?: string[],
+    txId?: string,
+  ): Promise<DispatchResult> {
+    return this.dispatch('collection.upsert', {
+      collection,
+      row,
+      conflict_keys: conflictKeys ?? [],
+      tx_id: txId,
+    });
+  }
+
+  async collectionInsert<T extends Record<string, unknown>>(
+    collection: string,
+    row: Partial<T>,
+    txId?: string,
+  ): Promise<DispatchResult> {
+    return this.dispatch('collection.insert', {
+      collection,
+      row,
+      conflict_keys: [],
+      tx_id: txId,
+    });
+  }
+
+  async collectionUpdateMany<T extends Record<string, unknown>>(
+    collection: string,
+    where: Record<string, unknown>,
+    set: Record<string, unknown>,
+    txId?: string,
+  ): Promise<DispatchResult> {
+    return this.dispatch('collection.update_many', { collection, where, set, tx_id: txId });
+  }
+
+  async collectionDeleteMany(
+    collection: string,
+    where: Record<string, unknown>,
+    txId?: string,
+  ): Promise<DispatchResult> {
+    return this.dispatch('collection.delete_many', { collection, where, tx_id: txId });
+  }
+
+  async collectionUpdateAtomic<T extends Record<string, unknown>>(
+    collection: string,
+    where: Record<string, unknown>,
+    set: Record<string, unknown>,
+  ): Promise<DispatchResult> {
+    return this.dispatch('collection.update_atomic', { collection, where, set });
+  }
+
+  // ---- transaction.v1 ----
+
+  async transactionBegin(): Promise<DispatchResult & { tx_id?: string }> {
+    return this.dispatch('transaction.begin', {}) as Promise<DispatchResult & { tx_id?: string }>;
+  }
+
+  async transactionRollback(txId: string): Promise<DispatchResult> {
+    return this.dispatch('transaction.rollback', { tx_id: txId });
+  }
+
+  async transactionCommit(txId: string): Promise<DispatchResult> {
+    return this.dispatch('transaction.commit', { tx_id: txId });
+  }
+
+  // ---- lease.v1 (Mastra workflow run ownership / fencing) ----
+
+  async leaseClaim(
+    leaseId: string,
+    ownerId: string,
+    ttlMs?: number,
+  ): Promise<DispatchResult> {
+    return this.dispatch('lease.claim', { lease_id: leaseId, owner_id: ownerId, ttl_ms: ttlMs });
+  }
+
+  async leaseRenew(
+    leaseId: string,
+    ownerId: string,
+    ttlMs?: number,
+  ): Promise<DispatchResult> {
+    return this.dispatch('lease.renew', { lease_id: leaseId, owner_id: ownerId, ttl_ms: ttlMs });
+  }
+
+  async leaseRelease(leaseId: string, ownerId: string): Promise<DispatchResult> {
+    return this.dispatch('lease.release', { lease_id: leaseId, owner_id: ownerId });
+  }
 }
 
 export { MAX_FRAME_BYTES };
