@@ -5,8 +5,9 @@
 //! the NAF/1 minimum-capability dispatch used by both the named-pipe host and
 //! the in-process/test path.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lattice_aaf::AafResolver;
 use lattice_cas::object::ObjectStore;
@@ -14,6 +15,49 @@ use lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
 use lattice_hotstore::{HotKey, HotValue, HotStore};
 use lattice_ledger::Ledger;
 use tracing::info;
+
+pub mod collection;
+
+use collection::CollectionStore;
+
+/// The NAF/1 capability names this runtime ACTUALLY serves (kept in lockstep
+/// with the `match` in `dispatch_async`). Truthful advertisement: clients must
+/// only be told about methods that exist, so capability negotiation and §19
+/// snapshots reflect reality rather than a spec floor.
+const RUNTIME_SERVED_CAPABILITIES: &[&str] = &[
+    "runtime.health",
+    "runtime.describe",
+    "capabilities.list",
+    "event.append",
+    "event.append_batch",
+    "event.read_range",
+    "artifact.put",
+    "artifact.open",
+    "artifact.verify",
+    "entity.get",
+    // Collection projection + transaction + lease surfaces (Lattice
+    // `collection.v1`/`transaction.v1`/`lease.v1`) power Mastra canonical
+    // persistence (`LatticeMastraStore`) instead of LibSQL.
+    "collection.schema.ensure",
+    "collection.find_one",
+    "collection.find_many",
+    "collection.count",
+    "collection.insert",
+    "collection.upsert",
+    "collection.update_many",
+    "collection.delete_many",
+    "collection.update_atomic",
+    "transaction.begin",
+    "transaction.commit",
+    "transaction.rollback",
+    "lease.claim",
+    "lease.renew",
+    "lease.release",
+    "query.vector",
+    "semantic.index",
+    "query.search",
+    "query.federated",
+];
 
 /// Runtime configuration.
 #[derive(Debug, Clone)]
@@ -67,6 +111,12 @@ pub enum RuntimeError {
     Search(#[from] lattice_search::SearchError),
 }
 
+impl From<String> for RuntimeError {
+    fn from(e: String) -> Self {
+        RuntimeError::Backend(e)
+    }
+}
+
 /// The assembled Lattice runtime.
 pub struct LatticeRuntime {
     pub config: RuntimeConfig,
@@ -79,6 +129,9 @@ pub struct LatticeRuntime {
     pub vector_store: lattice_vector::SemanticStore,
     /// Fuzzy full-text index.
     pub search_index: lattice_search::DocumentIndex,
+    /// Collection projection store (Mastra canonical persistence surface),
+    /// guarded by a single lock for serialized single-writer semantics.
+    pub collections: tokio::sync::Mutex<CollectionStore>,
     /// Internal async executor owned by the runtime. Async work runs on this
     /// runtime from a dedicated thread so callers never see a runtime conflict.
     rt: tokio::runtime::Runtime,
@@ -138,6 +191,7 @@ impl LatticeRuntime {
             instance_id,
             vector_store,
             search_index,
+            collections: tokio::sync::Mutex::new(CollectionStore::new()),
             rt,
         })
     }
@@ -180,9 +234,15 @@ impl LatticeRuntime {
         })
     }
 
-    /// The minimum NAF/1 capabilities the runtime advertises.
+    /// The NAF/1 capabilities this runtime actually serves via `dispatch_async`.
+    /// This is TRUTHFUL capability advertisement (§19): a capability is only
+    /// listed here once a `dispatch_async` arm implements it. The protocol's
+    /// `MINIMUM_CAPABILITIES` is a spec floor, NOT a claim of implementation —
+    /// advertising a method we do not serve would let Mastra/other clients
+    /// negotiate a phantom surface. Keep these two lists in lockstep with the
+    /// `match` in `dispatch_async`.
     pub fn capabilities(&self) -> Vec<&'static str> {
-        lattice_protocol::MINIMUM_CAPABILITIES.to_vec()
+        RUNTIME_SERVED_CAPABILITIES.to_vec()
     }
 
     /// Flush any pending group-committed (batched) ledger frames to the
@@ -247,6 +307,10 @@ impl LatticeRuntime {
             // lacked it — this closes that gap (AAF: the read delta that was
             // already declared). `event.scan` is an alias for a full-list scan.
             "event.read_range" | "event.range" => self.on_event_range(&args).await,
+            // `event.append_batch` — deterministic per-item appends under the
+            // same capability. Each item may carry its own idempotency key so
+            // replay never duplicates an individual event (NAF-009).
+            "event.append_batch" => self.on_event_append_batch(&args, producer, idempotency_key).await,
             "artifact.put" => self.on_artifact_put(&args).await,
             "artifact.open" => self.on_artifact_open(&args).await,
             "artifact.verify" => self.on_artifact_verify(&args).await,
@@ -255,6 +319,25 @@ impl LatticeRuntime {
             "semantic.index" => Self::on_semantic_index(&self.vector_store, &self.search_index, &args),
             "query.search" => Self::on_query_search(&self.search_index, &args),
             "query.federated" => Self::on_query_federated(&self.search_index, &self.vector_store, &args),
+            // Collection projection surface (`collection.v1`), powering Mastra
+            // canonical persistence. These are transactional + single-writer.
+            "collection.schema.ensure" => self.on_collection_schema_ensure(&args).await,
+            "collection.find_one" => self.on_collection_find_one(&args).await,
+            "collection.find_many" => self.on_collection_find_many(&args).await,
+            "collection.count" => self.on_collection_count(&args).await,
+            "collection.insert" => self.on_collection_upsert(&args, false).await,
+            "collection.upsert" => self.on_collection_upsert(&args, true).await,
+            "collection.update_many" => self.on_collection_update_many(&args).await,
+            "collection.delete_many" => self.on_collection_delete_many(&args).await,
+            "collection.update_atomic" => self.on_collection_update_atomic(&args).await,
+            // Transaction sessions (`transaction.v1`).
+            "transaction.begin" => Ok(serde_json::to_vec(&self.on_tx_begin().await).unwrap()),
+            "transaction.rollback" => self.on_tx_rollback(&args).await,
+            "transaction.commit" => self.on_tx_commit(&args).await,
+            // Workflow run ownership / fencing (`lease.v1`).
+            "lease.claim" => self.on_lease_claim(&args).await,
+            "lease.renew" => self.on_lease_renew(&args).await,
+            "lease.release" => self.on_lease_release(&args).await,
             other => Err(RuntimeError::MethodNotFound(other.to_string())),
         }
     }
@@ -406,6 +489,368 @@ impl LatticeRuntime {
             "duplicated": false
         }))
         .unwrap())
+    }
+
+    /// `event.append_batch { events: [...] }` — append several canonical events
+    /// in one call. Each item mirrors `event.append` args and MAY carry its own
+    /// `idempotency_key` (note: the single key here applies to the whole batch
+    /// envelope; per-item keys are preferred for exact dedup). Commits happen
+    /// per-item through the same `ledger.append` path, so ordering is the order
+    /// of the array and each append gets a deterministic runtime_sequence.
+    async fn on_event_append_batch(
+        &self,
+        args: &serde_json::Value,
+        producer: &str,
+        _batch_idem: Option<&str>,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        let events = args.get("events").and_then(|e| e.as_array()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "event.append_batch".into(), detail: "missing events array".into() }
+        })?;
+        let mut ids = Vec::with_capacity(events.len());
+        for item in events.iter() {
+            // Envelope default durability mirrors `event.append` (ProjectionOnly unless
+            // the caller opts into Durable / Batched).
+            let durability = match item.get("durability").and_then(|d| d.as_str()) {
+                Some("durable") => Durability::Durable,
+                Some("batched") => Durability::BatchedDurable,
+                _ => Durability::ProjectionOnly,
+            };
+            let ev = build_event_from_json(item, producer)?;
+            let idem = item.get("idempotency_key").and_then(|k| k.as_str());
+            if let Some(key) = idem {
+                let ik = HotKey(format!("idempotency/{producer}/{key}").into_bytes());
+                if self.hot.exists(&ik)? {
+                    let prior = self
+                        .hot
+                        .get(&ik)?
+                        .map(|v| String::from_utf8_lossy(&v.0).to_string());
+                    ids.push(serde_json::json!({
+                        "event_id": prior.unwrap_or_default(),
+                        "duplicated": true,
+                        "order": ids.len(),
+                    }));
+                    continue;
+                }
+            }
+            let event_id = self.ledger.append(ev, durability).await?;
+            if let Some(key) = idem {
+                self.hot.put(
+                    &HotKey(format!("idempotency/{producer}/{key}").into_bytes()),
+                    &HotValue(event_id.to_string().into_bytes()),
+                )?;
+            }
+            ids.push(serde_json::json!({
+                "event_id": event_id.to_string(),
+                "duplicated": false,
+                "order": ids.len(),
+            }));
+        }
+        Ok(serde_json::to_vec(&serde_json::json!({ "appended": ids })).unwrap())
+    }
+
+    /// Append a durable canonical mutation delta to the ledger and, only on the
+    /// durable ACK, apply it to the collection projection. Returns the event id.
+    /// This is THE commit point: the ledger append is durable (fsync) and the
+    /// projection is only applied afterwards, so a crash never leaves a half-applied
+    /// mutation and the ledger is the authoritative source of truth.
+    async fn commit_mutation(
+        &self,
+        collection: &str,
+        delta: &serde_json::Value,
+        producer: &str,
+        idempotency_key: Option<&str>,
+    ) -> Result<serde_json::Value, RuntimeError> {
+        let mut ev = build_event_from_json(
+            &serde_json::json!({
+                "namespace": format!("nai.mastra.collection.{collection}"),
+                "event_type": "schema.mutation",
+                "entity_id": format!("nai.mastra.collection.{collection}"),
+                "payload": delta,
+            }),
+            producer,
+        )?;
+        // Force Durable regardless of the event default: collection mutations that
+        // back Mastra state must be fsynced before we acknowledge them.
+        let event_id = self.ledger.append(ev, Durability::Durable).await?;
+        ev.event_id = event_id;
+        // Apply to the projection now that the durable ACK is in.
+        {
+            let mut store = self.collections.lock().await;
+            store.apply_delta(collection, delta)?;
+        }
+        Ok(serde_json::json!({
+            "event_id": event_id.to_string(),
+            "collection": collection,
+            "acknowledged": true,
+        }))
+    }
+
+    /// `collection.schema.ensure { schema: {...} }` — register/additively evolve
+    /// a Mastra collection schema.
+    async fn on_collection_schema_ensure(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let schema = args
+            .get("schema")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if schema.is_null() {
+            // Allow passing the schema fields at the top level (`{name, columns,...}`).
+            let mut store = self.collections.lock().await;
+            let out = store.ensure_schema(args)?;
+            return Ok(serde_json::to_vec(&out).unwrap());
+        }
+        let mut store = self.collections.lock().await;
+        let out = store.ensure_schema(&schema)?;
+        Ok(serde_json::to_vec(&out).unwrap())
+    }
+
+    /// `collection.schema.ensure` with the top-level shape also matches arity.
+    async fn on_collection_find_one(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.find_one".into(), detail: "missing collection".into() }
+        })?;
+        let where_json = args.get("where").cloned().unwrap_or(serde_json::json!({}));
+        let store = self.collections.lock().await;
+        let row = store.find_one(collection, &where_json)?;
+        Ok(serde_json::to_vec(&serde_json::json!({ "row": row })).unwrap())
+    }
+
+    /// `collection.find_many { collection, where?, order_by?, limit? }`.
+    async fn on_collection_find_many(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.find_many".into(), detail: "missing collection".into() }
+        })?;
+        let where_json = args.get("where").cloned().unwrap_or(serde_json::json!({}));
+        let order_by = args.get("order_by").cloned().unwrap_or(serde_json::json!([]));
+        let limit = args.get("limit").and_then(|l| l.as_u64()).map(|l| l as usize);
+        let store = self.collections.lock().await;
+        let rows = store.find_many(collection, &where_json, &order_by, limit)?;
+        Ok(serde_json::to_vec(&serde_json::json!({ "rows": rows })).unwrap())
+    }
+
+    /// `collection.count { collection, where? }`.
+    async fn on_collection_count(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.count".into(), detail: "missing collection".into() }
+        })?;
+        let where_json = args.get("where").cloned().unwrap_or(serde_json::json!({}));
+        let store = self.collections.lock().await;
+        let count = store.count(collection, &where_json)?;
+        Ok(serde_json::to_vec(&serde_json::json!({ "count": count })).unwrap())
+    }
+
+    /// `collection.insert` / `collection.upsert { collection, row, conflict_keys? }`.
+    async fn on_collection_upsert(&self, args: &serde_json::Value, is_upsert: bool) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.upsert".into(), detail: "missing collection".into() }
+        })?;
+        let row = args.get("row").cloned().filter(|v| !v.is_null()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.upsert".into(), detail: "missing row".into() }
+        })?;
+        let conflict: Vec<String> = args
+            .get("conflict_keys")
+            .and_then(|c| c.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let tx_id = args.get("tx_id").and_then(|t| t.as_str()).map(str::to_string);
+        let mut store = self.collections.lock().await;
+        let delta = store.plan_upsert(collection, &row, &conflict)?;
+        if let Some(tx) = tx_id {
+            store.stage(&tx, collection, delta)?;
+            return Ok(serde_json::to_vec(&serde_json::json!({ "staged": true, "tx_id": tx })).unwrap());
+        }
+        let _ = is_upsert;
+        drop(store);
+        let out = self
+            .commit_mutation(collection, &delta, "nai.npilot.mastra", None)
+            .await?;
+        Ok(serde_json::to_vec(&out).unwrap())
+    }
+
+    /// `collection.update_many { collection, where?, set }`.
+    async fn on_collection_update_many(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.update_many".into(), detail: "missing collection".into() }
+        })?;
+        let where_json = args.get("where").cloned().unwrap_or(serde_json::json!({}));
+        let set = args.get("set").cloned();
+        let tx_id = args.get("tx_id").and_then(|t| t.as_str()).map(str::to_string);
+        let mut store = self.collections.lock().await;
+        let delta = store.plan_update_many(collection, &where_json, set.as_ref())?;
+        if let Some(tx) = tx_id {
+            store.stage(&tx, collection, delta)?;
+            return Ok(serde_json::to_vec(&serde_json::json!({ "staged": true, "tx_id": tx })).unwrap());
+        }
+        drop(store);
+        let out = self
+            .commit_mutation(collection, &delta, "nai.npilot.mastra", None)
+            .await?;
+        Ok(serde_json::to_vec(&out).unwrap())
+    }
+
+    /// `collection.delete_many { collection, where? }`.
+    async fn on_collection_delete_many(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.delete_many".into(), detail: "missing collection".into() }
+        })?;
+        let where_json = args.get("where").cloned().unwrap_or(serde_json::json!({}));
+        let tx_id = args.get("tx_id").and_then(|t| t.as_str()).map(str::to_string);
+        let mut store = self.collections.lock().await;
+        let delta = store.plan_update_many(collection, &where_json, None)?;
+        if let Some(tx) = tx_id {
+            store.stage(&tx, collection, delta)?;
+            return Ok(serde_json::to_vec(&serde_json::json!({ "staged": true, "tx_id": tx })).unwrap());
+        }
+        drop(store);
+        let out = self
+            .commit_mutation(collection, &delta, "nai.npilot.mastra", None)
+            .await?;
+        Ok(serde_json::to_vec(&out).unwrap())
+    }
+
+    /// `collection.update_atomic { collection, where?, set }`.
+    /// True read-modify-write: the collection lock is held across plan + durable
+    /// commit + projection apply, so a concurrent `update_atomic` (or any other
+    /// collection writer) on the same row can never interleave and lose an update.
+    /// This is the same single-writer isolation Mastra's LibSQL backend documents.
+    async fn on_collection_update_atomic(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let collection = args.get("collection").and_then(|c| c.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "collection.update_atomic".into(), detail: "missing collection".into() }
+        })?;
+        let where_json = args.get("where").cloned().unwrap_or(serde_json::json!({}));
+        // The reducer is expressed declaratively: `set` columns (the caller computed
+        // the delta from a `findOne` under an estimate; the host re-reads under the
+        // lock and applies exactly the supplied columns).
+        let set = args.get("set").cloned().unwrap_or(serde_json::json!({}));
+        // Hold the single collection lock across the whole RMW: plan, durable
+        // ledger append, and projection apply. No other collection writer can
+        // interleave on the same row, so no update is ever lost.
+        let mut store = self.collections.lock().await;
+        let delta = store.plan_update_many(collection, &where_json, Some(&set))?;
+        let mut ev = build_event_from_json(
+            &serde_json::json!({
+                "namespace": format!("nai.mastra.collection.{collection}"),
+                "event_type": "schema.mutation",
+                "entity_id": format!("nai.mastra.collection.{collection}"),
+                "payload": delta,
+            }),
+            "nai.npilot.mastra",
+        )?;
+        let event_id = self.ledger.append(ev, Durability::Durable).await?;
+        ev.event_id = event_id;
+        store.apply_delta(collection, &delta)?;
+        drop(store);
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "event_id": event_id.to_string(),
+            "collection": collection,
+            "acknowledged": true,
+        }))
+        .unwrap())
+    }
+
+    /// `transaction.begin {}` → `{ tx_id }`.
+    async fn on_tx_begin(&self) -> serde_json::Value {
+        let mut store = self.collections.lock().await;
+        let tx_id = store.begin();
+        serde_json::json!({ "tx_id": tx_id })
+    }
+
+    /// `transaction.rollback { tx_id }`.
+    async fn on_tx_rollback(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let tx_id = args.get("tx_id").and_then(|t| t.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "transaction.rollback".into(), detail: "missing tx_id".into() }
+        })?;
+        let mut store = self.collections.lock().await;
+        store.rollback(tx_id)?;
+        Ok(serde_json::to_vec(&serde_json::json!({ "rolled_back": true })).unwrap())
+    }
+
+    /// `transaction.commit { tx_id }` — atomically apply all staged deltas as one
+    /// durable ledger event, then apply to the projections.
+    async fn on_tx_commit(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let tx_id = args.get("tx_id").and_then(|t| t.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "transaction.commit".into(), detail: "missing tx_id".into() }
+        })?;
+        let mut store = self.collections.lock().await;
+        let deltas = store.commit_plan(tx_id)?;
+        if deltas.is_empty() {
+            return Ok(serde_json::to_vec(&serde_json::json!({ "committed": true, "events": [] })).unwrap());
+        }
+        // Group all deltas into one canonical "tx.commit" ledger event.
+        let groups: std::collections::BTreeMap<String, Vec<&serde_json::Value>> = {
+            let mut m: std::collections::BTreeMap<String, Vec<&serde_json::Value>> = std::collections::BTreeMap::new();
+            for (c, d) in &deltas {
+                m.entry(c.clone()).or_default().push(d);
+            }
+            m
+        };
+        let payload = serde_json::json!({ "collections": groups.iter().map(|(c, ds)| {
+            serde_json::json!({ "collection": c, "deltas": ds })
+        }).collect::<Vec<_>>() });
+        // Build + append one durable event carrying the whole transaction.
+        let mut ev = build_event_from_json(
+            &serde_json::json!({
+                "namespace": "nai.mastra.tx",
+                "event_type": "tx.commit",
+                "entity_id": format!("nai.mastra.tx.{tx_id}"),
+                "payload": payload,
+            }),
+            "nai.npilot.mastra",
+        )?;
+        let event_id = self.ledger.append(ev, Durability::Durable).await?;
+        ev.event_id = event_id;
+        // Apply each delta to the projection after the durable ACK.
+        for (c, d) in &deltas {
+            store.apply_delta(c, d)?;
+        }
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "committed": true,
+            "event_id": event_id.to_string(),
+            "tx_id": tx_id,
+        }))
+        .unwrap())
+    }
+
+    /// `lease.claim { lease_id, owner_id, ttl_ms, now_ms? }`.
+    async fn on_lease_claim(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let lease_id = args.get("lease_id").and_then(|x| x.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "lease.claim".into(), detail: "missing lease_id".into() }
+        })?;
+        let owner_id = args.get("owner_id").and_then(|x| x.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "lease.claim".into(), detail: "missing owner_id".into() }
+        })?;
+        let ttl_ms = args.get("ttl_ms").and_then(|x| x.as_i64()).unwrap_or(30_000);
+        let now_ms = args.get("now_ms").and_then(|x| x.as_i64()).unwrap_or_else(now_ms);
+        let mut store = self.collections.lock().await;
+        let out = store.lease_claim(lease_id, owner_id, ttl_ms, now_ms)?;
+        Ok(serde_json::to_vec(&out).unwrap())
+    }
+
+    /// `lease.renew { lease_id, owner_id, ttl_ms, now_ms? }`.
+    async fn on_lease_renew(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let lease_id = args.get("lease_id").and_then(|x| x.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "lease.renew".into(), detail: "missing lease_id".into() }
+        })?;
+        let owner_id = args.get("owner_id").and_then(|x| x.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "lease.renew".into(), detail: "missing owner_id".into() }
+        })?;
+        let ttl_ms = args.get("ttl_ms").and_then(|x| x.as_i64()).unwrap_or(30_000);
+        let now_ms = args.get("now_ms").and_then(|x| x.as_i64()).unwrap_or_else(now_ms);
+        let mut store = self.collections.lock().await;
+        let out = store.lease_renew(lease_id, owner_id, ttl_ms, now_ms)?;
+        Ok(serde_json::to_vec(&out).unwrap())
+    }
+
+    /// `lease.release { lease_id, owner_id }`.
+    async fn on_lease_release(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        let lease_id = args.get("lease_id").and_then(|x| x.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "lease.release".into(), detail: "missing lease_id".into() }
+        })?;
+        let owner_id = args.get("owner_id").and_then(|x| x.as_str()).ok_or_else(|| {
+            RuntimeError::BadArgs { method: "lease.release".into(), detail: "missing owner_id".into() }
+        })?;
+        let mut store = self.collections.lock().await;
+        let out = store.lease_release(lease_id, owner_id)?;
+        Ok(serde_json::to_vec(&out).unwrap())
     }
 
     /// `event.range { after?, limit?, namespace?, event_type?, entity_id?,
