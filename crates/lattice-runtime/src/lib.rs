@@ -5,9 +5,8 @@
 //! the NAF/1 minimum-capability dispatch used by both the named-pipe host and
 //! the in-process/test path.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use lattice_aaf::AafResolver;
 use lattice_cas::object::ObjectStore;
@@ -560,7 +559,7 @@ impl LatticeRuntime {
         producer: &str,
         _idempotency_key: Option<&str>,
     ) -> Result<serde_json::Value, RuntimeError> {
-        let mut ev = build_event_from_json(
+        let ev = build_event_from_json(
             &serde_json::json!({
                 "namespace": format!("nai.mastra.collection.{collection}"),
                 "event_type": "schema.mutation",
@@ -570,9 +569,10 @@ impl LatticeRuntime {
             producer,
         )?;
         // Force Durable regardless of the event default: collection mutations that
-        // back Mastra state must be fsynced before we acknowledge them.
+        // back Mastra state must be fsynced before we acknowledge them. `append`
+        // consumes the event to build/append the frame; we only need the returned
+        // event id for the ACK.
         let event_id = self.ledger.append(ev, Durability::Durable).await?;
-        ev.event_id = event_id;
         // Apply to the projection now that the durable ACK is in.
         {
             let mut store = self.collections.lock().await;
@@ -726,7 +726,7 @@ impl LatticeRuntime {
         // interleave on the same row, so no update is ever lost.
         let mut store = self.collections.lock().await;
         let delta = store.plan_update_many(collection, &where_json, Some(&set))?;
-        let mut ev = build_event_from_json(
+        let ev = build_event_from_json(
             &serde_json::json!({
                 "namespace": format!("nai.mastra.collection.{collection}"),
                 "event_type": "schema.mutation",
@@ -736,7 +736,6 @@ impl LatticeRuntime {
             "nai.npilot.mastra",
         )?;
         let event_id = self.ledger.append(ev, Durability::Durable).await?;
-        ev.event_id = event_id;
         store.apply_delta(collection, &delta)?;
         drop(store);
         Ok(serde_json::to_vec(&serde_json::json!({
@@ -787,7 +786,7 @@ impl LatticeRuntime {
             serde_json::json!({ "collection": c, "deltas": ds })
         }).collect::<Vec<_>>() });
         // Build + append one durable event carrying the whole transaction.
-        let mut ev = build_event_from_json(
+        let ev = build_event_from_json(
             &serde_json::json!({
                 "namespace": "nai.mastra.tx",
                 "event_type": "tx.commit",
@@ -797,7 +796,6 @@ impl LatticeRuntime {
             "nai.npilot.mastra",
         )?;
         let event_id = self.ledger.append(ev, Durability::Durable).await?;
-        ev.event_id = event_id;
         // Apply each delta to the projection after the durable ACK.
         for (c, d) in &deltas {
             store.apply_delta(c, d)?;
@@ -876,7 +874,7 @@ impl LatticeRuntime {
                     "event_id": ev.event_id.to_string(),
                     "timestamp_utc_ms": ev.timestamp_utc_ms,
                     "namespace": ev.namespace,
-                    "entity_id": ev.entity_id.as_ref().map(|g| g.uri),
+                    "entity_id": ev.entity_id.as_ref().map(|g| g.uri.clone()),
                     "event_type": ev.event_type,
                     "correlation_id": ev.correlation_id,
                     "causation_id": ev.causation_id,
