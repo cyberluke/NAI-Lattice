@@ -816,8 +816,10 @@ pub(crate) fn dispatch_orto(
                 Some("in_review") => BeadStatus::InReview,
                 _ => BeadStatus::Open,
             };
-            ctrl.set_bead_status(bead_id, status);
-            serde_json::json!({"bead_id": bead_id, "ok": true})
+            match ctrl.set_bead_status(bead_id, status) {
+                Ok(_) => serde_json::json!({"bead_id": bead_id, "ok": true}),
+                Err(e) => serde_json::json!({"bead_id": bead_id, "ok": false, "error": format!("{e:?}")}),
+            }
         }
         "gastown.orto.mayor_request" => {
             // Run the real Mayor to decompose a user request into a convoy/beads.
@@ -1723,6 +1725,7 @@ impl AgentRunner for HostAgentRunner {
             cwd: Some(truth_root.clone()),
             env: std::collections::BTreeMap::new(),
             no_console: true,
+            no_capture: false, // structured decision is read from stdout
         };
         let outcome = lattice_supervisor::child::run(&spec, &limits).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);

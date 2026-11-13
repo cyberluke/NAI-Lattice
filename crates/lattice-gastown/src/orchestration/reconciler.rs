@@ -999,6 +999,55 @@ pub fn reconcile_gc(_ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Acti
     actions
 }
 
+/// Rule 9: detect beads that are `Closed` WITHOUT a durable `gastown_verified`
+/// stamp AND WITHOUT an audited `admin_decision` marker — i.e. records that
+/// reached a terminal state through a path that bypassed (or failed) the
+/// canonical transition boundary. Such a close must NOT silently escape the
+/// scheduler reconciliation. Emits a `SUSPECT_FALSE_CLOSE` event and returns a
+/// `TransitionBead → Open` action so the orchestrator re-examines it.
+///
+/// Deliberate administrative closes (those carrying `admin_decision`) are NEVER
+/// reopened: they are the legal cancellation/skip/override path (rule 6).
+pub fn audit_orphan_false_close(
+    _ctx: &ReconcileCtx,
+    store: &OrchestrationStore,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    for b in store.list_beads() {
+        if b.status != BeadStatus::Closed {
+            continue;
+        }
+        let has_verified = b
+            .metadata
+            .get("gastown_verified")
+            .map(|v| v.is_object())
+            .unwrap_or(false);
+        let has_admin = b
+            .metadata
+            .get("admin_decision")
+            .map(|v| v.is_object())
+            .unwrap_or(false);
+        if has_verified || has_admin {
+            continue; // legitimate completion (review/landing) or audited admin.
+        }
+        actions.push(Action::EmitEvent {
+            event_name: "SUSPECT_FALSE_CLOSE".into(),
+            data: serde_json::json!({ "bead_id": b.bead_id, "title": b.title }),
+        });
+        // Reopen via the canonical boundary so the scheduler re-reconciles it.
+        // A Recovery-origin transition may reopen (audited, bounded); the
+        // base `TransitionBead` action is restricted to non-terminal targets.
+        actions.push(Action::TransitionBead {
+            bead_id: b.bead_id.clone(),
+            from: Some(BeadStatus::Closed),
+            to: BeadStatus::Open,
+            reason: "SUSPECT_FALSE_CLOSE".into(),
+            actor: "audit".into(),
+        });
+    }
+    actions
+}
+
 /// Read a convoy view from a convoy bead + its metadata.
 pub fn to_convoy(bead: &Bead, cm: &state::ConvoyMetadata) -> state::Convoy {
     state::Convoy {

@@ -60,6 +60,38 @@ pub trait HotStore: Send + Sync + Debug {
     /// Delete a key, returning whether it existed.
     fn delete(&self, key: &HotKey) -> Result<bool, HotStoreError>;
 
+    /// Atomic compare-and-swap at the physical HotStore boundary (rule: enforce
+    /// expected-version CAS where the data is actually persisted).
+    ///
+    /// - `Ok(true)`  → `new` was applied because the current value matched `expected`.
+    /// - `Ok(false)` → current value did NOT match `expected`; nothing was written.
+    /// - `Err(..)`   → a backend write conflict or store error occurred; caller may
+    ///   bounded-retry from a fresh read.
+    ///
+    /// Backends that support optimistic concurrency (SurrealKV OCC via
+    /// `get_for_update` + commit conflict detection) override this with an atomic
+    /// implementation. The default here is a non-atomic read-check-write fallback:
+    /// correct for `expected` equality, but not safe against a concurrent writer —
+    /// callers that require atomicity MUST be served by a backend override.
+    fn compare_and_swap(
+        &self,
+        key: &HotKey,
+        expected: Option<&HotValue>,
+        new: &HotValue,
+    ) -> Result<bool, HotStoreError> {
+        let cur = self.get(key)?;
+        let matches = match (&cur, expected) {
+            (None, None) => true,
+            (Some(c), Some(e)) => c.0 == e.0,
+            _ => false,
+        };
+        if !matches {
+            return Ok(false);
+        }
+        self.put(key, new)?;
+        Ok(true)
+    }
+
     /// Whether the key exists.
     fn exists(&self, key: &HotKey) -> Result<bool, HotStoreError>;
 

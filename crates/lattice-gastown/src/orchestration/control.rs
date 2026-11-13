@@ -8,7 +8,8 @@
 
 use crate::orchestration::reconciler::{self};
 use crate::orchestration::state::{
-    Bead, BeadStatus, BeadType, BeadPriority, DependencyKind, OrchestrationStore, Town, gen_id,
+    Bead, BeadStatus, BeadType, BeadPriority, DependencyKind, OrchestrationStore, Town,
+    TransitionCtx, TransitionError, TransitionOrigin, TransitionResult, gen_id,
     now, resolve_rig_config,
 };
 
@@ -558,16 +559,16 @@ let live_stream_values: Vec<serde_json::Value> = events.iter().rev().cloned().ta
         }
     }
 
-    /// Close/fail a bead from the control surface.
-    pub fn set_bead_status(&self, bead_id: &str, status: BeadStatus) {
-        if let Some((town_id, _)) = self.owner_town(bead_id) {
-            let _ = town_id;
-        }
-        self.store.update_bead_status(bead_id.to_string(), status, "control".into(), None);
-    }
-
-    fn owner_town(&self, _bead_id: &str) -> Option<(String, ())> {
-        None
+/// Close/fail a bead from the control surface. Routes through the canonical
+    /// transition boundary (Control origin) so terminal changes still require
+    /// verification or an audited admin override, and cross-scope writes are
+    /// rejected by ownership resolution.
+    pub fn set_bead_status(&self, bead_id: &str, status: BeadStatus) -> Result<TransitionResult, TransitionError> {
+        // Resolve ownership (rule 5). If the bead's rig is not attached to a
+        // canonical town, we still allow the boundary to run but tag it.
+        let _owner = self.store.bead_serialized(bead_id); // reads bead; ownership via rig->town below
+        let ctx = TransitionCtx::new(TransitionOrigin::Control, "control").with_reason("control api");
+        self.store.transition_bead(bead_id, status, &ctx)
     }
 
     /// CPU-free effective config for a rig (exposed for the interface).

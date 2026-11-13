@@ -287,6 +287,31 @@ fn cmd_status() -> ! {
     std::process::exit(0);
 }
 
+/// Resolve the currently-active release's `nai-fabric-host.exe` absolute path.
+///
+/// Single source of truth for "which worker binary should run right now": it
+/// reads `current.json` (atomically flipped by `install`) and returns the
+/// versioned artifact, only if it actually exists. Used by `launch`-style
+/// resolvers and by the monitor's live self-update so the running host always
+/// follows the newest activated release without a reboot.
+pub fn current_artifact_exe() -> Option<PathBuf> {
+    let root = releases_root();
+    let activation = read_json::<Activation>(&root, CURRENT)?;
+    let exe = root
+        .join(&activation.version)
+        .join("nai-fabric-host.exe");
+    if exe.is_file() {
+        Some(exe)
+    } else {
+        None
+    }
+}
+
+/// The currently-active release version label (for logging / change detection).
+pub fn current_version() -> Option<String> {
+    read_json::<Activation>(&releases_root(), CURRENT).map(|a| a.version)
+}
+
 pub fn release_main(args: Vec<String>) {
     // The host binary passes the full argv (starting with "gastown-release");
     // the console `gastown-release` bin passes argv[0] already = the subcommand.

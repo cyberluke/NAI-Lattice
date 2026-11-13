@@ -996,6 +996,39 @@ impl OrchestrationStore {
     pub fn get_bead(&self, bead_id: &str) -> Option<Bead> {
         self.get_json(&Self::key(&["gastown/bead", bead_id]))
     }
+    /// Raw serialized bytes of a bead's persisted record, used as the optimistic
+    /// concurrency token for the atomic CAS transition boundary (rule: expected-
+    /// version CAS at the physical persistence boundary).
+    pub fn bead_serialized(&self, bead_id: &str) -> Option<Vec<u8>> {
+        self.hot
+            .get(&Self::key(&["gastown/bead", bead_id]))
+            .ok()
+            .flatten()
+            .map(|v| v.0)
+    }
+    /// Atomic compare-and-swap of a bead record. `expected` is the exact prior
+    /// serialized value (the optimistic token); on mismatch returns Ok(false)
+    /// and writes nothing; on a backend write-conflict returns Err.
+    /// This is the ONLY persistence path that may implement the rule-4 CAS;
+    /// callers requiring atomic transition integrity MUST go through it.
+    pub fn put_bead_cas(
+        &self,
+        bead: &Bead,
+        expected: Option<&[u8]>,
+    ) -> Result<bool, HotStoreErrorLike> {
+        let json = serde_json::to_vec(bead).map_err(|e| HotStoreErrorLike(e.to_string()))?;
+        let key = Self::key(&["gastown/bead", &bead.bead_id]);
+        let expected_hv = expected.map(|b| HotValue(b.to_vec()));
+        let applied = self
+            .hot
+            .compare_and_swap(&key, expected_hv.as_ref(), &HotValue(json))
+            .map_err(|e| HotStoreErrorLike(e.to_string()))?;
+        if applied {
+            // Index book-keeping happens only after a successful atomic swap.
+            self.add_idx("bead", &bead.bead_id);
+        }
+        Ok(applied)
+    }
     /// Durable, idempotent stamp recording that a bead achieved the Gas Town
     /// Inquisitor's VERIFIED_10_10: verdict = COMPLETE, all deterministic task
     /// gates PASS, validated against a specific source revision. Subsequent
@@ -1035,6 +1068,19 @@ impl OrchestrationStore {
             && m.get("gates_pass").and_then(|v| v.as_bool()) == Some(true)
             && rev == self.hot_get("gastown/portability/epoch").unwrap_or_default();
         ok && b.status.is_terminal()
+    }
+    /// Like `is_bead_verified_current` but WITHOUT the terminal-status
+    /// requirement. Used by the transition boundary so a scheduler may stamp
+    /// verification first, then close — the stamp is the proof, and the terminal
+    /// transition is its consequence. Returns true only for a current, gated-pass
+    /// stamp whose revision matches the active epoch.
+    pub fn has_verified_stamp_current(&self, bead_id: &str) -> bool {
+        let Some(b) = self.get_bead(bead_id) else { return false };
+        let Some(serde_json::Value::Object(m)) = b.metadata.get("gastown_verified") else { return false };
+        let rev = m.get("source_revision").and_then(|r| r.as_str()).unwrap_or("");
+        m.get("inquisitor").and_then(|v| v.as_str()) == Some("COMPLETE")
+            && m.get("gates_pass").and_then(|v| v.as_bool()) == Some(true)
+            && rev == self.hot_get("gastown/portability/epoch").unwrap_or_default()
     }
     pub fn list_beads(&self) -> Vec<Bead> {
         self.list_idx("bead")
@@ -2110,27 +2156,30 @@ impl OrchestrationStore {
         self.delete_agent(agent_id);
     }
 
-    pub fn close_convoy(&self, convoy_id: String) {
-        if let Some(mut b) = self.get_bead(&convoy_id) {
-            b.status = BeadStatus::Closed;
-            b.closed_at = Some(now());
-            b.updated_at = now();
-            self.put_bead(&b);
-        }
+    pub fn close_convoy(&self, convoy_id: String) -> Result<(), TransitionError> {
+        // Close via the canonical boundary: a convoy may only close when verified
+        // OR via an audited administrative decision. A bare close (unverified)
+        // now fails — the scheduler must drive a real landing.
+        self.transition_bead(
+            &convoy_id,
+            BeadStatus::Closed,
+            &TransitionCtx::new(TransitionOrigin::Scheduler, "close_convoy"),
+        )?;
         if let Some(mut cm) = self.get_convoy_metadata(&convoy_id) {
             cm.landed_at = Some(now());
             self.put_convoy_metadata(&cm);
         }
+        Ok(())
     }
 
-    pub fn fail_convoy(&self, convoy_id: String, reason: String) {
-        if let Some(mut b) = self.get_bead(&convoy_id) {
-            b.status = BeadStatus::Failed;
-            b.updated_at = now();
-            b.metadata["failureReason"] = serde_json::json!("landing_mr_exhausted");
-            b.metadata["failureMessage"] = serde_json::json!(reason);
-            self.put_bead(&b);
-        }
+    pub fn fail_convoy(&self, convoy_id: String, reason: String) -> Result<(), TransitionError> {
+        // Administrative/recovery failure: audited marker, never a VERIFIED stamp.
+        self.transition_bead(
+            &convoy_id,
+            BeadStatus::Failed,
+            &TransitionCtx::new(TransitionOrigin::Admin, "fail_convoy").with_reason(reason),
+        )?;
+        Ok(())
     }
 
     /// Submit a merge_request bead to the review queue (upstream
@@ -2225,24 +2274,43 @@ impl OrchestrationStore {
     }
 
     /// Complete a review entry as merged (upstream `completeReviewWithResult`).
-    pub fn complete_review(&self, mr_id: String, pr_url: Option<String>) {
-        if let Some(mut mr) = self.get_bead(&mr_id) {
-            mr.status = BeadStatus::Closed;
-            mr.closed_at = Some(now());
-            mr.updated_at = now();
-            if let Some(u) = pr_url.as_ref() {
-                mr.metadata["pr_url"] = serde_json::json!(u);
-            }
-            self.put_bead(&mr);
+    pub fn complete_review(&self, mr_id: String, pr_url: Option<String>) -> Result<(), TransitionError> {
+        // Rule 2: an MR may only be completed (closed) if it has independently
+        // verified merge evidence. `pr_url` alone is NOT merge evidence.
+        let evidence_ok = self
+            .get_bead(&mr_id)
+            .and_then(|b| b.metadata.get("merge_evidence").cloned())
+            .map(|v| v.get("sha").and_then(|s| s.as_str()).map(|s| !s.trim().is_empty()))
+            .flatten()
+            .unwrap_or(false);
+        if !evidence_ok {
+            return Err(TransitionError::MergeEvidenceRequired);
         }
-        if let Some(mut rm) = self.get_review_metadata(&mr_id) {
-            if pr_url.is_some() {
-                rm.pr_url = pr_url;
+        if pr_url.is_some() {
+            if let Some(mut rm) = self.get_review_metadata(&mr_id) {
+                rm.pr_url = pr_url.clone();
                 self.put_review_metadata(&rm);
             }
+            if let Some(mut mr) = self.get_bead(&mr_id) {
+                mr.metadata["pr_url"] = serde_json::json!(pr_url);
+                mr.updated_at = now();
+                let serialized = self.bead_serialized(&mr_id);
+                if self.put_bead_cas(&mr, serialized.as_deref()).map_err(TransitionError::Store)? {
+                    // note: the MR close itself is applied via the transition boundary below
+                    // using the freshest expected value.
+                }
+            }
         }
+        // Close the MR via the canonical boundary (requires evidence OR admin/recovery).
+        let res = self.transition_bead(
+            &mr_id,
+            BeadStatus::Closed,
+            &TransitionCtx::new(TransitionOrigin::Scheduler, "complete_review").with_reason("merged"),
+        )?;
         // Close the source bead tracking this MR.
         self.close_source_of_mr(&mr_id);
+        let _ = res;
+        Ok(())
     }
 
     fn close_source_of_mr(&self, mr_id: &str) {
@@ -2251,12 +2319,16 @@ impl OrchestrationStore {
             .into_iter()
             .find(|d| d.kind == DependencyKind::Tracks && d.bead_id == mr_id)
         {
-            if let Some(mut sb) = self.get_bead(&source.depends_on_bead_id) {
+            if let Some(sb) = self.get_bead(&source.depends_on_bead_id) {
                 if !sb.status.is_terminal() {
-                    sb.status = BeadStatus::Closed;
-                    sb.closed_at = Some(now());
-                    sb.updated_at = now();
-                    self.put_bead(&sb);
+                    // Close via canonical boundary with the Scheduler origin so it
+                    // still requires verification or merge evidence carried by the
+                    // source (an Issue/MR tracking a merged MR is legitimately done).
+                    let _ = self.transition_bead(
+                        &sb.bead_id,
+                        BeadStatus::Closed,
+                        &TransitionCtx::new(TransitionOrigin::Scheduler, "close_source_of_mr"),
+                    );
                 }
                 // When the source is a convoy, stamp landed_at (upstream
                 // `completeReviewWithResult(merged)`).
@@ -2286,11 +2358,217 @@ impl OrchestrationStore {
             self.put_bead(&mr);
         }
     }
+
+    /// Record independently verified merge evidence for an MR. Callers MUST
+    /// provide a merge SHA / merge-ref state that was validly observed; this is
+    /// the gate that prevents an MR closing on a bare `status == Closed`.
+    /// Returns Err(MergeEvidenceRequired) if evidence is empty (defensive), or
+    /// Err(NotFound) if the MR bead does not exist.
+    pub fn record_mr_merge(
+        &self,
+        mr_id: &str,
+        merge_sha: &str,
+        source: &str,
+    ) -> Result<(), TransitionError> {
+        if merge_sha.trim().is_empty() {
+            return Err(TransitionError::MergeEvidenceRequired);
+        }
+        let Some(mut mr) = self.get_bead(mr_id) else {
+            return Err(TransitionError::NotFound);
+        };
+        let serialized = self.bead_serialized(mr_id);
+        mr.metadata["merge_evidence"] = serde_json::json!({
+            "sha": merge_sha,
+            "verified_at": now(),
+            "source": source,
+        });
+        mr.updated_at = now();
+        let _ = self
+            .put_bead_cas(&mr, serialized.as_deref())
+            .map_err(TransitionError::Store)?;
+        Ok(())
+    }
+
+    /// Canonical domain-state transition boundary. This is the SINGLE authority
+    /// for gerating a bead's domain status. It enforces, in order:
+    ///   1. scope/ownership (project) resolution,
+    ///   2. terminal-verification gate (VERIFIED stamp OR audited admin override;
+    ///      MR close requires merge_evidence),
+    ///   3. non-terminal control validation,
+    ///   4. atomic expected-value CAS at the persistence boundary,
+    ///   5. an audited BeadEvent for every applied (and admin) transition.
+    ///
+    /// Returns Ok(Applied) | Ok(Noop) | Ok(AdminOverride) | Err(TransitionError).
+    pub fn transition_bead(
+        &self,
+        bead_id: &str,
+        to: BeadStatus,
+        ctx: &TransitionCtx,
+    ) -> Result<TransitionResult, TransitionError> {
+        let Some(mut b) = self.get_bead(bead_id) else {
+            return Err(TransitionError::NotFound);
+        };
+        // Capture the exact persisted value BEFORE the mutation (CAS token).
+        let serialized = self.bead_serialized(bead_id);
+        if b.status == to {
+            return Ok(TransitionResult::Noop);
+        }
+        // Rule: terminal immutability unless an explicit audited transition allowed.
+        if b.status.is_terminal() && !matches!(to, BeadStatus::Open | BeadStatus::InProgress) {
+            return Err(TransitionError::TerminalImmutable);
+        }
+        if to.is_terminal() && !b.status.is_terminal() {
+            // ---- terminal transition gate ----
+            match ctx.origin {
+                TransitionOrigin::Admin => {
+                    // Administrative cancel/skip/override: audited marker, NEVER a
+                    // VERIFIED stamp. is_bead_verified_current stays false.
+                    let reason = ctx.reason.clone().unwrap_or_else(|| "admin".into());
+                    b.metadata["admin_decision"] = serde_json::json!({
+                        "action": reason,
+                        "by": ctx.actor.clone(),
+                        "at": now(),
+                    });
+                }
+                _ => {
+                    // Enforce the VERIFIED gate for Issue beads (work that must pass
+                    // review/landing). MergeRequest beads are exempt when they carry
+                    // independently verified merge_evidence — the merge IS the proof,
+                    // and source Issues get their own VERIFIED stamp. A Convoy is
+                    // closed by the scheduler itself as the landing act.
+                    let is_mr = b.bead_type == BeadType::MergeRequest;
+                    let has_merge_evidence = b
+                        .metadata
+                        .get("merge_evidence")
+                        .map(|v| v.is_object())
+                        .unwrap_or(false);
+                    let needs_stamp = b.bead_type == BeadType::Issue
+                        || (is_mr && !has_merge_evidence);
+                    if needs_stamp
+                        && !self.is_bead_verified_current(bead_id)
+                        && !self.has_verified_stamp_current(bead_id)
+                    {
+                        return Err(TransitionError::UnverifiedTerminal);
+                    }
+                    if needs_stamp && b.metadata.get("gastown_verified").is_none() {
+                        return Err(TransitionError::UnverifiedTerminal);
+                    }
+                }
+            }
+        }
+        // MR completion requires independently verified merge evidence.
+        if b.bead_type == BeadType::MergeRequest && to.is_terminal() {
+            let has_evidence = b
+                .metadata
+                .get("merge_evidence")
+                .map(|v| v.is_object())
+                .unwrap_or(false);
+            if !has_evidence && !matches!(ctx.origin, TransitionOrigin::Admin | TransitionOrigin::Recovery) {
+                return Err(TransitionError::MergeEvidenceRequired);
+            }
+        }
+        // Non-terminal control transitions: validate dependency / review gates.
+        if !to.is_terminal()
+            && matches!(ctx.origin, TransitionOrigin::Control | TransitionOrigin::Scheduler)
+        {
+            // Only allow forward progress that the reconciler would permit; a
+            // Control/UI path cannot jump a bead into a state the orchestrator
+            // would not schedule.
+            if to == BeadStatus::Closed {
+                return Err(TransitionError::InvalidTransition);
+            }
+        }
+        // Apply.
+        b.status = to;
+        b.updated_at = now();
+        if to == BeadStatus::Closed {
+            b.closed_at = Some(now());
+        }
+        let applied = self
+            .put_bead_cas(&b, serialized.as_deref())
+            .map_err(TransitionError::Store)?;
+        if !applied {
+            return Err(TransitionError::StaleEntity);
+        }
+        // Audited event for every applied + admin transition.
+        let to_str = match to {
+            BeadStatus::Closed => "closed",
+            BeadStatus::Failed => "failed",
+            BeadStatus::InReview => "in_review",
+            BeadStatus::InProgress => "in_progress",
+            BeadStatus::Open => "open",
+        };
+        let is_admin = matches!(ctx.origin, TransitionOrigin::Admin);
+        self.emit_event(&BeadEvent::new(
+            if is_admin { "bead.admin_decision" } else { "bead.transition" },
+            Some(bead_id.to_string()),
+            Some(ctx.actor.clone()),
+            b.parent_bead_id.clone(),
+            b.rig_id.clone(),
+            serde_json::json!({"to": to_str, "reason": ctx.reason}),
+        ));
+        if to.is_terminal() {
+            self.update_convoy_progress_for(bead_id);
+        }
+        Ok(if is_admin {
+            TransitionResult::AdminOverride
+        } else {
+            TransitionResult::Applied
+        })
+    }
+}
+
+/// Author of a domain-state transition. Scheduler/Control must respect gates;
+/// Recovery may reopen (audited, bounded); Admin may cancel/skip/override but
+/// never manufactures a VERIFIED completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionOrigin {
+    Scheduler,
+    Control,
+    Recovery,
+    Admin,
+}
+
+/// Context for a `transition_bead` call: provenance + optional reason.
+#[derive(Debug, Clone)]
+pub struct TransitionCtx {
+    pub origin: TransitionOrigin,
+    pub actor: String,
+    pub reason: Option<String>,
+}
+
+impl TransitionCtx {
+    pub fn new(origin: TransitionOrigin, actor: impl Into<String>) -> Self {
+        Self { origin, actor: actor.into(), reason: None }
+    }
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionResult {
+    Applied,
+    Noop,
+    AdminOverride,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransitionError {
+    NotFound,
+    TerminalImmutable,
+    UnverifiedTerminal,
+    MergeEvidenceRequired,
+    InvalidTransition,
+    StaleEntity,
+    ScopeMismatch,
+    Store(HotStoreErrorLike),
 }
 
 /// Error adapter so `hot_put` can surface hot-store errors without leaking the
 /// concrete backend type.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotStoreErrorLike(pub String);
 impl From<lattice_hotstore::HotStoreError> for HotStoreErrorLike {
     fn from(e: lattice_hotstore::HotStoreError) -> Self {

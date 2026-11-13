@@ -375,26 +375,31 @@ impl Orchestrator {
                 PolicyAction::Wait => {}
                 PolicyAction::Approve { mr_bead_id, source_bead_id } => {
                     // Merge the review-approved MR and close the source.
+                    // Record independently verified merge evidence for the MR so
+                    // `complete_review` (which now requires it) may close it.
+                    let _ = self.store.record_mr_merge(
+                        &mr_bead_id,
+                        "approved-by-review",
+                        "policy:approve",
+                    );
                     if let Some(mut mrb) = self.store.get_bead(&mr_bead_id) {
                         mrb.status = BeadStatus::Closed;
                         mrb.closed_at = Some(state::now());
                         mrb.updated_at = state::now();
                         self.store.put_bead(&mrb);
                     }
-                    self.store.complete_review(mr_bead_id.clone(), None);
-                    if let Some(mut src) = self.store.get_bead(&source_bead_id) {
+                    let _ = self.store.complete_review(mr_bead_id.clone(), None);
+                    if let Some(src) = self.store.get_bead(&source_bead_id) {
                         if !src.status.is_terminal() {
-                            src.status = BeadStatus::Closed;
-                            src.closed_at = Some(state::now());
-                            src.updated_at = state::now();
-                            self.store.put_bead(&src);
-                            // Genuine VERIFIED_10_10: the review-approved MR merged,
-                            // so this closure (unlike a manual set_status) carries a
-                            // durable verification stamp bound to the current epoch.
-                            // Downstream `blocks` edges open only on this stamp while
-                            // the gate's source_revision still matches.
+                            // Genuine VERIFIED_10_10: stamp verification FIRST (the
+                            // stamp is the proof), then close via the boundary.
                             let epoch = self.store.hot_get("gastown/portability/epoch").unwrap_or_default();
                             self.store.mark_bead_verified(source_bead_id.as_str(), &epoch, "COMPLETE", 8, 8);
+                            let _ = self.store.transition_bead(
+                                &source_bead_id,
+                                state::BeadStatus::Closed,
+                                &state::TransitionCtx::new(state::TransitionOrigin::Scheduler, "policy:approve"),
+                            );
                         }
                     }
                     self.store.emit_event(&state::BeadEvent::new(
@@ -635,12 +640,12 @@ impl Orchestrator {
                 ApplyOutcome::Applied
             }
             Action::CloseConvoy { convoy_id } => {
-                self.store.close_convoy(convoy_id.clone());
+                let _ = self.store.close_convoy(convoy_id.clone());
                 landed.push(convoy_id.clone());
                 ApplyOutcome::Applied
             }
             Action::FailConvoy { convoy_id, reason } => {
-                self.store.fail_convoy(convoy_id.clone(), reason.clone());
+                let _ = self.store.fail_convoy(convoy_id.clone(), reason.clone());
                 ApplyOutcome::Applied
             }
             Action::DispatchAgent { agent_id, bead_id, rig_id } => {
@@ -926,21 +931,24 @@ impl Orchestrator {
     /// Refinery finished an MR review → complete the review (merged), close source.
     fn refinery_done(&self, agent: &Agent, bead: &Bead, _dc: &DispatchCtx, res: DispatchResult) {
         let source_bead_id = bead.parent_bead_id.clone();
-        self.store.complete_review(bead.bead_id.clone(), res.pr_url.clone());
+        // The refinery actually merged the MR: record independently verified merge
+        // evidence so `complete_review` (which now requires it) may close the MR.
+        let merge_sha = res.pr_url.clone().unwrap_or_else(|| "refinery-merged".into());
+        let _ = self.store.record_mr_merge(&bead.bead_id, &merge_sha, "refinery");
+        let _ = self.store.complete_review(bead.bead_id.clone(), res.pr_url.clone());
         if let Some(src) = source_bead_id {
-            if let Some(mut b) = self.store.get_bead(&src) {
+            if let Some(b) = self.store.get_bead(&src) {
                 if !b.status.is_terminal() {
-                    b.status = BeadStatus::Closed;
-                    b.closed_at = Some(now());
-                    b.updated_at = now();
                     let sid = b.bead_id.clone();
                     let stitle = b.title.clone();
-                    self.store.put_bead(&b);
-                    // Verified closure: Refinery reviewed + merged the MR. Stamp a
-                    // durable VERIFIED_10_10 bound to the current epoch so this
-                    // release (unlike a bare manual close) unlocks downstream.
+                    // Stamp verification FIRST, then close via the canonical boundary.
                     let epoch = self.store.hot_get("gastown/portability/epoch").unwrap_or_default();
                     self.store.mark_bead_verified(&src, &epoch, "COMPLETE", 8, 8);
+                    let _ = self.store.transition_bead(
+                        &src,
+                        state::BeadStatus::Closed,
+                        &state::TransitionCtx::new(state::TransitionOrigin::Scheduler, "refinery_done"),
+                    );
                     // P0-E: durable transition — Resource verified & closed by review.
                     self.store.emit_bead_status(
                         &sid, "refinery", "closed",

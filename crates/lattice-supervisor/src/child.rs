@@ -99,8 +99,17 @@ pub fn run(spec: &ProcessSpec, limits: &WorkerLimits) -> Result<WorkerOutcome, S
         cmd.current_dir(cwd);
     }
     cmd.envs(&spec.env);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    if spec.no_capture {
+        // No output is needed: redirect to the OS null sink. Reading a null
+        // handle returns EOF immediately, so the supervision loop is never
+        // blocked on a silent worker's pipe — which keeps a cooperative stop
+        // (release swap) prompt even for a perfectly quiet daemon.
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+    } else {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+    }
     #[cfg(windows)]
     if spec.no_console {
         use std::os::windows::process::CommandExt;
@@ -115,17 +124,25 @@ pub fn run(spec: &ProcessSpec, limits: &WorkerLimits) -> Result<WorkerOutcome, S
     // ENTIRE process tree is guaranteed to be reaped (bank-grade isolation). If
     // we cannot assign the job, fail the launch rather than run unsupervised.
     #[cfg(windows)]
-    let _job = {
-        let job = WindowsJobGuard::new().map_err(SupervisorError::Job)?;
-        job.assign(&child).map_err(SupervisorError::Job)?;
-        job
-    };
-    let pid = child.id();
+    let job_guard = WindowsJobGuard::new().map_err(SupervisorError::Job)?;
     #[cfg(windows)]
-    let supervise_job: Option<&WindowsJobGuard> = Some(&_job);
+    let job_guard = {
+        job_guard.assign(&child).map_err(SupervisorError::Job)?;
+        job_guard
+    };
+    // Guard must outlive `supervise`; keep it in this scope.
+    #[cfg(windows)]
+    let _supervise_job_guard = job_guard;
+    #[cfg(windows)]
+    let supervise_job: Option<&WindowsJobGuard> = Some(&_supervise_job_guard);
     #[cfg(not(windows))]
     let supervise_job: Option<&()> = None;
-    supervise(&mut child, pid, start, start_unix_ms, limits, supervise_job)
+    let pid = child.id();
+    // Cooperative-stop flag: when set, `supervise` tears the worker down early
+    // (same deterministic job-tree teardown as the timeout path) and reports
+    // `ExitStatus::Cancelled`. `None` reproduces prior behavior exactly.
+    let cancel_flag = limits.cancel_flag.as_ref().map(|f| f.as_ref());
+    supervise(&mut child, pid, start, start_unix_ms, limits, supervise_job, cancel_flag)
 }
 
 fn supervise(
@@ -135,6 +152,7 @@ fn supervise(
     start_unix_ms: i64,
     limits: &WorkerLimits,
     job: Option<&JobHandle>,
+    cancel_flag: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<WorkerOutcome, SupervisorError> {
     use std::io::Read;
 
@@ -158,6 +176,8 @@ fn supervise(
     }
 
     let deadline = start + limits.timeout;
+    // Cooperative stop requested (e.g. release swap): torn down early.
+    let mut cancelled = false;
     loop {
         drain(&mut child.stdout, &mut stdout);
         drain(&mut child.stderr, &mut stderr);
@@ -181,16 +201,23 @@ fn supervise(
                 was_timed_out: false,
             });
         }
+        if let Some(flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                cancelled = true;
+                break;
+            }
+        }
         if Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(15));
     }
-    // Timeout: deterministically kill the ENTIRE job tree (not just the direct
-    // child). TerminateJobObject tears down every process assigned to the job
-    // (authoritative on Windows). In composite/nested job scenarios (e.g. the
-    // worker was spawned from inside another job object) the OS may refuse the
-    // job kill, so we ALSO issue a native tree-kill to guarantee no orphan.
+    // Timeout or cooperative cancel: deterministically kill the ENTIRE job tree
+    // (not just the direct child). TerminateJobObject tears down every process
+    // assigned to the job (authoritative on Windows). In composite/nested job
+    // scenarios (e.g. the worker was spawned from inside another job object) the
+    // OS may refuse the job kill, so we ALSO issue a native tree-kill to
+    // guarantee no orphan.
     #[cfg(windows)]
     if let Some(g) = job {
         use windows::Win32::System::JobObjects::TerminateJobObject;
@@ -206,15 +233,20 @@ fn supervise(
         .status();
     let _ = child.wait();
     let wall_ms = start.elapsed().as_millis() as u64;
+    let (exit_status, was_timed_out) = if cancelled {
+        (ExitStatus::Cancelled, false)
+    } else {
+        (ExitStatus::TimedOut, true)
+    };
     Ok(WorkerOutcome {
         worker_id: format!("w-{pid}"),
         pid,
         start_unix_ms,
-        exit_status: ExitStatus::TimedOut,
+        exit_status,
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
         wall_ms,
-        was_timed_out: true,
+        was_timed_out,
     })
 }
 
@@ -244,6 +276,7 @@ mod tests {
             cwd: None,
             env: Default::default(),
             no_console: true,
+            no_capture: false,
         }
     }
 
@@ -268,7 +301,7 @@ mod tests {
         // timed-out worker returns a timeout account with its real pid. Kill-tree
         // cleanup is proven live for production review workers (see GATE 3).
         use crate::ProcessSpec as PS;
-        let spec = PS { program: "ping.exe".into(), args: vec!["-n".to_string(), "3".to_string(), "127.0.0.1".to_string()], cwd: None, env: Default::default(), no_console: true };
+        let spec = PS { program: "ping.exe".into(), args: vec!["-n".to_string(), "3".to_string(), "127.0.0.1".to_string()], cwd: None, env: Default::default(), no_console: true, no_capture: false };
         let lim = WorkerLimits { timeout: Duration::from_millis(300), idle_timeout: None, ..Default::default() };
         let out = run(&spec, &lim).expect("supervised run");
         assert!(out.was_timed_out, "worker must be timed out");
