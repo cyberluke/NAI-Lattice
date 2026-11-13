@@ -10,11 +10,18 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub mod child;
 
 /// Resource limits applied to a supervised worker.
+///
+/// [`WorkerLimits::cancel_flag`] is the optional cooperative-stop signal a
+/// supervisor uses to request a live worker be torn down ahead of its timeout
+/// (e.g. the monitor swapping to a newly-activated release). It is entirely
+/// optional; callers that leave it `None` are unaffected.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkerLimits {
     /// Kill the worker (and on Windows its job) after this wall-clock deadline.
@@ -23,6 +30,11 @@ pub struct WorkerLimits {
     pub max_memory_bytes: Option<u64>,
     /// Max allowed wall-clock idle with no output before kill.
     pub idle_timeout: Option<Duration>,
+    /// When set, the supervisor tears the worker down and reports
+    /// [`ExitStatus::Cancelled`]. The flag is left set; the caller re-arms it
+    /// (store a fresh `false`) before the next run.
+    #[serde(default, skip)]
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl Default for WorkerLimits {
@@ -31,6 +43,7 @@ impl Default for WorkerLimits {
             timeout: Duration::from_secs(600),
             max_memory_bytes: None,
             idle_timeout: None,
+            cancel_flag: None,
         }
     }
 }
@@ -45,6 +58,14 @@ pub struct ProcessSpec {
     pub env: BTreeMap<String, String>,
     /// Do not allocate a console window on `cfg(windows)` (CREATE_NO_WINDOW).
     pub no_console: bool,
+    /// When true, stdout/stderr are redirected to the OS null sink instead of
+    /// captured. Use for workers whose output is not needed: the supervisor's
+    /// read of a null handle returns EOF immediately, so the supervision loop
+    /// is never blocked by a silent worker's pipe — which keeps a cooperative
+    /// cancel (release swap) prompt. Default `false` (capture), preserving the
+    /// behavior of every existing caller.
+    #[serde(default)]
+    pub no_capture: bool,
 }
 
 impl ProcessSpec {
@@ -55,6 +76,7 @@ impl ProcessSpec {
             cwd: None,
             env: BTreeMap::new(),
             no_console: true,
+            no_capture: false,
         }
     }
     pub fn arg(mut self, a: impl Into<String>) -> Self {
@@ -71,6 +93,13 @@ impl ProcessSpec {
     }
     pub fn env(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.env.insert(k.into(), v.into());
+        self
+    }
+    /// Do not capture stdout/stderr (redirect to null). Use when the worker's
+    /// output is unneeded and the supervision loop must stay responsive (so a
+    /// cooperative stop is prompt).
+    pub fn no_capture(mut self) -> Self {
+        self.no_capture = true;
         self
     }
 }
@@ -95,6 +124,9 @@ pub enum ExitStatus {
     ExitCode(i32),
     Terminated,
     TimedOut,
+    /// Torn down because [`WorkerLimits::cancel_flag`] was set (cooperative
+    /// stop requested by the supervisor, e.g. a release swap).
+    Cancelled,
     SpawnFailed(String),
 }
 

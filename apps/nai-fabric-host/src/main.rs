@@ -127,27 +127,81 @@ fn main() {
 /// restart it on crash (non-zero exit) with bounded backoff. Fully independent
 /// of Kilo, VS Code, or any shell. Uses `lattice_supervisor` (CREATE_NO_WINDOW,
 /// no console flash). A CLEAN exit (code 0, e.g. `stop`) ends the monitor.
+///
+/// Live self-update: a background watcher polls `releases/current.json`. When a
+/// newer release is activated while this monitor is running, the running worker
+/// is torn down cooperatively and the monitor immediately respawns the worker
+/// from the newest artifact. No reboot and no manual relaunch required — the
+/// host continuously follows the release ladder (`current.json` is the single
+/// authority, written atomically by `gastown-release install`).
 fn run_monitor_main() {
     use lattice_supervisor::{ExitStatus, ProcessSpec, WorkerLimits};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     // tracing already initialized in main(); do NOT re-init (would panic).
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nai-fabric-host.exe"));
+    let self_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nai-fabric-host.exe"));
     let restart_log = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
         .join("NAI").join("Lattice").join("v1").join("host-restart.log");
 
-    let limits = WorkerLimits { timeout: Duration::from_secs(60 * 60 * 24 * 7), idle_timeout: None, ..Default::default() };
+    // Cooperative-stop flag shared by the watcher (writer) and the supervise
+    // loop (reader). Reset to a fresh `false` before each supervised run.
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    // The version currently running as the supervised worker. The watcher sets
+    // the cancel flag only when `current.json` differs from THIS live value, so
+    // a swap is a one-shot event (no retrigger loop) and subsequent swaps keep
+    // working as releases advance.
+    let running_version = Arc::new(std::sync::Mutex::new(
+        release::current_version().unwrap_or_else(|| "unknown".to_string()),
+    ));
+
+    // Background release watcher: when the active version differs from the one
+    // currently running, request the worker be torn down so the main loop
+    // respawns it from the newest artifact.
+    {
+        let cancel_flag = Arc::clone(&cancel_flag);
+        let running_version = Arc::clone(&running_version);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            if cancel_flag.load(Ordering::Relaxed) {
+                // Already swapping; wait for the main loop to re-arm.
+                continue;
+            }
+            let Some(current) = release::current_version() else { continue };
+            let running = running_version.lock().map(|g| g.clone()).unwrap_or_default();
+            if current != running {
+                tracing::info!(from = %running, to = %current, "release change detected; swapping worker");
+                cancel_flag.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
+    let limits_base = WorkerLimits { timeout: Duration::from_secs(60 * 60 * 24 * 7), idle_timeout: None, cancel_flag: Some(Arc::clone(&cancel_flag)), ..Default::default() };
     let mut attempt = 0u32;
     loop {
+        // Resolve the worker binary from `current.json` so every spawn follows
+        // the newest activated release; fall back to this monitor's own exe.
+        let exe = release::current_artifact_exe().unwrap_or_else(|| self_exe.clone());
+        // Publish the version this spawn uses so the watcher compares against
+        // the live worker, not a stale launch-time snapshot.
+        if let Some(ver) = release::current_version() {
+            if let Ok(mut g) = running_version.lock() {
+                *g = ver;
+            }
+        }
+        let limits = WorkerLimits { cancel_flag: Some(Arc::clone(&cancel_flag)), ..limits_base.clone() };
         let spec = ProcessSpec {
             program: exe.clone(),
             args: vec!["--child".to_string()],
             cwd: None,
             env: BTreeMap::new(), // inherit env
             no_console: true,
+            no_capture: true, // worker output is unlogged; keeps live swap prompt
         };
         let outcome = match lattice_supervisor::child::run(&spec, &limits) {
             Ok(o) => o,
@@ -167,6 +221,15 @@ fn run_monitor_main() {
                 // Clean shutdown (e.g. requested stop): end the monitor.
                 tracing::info!(pid = outcome.pid, "worker exited cleanly; monitor ending");
                 std::process::exit(0);
+            }
+            ExitStatus::Cancelled => {
+                // Cooperative stop requested by the release watcher: the worker is
+                // being swapped to a newer release. Re-arm the flag, log the swap,
+                // and immediately respawn (no crash backoff).
+                cancel_flag.store(false, Ordering::Relaxed);
+                let next = release::current_version().unwrap_or_else(|| "unknown".to_string());
+                tracing::info!(pid = outcome.pid, to = %next, "worker swapped; respawning on newest release");
+                attempt = 0;
             }
             _ => {
                 // Crash: restart with bounded backoff.
@@ -957,6 +1020,7 @@ fn run_real_review_worker(
             cwd: None,
             env: std::collections::BTreeMap::new(), // inherit parent env (provider creds stay in host env)
             no_console: true,
+            no_capture: false, // JSON result is read from stdout
         };
         let outcome = lattice_supervisor::child::run(&spec, limits).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);

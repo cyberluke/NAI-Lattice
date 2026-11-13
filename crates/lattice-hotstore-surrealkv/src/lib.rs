@@ -162,6 +162,55 @@ impl HotStore for SurrealKvHotStore {
         })
     }
 
+    /// Atomic compare-and-swap via SurrealKV's OCC conflict detection.
+    ///
+    /// SurrealKV has no `compare-and-swap` primitive, but its write transaction
+    /// supports optimistic concurrency: `get_for_update` puts the key into the
+    /// transaction's conflict oracle, and `commit()` returns
+    /// `Error::TransactionWriteConflict` if an unseen concurrent writer modified
+    /// that key within the conflict window. We implement:
+    ///   begin → tx.get_for_update(key)
+    ///   if current bytes != expected bytes → commit (no write) → Ok(false)
+    ///   else tx.set(new), commit → Ok(true); on write-conflict → Err.
+    fn compare_and_swap(
+        &self,
+        key: &HotKey,
+        expected: Option<&HotValue>,
+        new: &HotValue,
+    ) -> Result<bool, HotStoreError> {
+        let k = key.0.clone();
+        let exp = expected.map(|v| v.0.clone());
+        let nv = new.0.clone();
+        let durable = self.durable;
+        // `on_worker` requires the async block to resolve to Result<_, surrealkv::Error>;
+        // a back-end write conflict is surfaced as surrealkv::Error::TransactionWriteConflict
+        // and then converted to HotStoreError::Backend by on_worker.
+        self.on_worker(move |tree| async move {
+            let mut tx = tree.begin()?;
+            // get_for_update joins the key to the commit-time conflict oracle.
+            let cur: Option<Vec<u8>> = tx.get_for_update(k.clone())?.map(|v| v.to_vec());
+            let matches = match (&cur, &exp) {
+                (None, None) => true,
+                (Some(c), Some(e)) => c == e,
+                _ => false,
+            };
+            if !matches {
+                // Expected mismatch: commit the no-op read txn and report not-applied.
+                tx.commit().await?;
+                return Ok(false);
+            }
+            if durable {
+                tx.set_durability(surrealkv::Durability::Immediate);
+            }
+            tx.set(k, nv)?;
+            // A concurrent writer to this key inside the conflict window makes
+            // commit() return Error::TransactionWriteConflict, propagating to the
+            // caller as HotStoreError::Backend (bounded-retry at the caller).
+            tx.commit().await?;
+            Ok(true)
+        })
+    }
+
     fn exists(&self, key: &HotKey) -> Result<bool, HotStoreError> {
         let k = key.0.clone();
         self.on_worker(move |tree| async move {
