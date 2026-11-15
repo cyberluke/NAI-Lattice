@@ -292,13 +292,16 @@ pub fn recover(
             let own_hash = blake3::hash(&vbuf).to_hex().to_string();
             if let Some(prev) = &previous_hash {
                 if !ev.previous_hash.is_empty() && &ev.previous_hash != prev {
-                    return Err(RecoveryError::Corrupt(
-                        offset as u64,
-                        format!(
-                            "hash chain break: got {}, expected {}",
-                            ev.previous_hash, prev
-                        ),
-                    ));
+                    // CRASH-RECOVERY (stale-tail writer): a frame whose
+                    // previous_hash does not chain to the last VALID frame marks
+                    // a broken frame that a crashed/pre-repair writer appended.
+                    // Treat it like a torn tail: keep all frames validated
+                    // BEFORE this offset, truncate at the broken frame, and let
+                    // the caller (open_with_catchup) drop it. This makes the
+                    // ledger self-heal instead of hard-failing on the whole
+                    // store, and the returned tail_hash stays the last VALID
+                    // frame's hash so the next append chains correctly.
+                    return Ok((frames, tail_hash, last_seq, Some(offset as u64)));
                 }
             }
             // Advance the tracked parent hash to THIS frame's own hash so the
