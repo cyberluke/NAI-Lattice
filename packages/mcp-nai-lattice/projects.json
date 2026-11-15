@@ -13,6 +13,12 @@
         "Zod",
         "SQLite (better-sqlite3)",
         "local LLM/vision (LM Studio, LUSI)"
+      ],
+      "buildCommand": "npm run build",
+      "runCommand": "npm run dev",
+      "deployTarget": "PWA/web app (env.local: TUTORIAL_DB_PATH=./.tutorial-cache/tutorials.db, LM Studio 127.0.0.1:1234)",
+      "dependsOn": [
+        "beellama"
       ]
     },
     {
@@ -21,7 +27,11 @@
       "description": "Kilo-Org/kilocode — the coding agent editor (monorepo; indexing, codemode, packages)",
       "techStack": [
         "TypeScript"
-      ]
+      ],
+      "buildCommand": "npm run build (root turborepo)",
+      "runCommand": "npm run dev",
+      "deployTarget": "VS Code extension / editor binary",
+      "dependsOn": []
     },
     {
       "name": "nai-browser",
@@ -32,6 +42,12 @@
         "Chromium",
         "C++",
         "Python"
+      ],
+      "buildCommand": "ninja -C out/<config> chrome (Chromium gn/ninja)",
+      "runCommand": "./out/<config>/chrome.exe",
+      "deployTarget": "NAI Browser binary; bundles BeelLama at resources/binaries/beellama/llama-server.exe (port 8123, naiInference backend)",
+      "dependsOn": [
+        "beellama"
       ]
     },
     {
@@ -41,12 +57,16 @@
       "techStack": [
         "Python",
         "C++"
-      ]
+      ],
+      "buildCommand": "cmake --build (CUDA+Vulkan Windows build; llama.cpp fork)",
+      "runCommand": "llama-server.exe --port 8123",
+      "deployTarget": "NAI Inference engine; bundled into NAI Browser as resources/binaries/beellama/llama-server.exe (port 8123)",
+      "dependsOn": []
     },
     {
       "name": "nai-os",
       "workspacePath": "D:\\_SATIN_AI\\Seelen-UI",
-      "description": "NAI OS — a Seelen UI fork: the Windows shell for the NAI stack (Windows shell, N-Pilot, Mail, Office, Browser, Files, Cards, PaintBrush, Toastovac). A Rust (Cargo workspace) + Node hybrid. github.com/cyberluke/NAI-OS. The OS shell that all NAI desktop apps (NAI Browser, NAI-Lattice fabric) hang off.",
+      "description": "NAI OS — a Seelen UI fork: the Windows 11 shell for the NAI stack (Windows shell, N-Pilot, Mail, Office, Browser, Files, Cards, PaintBrush, Toastovac). A Rust (Cargo workspace) + Node hybrid. github.com/cyberluke/NAI-OS. The OS shell that all NAI desktop apps (NAI Browser, NAI-Lattice fabric) hang off; running live on the dev machine.",
       "techStack": [
         "Svelte",
         "TypeScript",
@@ -55,6 +75,14 @@
         "Rust",
         "Tokio",
         "Tauri v2"
+      ],
+      "buildCommand": "cargo build --release (Cargo workspace) + npm build (frontend)",
+      "runCommand": "run as the live Windows 11 shell",
+      "deployTarget": "Installed/active Windows 11 shell (Seelen UI fork)",
+      "dependsOn": [
+        "nai-lattice",
+        "nai-browser",
+        "nai-files"
       ]
     },
     {
@@ -69,6 +97,12 @@
         "Fjall",
         "Qdrant",
         "TypeScript"
+      ],
+      "buildCommand": "cargo build --workspace --release",
+      "runCommand": "nai-lattice-cli / nai-fabric-host",
+      "deployTarget": "Local data lake + IPC + vector store (Qdrant localhost:6333; LM Studio 127.0.0.1:1234)",
+      "dependsOn": [
+        "beellama"
       ]
     },
     {
@@ -82,6 +116,12 @@
         "Rust",
         "Segmentation",
         "LLM chat"
+      ],
+      "buildCommand": "meson + ninja (VLC 4; also Cargo for the Rust component)",
+      "runCommand": "Run Paintbrush (latest).cmd",
+      "deployTarget": "NAI-OS app (Windows; part of the NAI OS PaintBrush)",
+      "dependsOn": [
+        "beellama"
       ]
     },
     {
@@ -94,6 +134,12 @@
         "WinUI",
         "XAML",
         "Microsoft Test Platform"
+      ],
+      "buildCommand": "dotnet build Files.slnx",
+      "runCommand": "dotnet run",
+      "deployTarget": "NAI-OS app (Windows desktop; Files.app fork)",
+      "dependsOn": [
+        "nai-os"
       ]
     },
     {
@@ -107,6 +153,13 @@
         "OpenVINO",
         "Windows ML",
         "Native"
+      ],
+      "buildCommand": "dotnet build KelvinAIWorkstation.slnx",
+      "runCommand": "dotnet run",
+      "deployTarget": "Local AI workstation harness",
+      "dependsOn": [
+        "beellama",
+        "openvino-master-lab"
       ]
     },
     {
@@ -118,7 +171,11 @@
         "Bun",
         "React",
         "Vitest"
-      ]
+      ],
+      "buildCommand": "bun run build",
+      "runCommand": "bun run dev",
+      "deployTarget": "Unspecified (registration only)",
+      "dependsOn": []
     },
     {
       "name": "soul-avatar",
@@ -133,7 +190,11 @@
         "LiveKit",
         "AWS S3",
         "AI SDK"
-      ]
+      ],
+      "buildCommand": "npm run build",
+      "runCommand": "npm run dev",
+      "deployTarget": "Web app (Next.js; LiveKit + AWS S3 + PostgreSQL + Neo4j)",
+      "dependsOn": []
     },
     {
       "name": "mnn",
@@ -146,7 +207,11 @@
         "WebGPU",
         "P2P",
         "ML inference"
-      ]
+      ],
+      "buildCommand": "cmake --build . (MNN, C/C++/ASM)",
+      "runCommand": "MNN inference binaries",
+      "deployTarget": "ML inference library (WebGPU/P2P/WTKF)",
+      "dependsOn": []
     },
     {
       "name": "supertonic4",
@@ -161,6 +226,12 @@
         "Flutter",
         "Node",
         "C#"
+      ],
+      "buildCommand": "engine/ (per-language; py/ for the python runtime)",
+      "runCommand": "engine/ TTS/audio runtime",
+      "deployTarget": "NAI Super][Tronic TTS engine; openvino/ for NPU/GPU paths",
+      "dependsOn": [
+        "openvino-master-lab"
       ]
     },
     {
@@ -174,6 +245,13 @@
         "ONNX Runtime",
         "Windows Media OCR",
         "Playwright"
+      ],
+      "buildCommand": "pip install -r requirements.txt (per venv/profiles: cpu/directml/cuda/openvino)",
+      "runCommand": "python app (Flask desktop companion, Everywhere UI overlay)",
+      "deployTarget": "NAI-OS desktop companion (Windows overlay)",
+      "dependsOn": [
+        "beellama",
+        "openvino-master-lab"
       ]
     },
     {
@@ -188,6 +266,13 @@
         "OpenPGP",
         "TipTap",
         "AI SDK"
+      ],
+      "buildCommand": "npm run build (vite)",
+      "runCommand": "npm run dev (Tauri 2)",
+      "deployTarget": "NAI-OS app (Tauri 2 desktop, NAI MAIL)",
+      "dependsOn": [
+        "nai-os",
+        "beellama"
       ]
     },
     {
@@ -201,7 +286,11 @@
         "react-three-fiber",
         "GSAP",
         "Tailwind 4"
-      ]
+      ],
+      "buildCommand": "npm run build",
+      "runCommand": "npm run dev",
+      "deployTarget": "Public presentation site for NAI products + NAI OS",
+      "dependsOn": []
     },
     {
       "name": "openvino-master-lab",
@@ -214,7 +303,11 @@
         "ONNX",
         "Python",
         "NPU"
-      ]
+      ],
+      "buildCommand": "There is no install metadata in the repo (it is a lab).",
+      "runCommand": "There is no install metadata in the repo (it is a lab).",
+      "deployTarget": "OpenVINO GenAI NPU/GPU/CPU runtime + venvs; upstream OpenVINO bug-fix crediting",
+      "dependsOn": []
     },
     {
       "name": "zoo-code",
@@ -225,7 +318,11 @@
         "VS Code extension",
         "pnpm",
         "turbo"
-      ]
+      ],
+      "buildCommand": "pnpm install && turbo build",
+      "runCommand": "VS Code VSIX (extension host)",
+      "deployTarget": "VS Code extension VSIX",
+      "dependsOn": []
     }
   ]
 }

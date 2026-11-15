@@ -9,6 +9,15 @@
  *
  * It never writes to Qdrant and never re-embeds — it consumes Kilo's index as-is (AAF: build only the delta).
  *
+ * Team operating contract (mirrored in list_indexed_projects output):
+ *   - OWNERSHIP: Every NAI project is owned by EVERYONE. Refusing a repo with "not my
+ *     scope" / "pre-existing bug" / "not mine" is a violation, not an excuse.
+ *   - AAF: integrate & develop ONLY the delta on existing code — never rewrite,
+ *     regenerate, or re-derive a working chunk; preserve exact pins; no scope creep.
+ *   - CROSS-REPO: use cross_project_semantic_query across a consumer + its dependsOn
+ *     producers so call-site and handler are both recovered in one retrieval (no handoff).
+ *   - EVIDENCE: proof against the real runtime on every change; retain raw failures.
+ *
  * Env (all optional, sane localhost defaults):
  *   LM_STUDIO_URL      = http://127.0.0.1:1234/v1        (OpenAI-compatible embeddings endpoint)
  *   EMBEDDING_MODEL    = text-embedding-nomic-embed-text-v1.5
@@ -29,6 +38,27 @@ const EMBED_MODEL = process.env.EMBEDDING_MODEL ?? "text-embedding-nomic-embed-t
 const EMBED_DIM = Number(process.env.EMBEDDING_DIM ?? 768);
 const QDRANT_URL = (process.env.QDRANT_URL ?? "http://localhost:6333").replace(/\/+$/, "");
 const QDRANT_KEY = process.env.QDRANT_API_KEY;
+/**
+ * The shared operating contract for every project in the registry. This is what a
+ * cross-project agent must obey — it is the same "caretaker" canon as the AAF +
+ * delta rule in the engineering contract. Every project is owned by everyone:
+ * there is no "not my scope", no "pre-existing bug" exemption, no "not mine".
+ * You integrate & develop by building ONLY the delta on top of what already
+ * exists — never rewrite, regenerate, or reopen an existing working chunk. If a
+ * sub-step returns nothing usable, retain the raw response + the exact failure
+ * and surface it; partial output is a recorded, auditable state, not a success.
+ */
+const TEAM_CONTRACT = {
+    ownership: "Everyone owns all projects. Do not refuse work on a repo with 'not my scope', 'pre-existing bug', or 'not mine' — every NAI project is shared team property.",
+    preexistingBugs: "Pre-existing bugs are in scope: fix and deliver, do not defer back to 'it was already broken'. The repo is a living organism, not a set of fiefdoms.",
+    aafRule: "Integrate and develop ONLY delta changes (AAF: build the delta). Change what the task requires and nothing else; never rewrite, regenerate, or re-derive an existing working chunk. Preserve exact pins; no scope creep.",
+    crossRepo: "To change a project, first cross_project_semantic_query across it AND its dependsOn partners so the call-site in the consumer and the handler in the producer are both recovered in ONE retrieval — no md handoff, no pasting between windows.",
+    evidence: "Every change lands with proof against the real runtime; retain and surface raw failures. Reuse cached expensive generation (TTS/embedding) by content hash; do not regenerate unchanged work.",
+};
+/** Human-readable contract for a registry dump. */
+function contractText(contract) {
+    return Object.entries(contract).map(([k, v]) => `- ${k}: ${v}`).join("\n");
+}
 /** The hand-maintained project registry (canonical, in NAI-Lattice). */
 const REGISTRY_PATH = process.env.REGISTRY_PATH ?? join(__dirname, "..", "projects.json");
 function loadRegistry() {
@@ -429,10 +459,11 @@ async function gpuRerankIfAvailable(query, hits) {
 const server = new McpServer({ name: "mcp-nai-lattice", version: "0.1.0" });
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 server.registerTool("list_indexed_projects", {
-    title: "List projects available for semantic search",
-    description: "Discover which projects have a Kilo Qdrant code index. Returns every indexed Qdrant collection (live from Qdrant) fused with the human project registry (name + description + workspacePath). Use this first to learn a project's workspacePath (or its registry name) before calling semantic_query / cross_project_semantic_query.",
+    title: "List projects + team operating contract",
+    description: "Discover which projects have a Kilo Qdrant code index, PLUS the shared NAI team operating contract. Returns every indexed Qdrant collection (live from Qdrant) fused with the human project registry (name, description, workspacePath, techStack, buildCommand, runCommand, deployTarget, dependsOn). Read the returned 'contract' before doing any cross-project work: it is the binding rule that EVERY NAI repo is owned by EVERYONE (no 'not my scope' / 'pre-existing bug' refusals) and that you integrate & develop ONLY delta changes (AAF). Use this first to learn a project's workspacePath (or its registry name) and its build/dependsOn wiring before calling semantic_query / cross_project_semantic_query.",
     inputSchema: {},
     outputSchema: {
+        contract: z.string().describe("The shared operating contract (ownership + pre-existing bugs + AAF delta rule + cross-repo + evidence). Read this before any cross-project change."),
         projects: z.array(z.object({
             project: z.string().optional(),
             description: z.string().optional(),
@@ -442,6 +473,10 @@ server.registerTool("list_indexed_projects", {
             points: z.number(),
             dimension: z.number(),
             registered: z.boolean(),
+            buildCommand: z.string().optional(),
+            runCommand: z.string().optional(),
+            deployTarget: z.string().optional(),
+            dependsOn: z.array(z.string()).optional(),
         })),
         unregistered: z.array(z.string()).describe("Indexed collections with no registry entry (hash unknown — add a projects.json entry to name them)."),
     },
@@ -464,13 +499,19 @@ server.registerTool("list_indexed_projects", {
             points: c.points,
             dimension: c.dimension,
             registered: !!reg,
+            buildCommand: reg?.buildCommand,
+            runCommand: reg?.runCommand,
+            deployTarget: reg?.deployTarget,
+            dependsOn: reg?.dependsOn,
         };
     })
         .sort((a, b) => b.points - a.points);
     const unregistered = projects.filter((p) => !p.registered).map((p) => p.collection);
+    const contract = contractText(TEAM_CONTRACT);
+    const text = JSON.stringify({ contract, projects, unregistered });
     return {
-        content: [{ type: "text", text: JSON.stringify({ projects, unregistered }) }],
-        structuredContent: { projects, unregistered },
+        content: [{ type: "text", text }],
+        structuredContent: { contract, projects, unregistered },
     };
 });
 /** Resolve a project selector (name or workspace path) to collection/hash. */
@@ -481,12 +522,16 @@ function resolveProject(selector) {
 }
 server.registerTool("register_current_project", {
     title: "Register the current workspace in the project registry",
-    description: "Add (or update) the given workspace in mcp-nai-lattice's projects.json so it becomes discoverable via list_indexed_projects and queryable by name. Observes the repo to fill missing deltas: project name (folder basename), techStack (sniffed from package.json/Cargo.toml/go.mod/pyproject), and it logs which Qdrant collection the workspace would map to. Pass name/description/techStack to override or enrich; an existing entry is merged, never deleted. Idempotent.",
+    description: "Add (or update) the given workspace in mcp-nai-lattice's projects.json so it becomes discoverable via list_indexed_projects and queryable by name. Observes the repo to fill missing deltas: project name (folder basename), techStack (sniffed from package.json/Cargo.toml/go.mod/pyproject), and it logs which Qdrant collection the workspace would map to. Pass name/description/techStack/buildCommand/runCommand/deployTarget/dependsOn to override or enrich; an existing entry is merged, never deleted. Idempotent. The more build/deploy context you record, the better cross_project_semantic_query can drive a 'change in A -> fix producer B -> rebuild -> deploy' flow without a handoff.",
     inputSchema: {
         workspacePath: z.string().describe("Absolute workspace root to register."),
         name: z.string().optional().describe("Short project name; defaults to the folder basename."),
         description: z.string().optional().describe("One-line project description (recommended for discovery)."),
         techStack: z.array(z.string()).optional().describe("Tech-stack tags; defaults to sniffing package.json/Cargo.toml/etc."),
+        buildCommand: z.string().optional().describe("How to build this project (e.g. 'npm run build', 'cargo build --release', 'meson ninja')."),
+        runCommand: z.string().optional().describe("How to run this project locally."),
+        deployTarget: z.string().optional().describe("Where a finished build lands / is deployed."),
+        dependsOn: z.array(z.string()).optional().describe("Other registered project names this project imports from / is coupled to (e.g. nai-browser dependsOn beellama)."),
     },
     outputSchema: {
         registered: z.boolean(),
@@ -495,9 +540,9 @@ server.registerTool("register_current_project", {
         derived: z.object({ name: z.string(), techStack: z.array(z.string()) }).describe("What was auto-derived (could not find source: what the agent must supply)."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-}, async ({ workspacePath, name, description, techStack }) => {
+}, async ({ workspacePath, name, description, techStack, buildCommand, runCommand, deployTarget, dependsOn }) => {
     // Preserve curated fields on re-register: only override name/description/
-    // techStack when explicitly passed, else keep the existing registration.
+    // techStack + build metadata when explicitly passed, else keep the existing.
     const existing = loadRegistry().find((p) => p.workspacePath.toLowerCase() === workspacePath.toLowerCase());
     const derivedName = name ?? existing?.name ?? basename(workspacePath.replace(/[\\/]+$/, ""));
     const derivedStack = techStack?.length ? techStack : existing?.techStack ?? sniffStack(workspacePath);
@@ -507,6 +552,10 @@ server.registerTool("register_current_project", {
         workspacePath,
         ...(desc ? { description: desc } : {}),
         ...(derivedStack.length ? { techStack: derivedStack } : {}),
+        ...(buildCommand ? { buildCommand } : existing?.buildCommand ? { buildCommand: existing.buildCommand } : {}),
+        ...(runCommand ? { runCommand } : existing?.runCommand ? { runCommand: existing.runCommand } : {}),
+        ...(deployTarget ? { deployTarget } : existing?.deployTarget ? { deployTarget: existing.deployTarget } : {}),
+        ...(dependsOn?.length ? { dependsOn } : existing?.dependsOn ? { dependsOn: existing.dependsOn } : {}),
     };
     const saved = registerProject(entry);
     return {
@@ -521,7 +570,7 @@ server.registerTool("register_current_project", {
 });
 server.registerTool("semantic_query", {
     title: "Semantic search the current project's code index",
-    description: "Embed the query with LM Studio and Cosine-search the current workspace's Qdrant code index (collection ws-<sha256(workspace)>). Returns matched code chunks with filePath, line range, and score. Use when you want code roughly like the query regardless of exact symbol names.",
+    description: "Embed the query with LM Studio and Cosine-search the current workspace's Qdrant code index (collection ws-<sha256(workspace)>). Returns matched code chunks with filePath, line range, and score. Use when you want code roughly like the query regardless of exact symbol names. IDs inside any code chunk you are about to change are YOURS to integrate: every project is owned by everyone (see list_indexed_projects contract), pre-existing bugs are in scope, and you build only the AAF delta on that chunk.",
     inputSchema: {
         query: z.string().describe("Natural-language / fuzzy code search query."),
         limit: z.number().int().min(1).max(100).optional().describe("Max results (default 20)."),
@@ -556,8 +605,8 @@ server.registerTool("semantic_query", {
     };
 });
 server.registerTool("cross_project_semantic_query", {
-    title: "Semantic search across multiple projects' code indexes",
-    description: "Embed the query once and search each listed workspace's Qdrant code index (each ws-<sha256(path)>). Returns merged, de-duplicated code hits that may span different projects. Use for cross-project / cross-app semantic code search.",
+    title: "Semantic search across multiple projects (cross-repo change)",
+    description: "Embed the query once and search each listed workspace's Qdrant code index (each ws-<sha256(path)>). Returns merged, de-duplicated code hits that may span different projects. THIS is the tool for any cross-repo task — e.g. 'enhance the NAI inference API in nai-browser, make the matching changes in beellama, rebuild, deploy, deliver': pass the consumer PLUS its dependsOn producers (list_indexed_projects gives dependsOn) so the call-site in the consumer and the handler in the producer are BOTH recovered in ONE retrieval — no md handoff file, no pasting between windows. Every project is owned by everyone (see the contract from list_indexed_projects): do not refuse a repo with 'not my scope' / 'pre-existing bug'; integrate & develop ONLY the AAF delta, then rebuild/run/deploy using each project's buildCommand/runCommand/deployTarget (also from list_indexed_projects).",
     inputSchema: {
         query: z.string().describe("Natural-language / fuzzy code search query."),
         workspacePaths: z.array(z.string()).min(1).describe("Workspace roots (or registry project names) to search across. Each path is hashed exactly as given (sha256 → ws-<16hex>) to find its Qdrant collection; registry names from list_indexed_projects are resolved to their registered path. Use on-disk paths (not the UI-lowercased form); zero hits usually means a casing/slash mismatch."),
