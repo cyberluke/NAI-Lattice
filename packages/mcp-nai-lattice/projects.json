@@ -56,6 +56,176 @@
         "Tokio",
         "Tauri v2"
       ]
+    },
+    {
+      "name": "nai-lattice",
+      "workspacePath": "D:\\_SATIN_AI\\NAI-Lattice",
+      "description": "NAI-Lattice — the shared data lake / knowledge fabric every NAI desktop app writes to (element of NAI OS). Rust workspace: lattice-core, -protocol, -ledger, -cas, -aaf, -hotstore (surrealkv/fjall), -lakehouse, -search, -vector, -embeddings, -graph, -query, -provider-* (Windows Search, AppContent, OPFS, filesystem), -observability, -runtime, -client, -supervisor, -git, -gastown; apps nai-lattice-cli + nai-fabric-host. TS packages: mcp-nai-lattice (this server) and naf-client-ts.",
+      "techStack": [
+        "Rust",
+        "Tokio",
+        "Cargo workspace",
+        "SurrealDB",
+        "Fjall",
+        "Qdrant",
+        "TypeScript"
+      ]
+    },
+    {
+      "name": "nai-paintbrush",
+      "workspacePath": "D:\\_SATIN_AI\\NAI-OS\\vlc",
+      "description": "NAI PaintBrush — our fork of the latest VLC 4 nightly video player turned into a kid's paintbrush. Children draw with real video playback; the app does segmentation and pairs it with a chat assistant that reacts like a warm mommy (kid draws garbage -> 'Wooow so good! Now add sparkles! :-D'). VLC 4 tree (C + meson) with a Rust component.",
+      "techStack": [
+        "C",
+        "C++",
+        "VLC 4 (meson)",
+        "Rust",
+        "Segmentation",
+        "LLM chat"
+      ]
+    },
+    {
+      "name": "nai-files",
+      "workspacePath": "D:\\_SATIN_AI\\Files",
+      "description": "NAI Files — fork of the Files.app Windows file manager. .NET 11 SDK (global.json), C# WinUI app, Microsoft.Testing.Platform test runner. A native desktop file manager in the NAI ecosystem.",
+      "techStack": [
+        "C#",
+        ".NET 11",
+        "WinUI",
+        "XAML",
+        "Microsoft Test Platform"
+      ]
+    },
+    {
+      "name": "kelvin-ai-workstation",
+      "workspacePath": "D:\\_SATIN_AI\\KelvinAIWorkstation",
+      "description": "Kelvin AI Workstation — a .NET AI workstation harness orchestrating local inference backends (Kelvin.AI.LlamaCpp, Kelvin.AI.OpenVINO, Kelvin.AI.WindowsML). C# solution (slnx) with native/ and services/ layers; artifacts + runtime dirs.",
+      "techStack": [
+        "C#",
+        ".NET",
+        "LlamaCpp",
+        "OpenVINO",
+        "Windows ML",
+        "Native"
+      ]
+    },
+    {
+      "name": "cyberpay",
+      "workspacePath": "D:\\_SATIN_AI\\cyberpay",
+      "description": "cyberpay — a payments project. TypeScript + Bun + React + Vitest. (Registration entry; add a full description when known.)",
+      "techStack": [
+        "TypeScript",
+        "Bun",
+        "React",
+        "Vitest"
+      ]
+    },
+    {
+      "name": "soul-avatar",
+      "workspacePath": "D:\\_SATIN_AI\\SoulAvatar",
+      "description": "SoulAvatar (package fashion-ai) — Next.js 16 + React 19 AI fashion/avatar platform: AWS S3, LiveKit (real-time video), Neo4j knowledge graph, PostgreSQL, better-auth, OpenAI. Next 16.3 preview.",
+      "techStack": [
+        "Next.js 16",
+        "React 19",
+        "TypeScript",
+        "PostgreSQL",
+        "Neo4j",
+        "LiveKit",
+        "AWS S3",
+        "AI SDK"
+      ]
+    },
+    {
+      "name": "mnn",
+      "workspacePath": "D:\\_SATIN_AI\\MNN",
+      "description": "Alibaba MNN ML-inference framework fork — with WebGPU + P2P WebGPU inference (hidden-layer API) and the Wukong Tetris Kernel Fusion engine (WTKF). C/C++/ASM, CMake build.",
+      "techStack": [
+        "C++",
+        "C",
+        "CMake",
+        "WebGPU",
+        "P2P",
+        "ML inference"
+      ]
+    },
+    {
+      "name": "supertonic4",
+      "workspacePath": "D:\\_SATIN_AI\\supertonic4",
+      "description": "supertonic4 — our upgrade of the supertonic3 TTS/audio engine (later product name NAI Super][Tronic). Polyglot engine/ tree (cpp, csharp, flutter, go, ios, java, nodejs, openvino, py, rust, swift, web) + voice-cloning/; heavy OpenVINO gating/parity probes.",
+      "techStack": [
+        "C++",
+        "Python",
+        "OpenVINO",
+        "Rust",
+        "Go",
+        "Flutter",
+        "Node",
+        "C#"
+      ]
+    },
+    {
+      "name": "toastovac",
+      "workspacePath": "D:\\_SATIN_AI\\Toastovac\\jarvis",
+      "description": "Toastovač — a Jarvis fork: a desktop companion with an Everywhere UI (Windows native overlay with hotkey AI actions). Python stack (Flask, faster-whisper, Windows.Media.Ocr winrt OCR, Playwright, OneOCR + Piper TTS building).",
+      "techStack": [
+        "Python",
+        "Flask",
+        "Whisper",
+        "ONNX Runtime",
+        "Windows Media OCR",
+        "Playwright"
+      ]
+    },
+    {
+      "name": "nai-mail",
+      "workspacePath": "D:\\_SATIN_AI\\velo",
+      "description": "NAI MAIL (velo) — smart, AI-assisted, local-AI-first email; not ordinary email but a Personal Intelligence Platform: local calendar, LinkedIn integration, newsletter funnel analysis, marketing analysis, leads generation. Tauri 2 desktop, React 19, TipTap editor, CalDAV (tsdav), OpenPGP (openpgp), active emails.",
+      "techStack": [
+        "Tauri v2",
+        "React 19",
+        "TypeScript",
+        "CalDAV",
+        "OpenPGP",
+        "TipTap",
+        "AI SDK"
+      ]
+    },
+    {
+      "name": "nanotrik-ai",
+      "workspacePath": "D:\\_SATIN_AI_2\\_NANOTRIK_AI\\1",
+      "description": "NANOTRIK.AI — the presentation website for all NAI products and NAI OS. Next.js 16 preview + React 19, three.js / react-three-fiber, GSAP, lenis, Tailwind 4, tone (audio).",
+      "techStack": [
+        "Next.js 16",
+        "React 19",
+        "Three.js",
+        "react-three-fiber",
+        "GSAP",
+        "Tailwind 4"
+      ]
+    },
+    {
+      "name": "openvino-master-lab",
+      "workspacePath": "D:\\_SATIN_AI_2\\openvino-master-lab",
+      "description": "OpenVINO runtime + ONNX + OpenVINO GenAI lab with working venvs reused for NPU/GPU/CPU targets. Includes npu_compiler, openvino + openvino.genai trees, supertonic-npu-sdk-2026.4.0 and tiny-qwen3vl models. We fixed bugs and Intel credited us on GitHub.",
+      "techStack": [
+        "C++",
+        "OpenVINO",
+        "OpenVINO GenAI",
+        "ONNX",
+        "Python",
+        "NPU"
+      ]
+    },
+    {
+      "name": "zoo-code",
+      "workspacePath": "D:\\_SATIN_AI_2\\Zoo-Code",
+      "description": "Kelvin Clyne (Zoo Code fork, package roo-code) — VSIX VS Code extension with two coding agents, Kelvin and XiaoXiao, with workflow agentic support. Not yet working, but intended to beat Kilo Code, Codex and Claude. TypeScript, pnpm, turbo monorepo.",
+      "techStack": [
+        "TypeScript",
+        "VS Code extension",
+        "pnpm",
+        "turbo"
+      ]
     }
   ]
 }
