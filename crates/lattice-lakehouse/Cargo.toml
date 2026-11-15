@@ -3,10 +3,18 @@ name = "lattice-lakehouse"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "NAI Lattice lattice-lakehouse."
+description = "NAI Lattice lakehouse: Parquet/Arrow ingest, immutable snapshot manifests, and streaming delta synchronization for federated datasets of tutty-studio / nai-fabric-host."
 
 [dependencies]
 lattice-core = { path = "../lattice-core" }
+lattice-aaf = { path = "../lattice-aaf" }
+lattice-cas = { path = "../lattice-cas" }
+
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+# Columnar + Parquet engine (Apache Arrow/Parquet for the lakehouse).
+arrow = { version = "60.1", features = ["prettyprint"] }
+parquet = { version = "60.1", features = ["arrow", "snap", "brotli", "flate2"] }
+blake3.workspace = true

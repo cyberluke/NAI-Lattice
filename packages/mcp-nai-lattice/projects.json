@@ -1,0 +1,61 @@
+{
+  "projects": [
+    {
+      "name": "tutty",
+      "description": "Tutty Studio allows you to automatize tutorial and product showcase videos either fully autonomous using AI or manual or semi-manual, one stop solution for any video creation! 16:9 landscape or portrait? No problem! Instagram Reels or Youtube Shorts? Got it! Everything is versioned plus it provides Windows native Clicker Telemetry so you can make multiple shots in one run and Tutty Studio will split it and you can set purpose of each split take, for example Product Showcase, Outcome, Step By Step, How We Did It. It can be deployed as web app (client+server) or PWA or native desktop app",
+      "workspacePath": "D:\\_SATIN_AI_2\\Tutty\\tutty-studio",
+      "techStack": [
+        "Next.js 16",
+        "React 19",
+        "TypeScript 7",
+        "Tailwind",
+        "Vitest",
+        "Zod",
+        "SQLite (better-sqlite3)",
+        "local LLM/vision (LM Studio, LUSI)"
+      ]
+    },
+    {
+      "name": "kilocode",
+      "workspacePath": "D:\\_SATIN_AI\\kilocode",
+      "description": "Kilo-Org/kilocode — the coding agent editor (monorepo; indexing, codemode, packages)",
+      "techStack": [
+        "TypeScript"
+      ]
+    },
+    {
+      "name": "nai-browser",
+      "workspacePath": "D:\\_SATIN_AI\\BrowserOS",
+      "description": "NAI Browser — our fork of BrowserOS classic (the people-facing browser), where Thorium CPU instruction optimizations are harvested. Distinct from BrowserOS neo (the agent browser). More than a browser: it is a native platform — patched Chromium (chromium_patches/components/nai_rt_core/src/d3d12) carries a real D3D12 RAY-TRACING pipeline (shaders/raytracing_dxil.h), and it embeds a full local LLM inference server (BeelLama llama.cpp, CUDA+Vulkan) as a supervised naiInference backend (resources/binaries/beellama/llama-server.exe, port 8123) wired into Assistant/Agent/Chat. Native GPU ray-tracing + a bundled local-model server inside a browser = an app OS platform wearing a browser's skin.",
+      "techStack": [
+        "TypeScript",
+        "Chromium",
+        "C++",
+        "Python"
+      ]
+    },
+    {
+      "name": "beellama",
+      "workspacePath": "D:\\_SATIN_AI_2\\beellama",
+      "description": "BeelLama — our llama.cpp fork, first-class local inference engine for NAI Inference Lab (bundled in NAI Browser). CUDA+Vulkan Windows build; custom patches (MTP, KVarN KV quant, kv-tail, mtmd VLM sampler). Powers Assistant/Agent/Chat + native Chromium naiInference. Rust TUI: llama-lab.",
+      "techStack": [
+        "Python",
+        "C++"
+      ]
+    },
+    {
+      "name": "nai-os",
+      "workspacePath": "D:\\_SATIN_AI\\Seelen-UI",
+      "description": "NAI OS — a Seelen UI fork: the Windows shell for the NAI stack (Windows shell, N-Pilot, Mail, Office, Browser, Files, Cards, PaintBrush, Toastovac). A Rust (Cargo workspace) + Node hybrid. github.com/cyberluke/NAI-OS. The OS shell that all NAI desktop apps (NAI Browser, NAI-Lattice fabric) hang off.",
+      "techStack": [
+        "Svelte",
+        "TypeScript",
+        "Zod",
+        "Express",
+        "Rust",
+        "Tokio",
+        "Tauri v2"
+      ]
+    }
+  ]
+}

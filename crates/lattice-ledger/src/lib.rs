@@ -571,6 +571,45 @@ mod tests {
         assert_eq!(size, valid_size, "tail not truncated: {size}",);
     }
 
+    #[tokio::test]
+    async fn stale_tail_chain_break_is_truncated_not_hard_fail() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LedgerConfig {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let ledger = Ledger::open(cfg.clone()).unwrap();
+        ledger.append(event(0, 1), Durability::Durable).await.unwrap();
+        ledger.append(event(1, 2), Durability::Durable).await.unwrap();
+        assert_eq!(ledger.last_sequence().await, 2);
+
+        let active = dir.path().join("ledger/active/active.segment");
+        let valid_size = std::fs::metadata(&active).map(|m| m.len()).unwrap();
+
+        // Simulate the stale-tail writer bug: append a frame whose previous_hash
+        // references a pre-repair/different tail, so the hash chain breaks.
+        // Build a chained frame by appending via build_frame with a WRONG prev.
+        {
+            let mut ev = event(2, 3);
+            ev.previous_hash = Some("0000000000000000000000000000000000000000000000000000000000000000".into());
+            let (frame, _hash) = build_frame(&ev, 2, Some("0000000000000000000000000000000000000000000000000000000000000000")).unwrap();
+            let body = frame.encode_to_vec();
+            let mut f = std::fs::OpenOptions::new().append(true).open(&active).unwrap();
+            f.write_all(&(body.len() as u32).to_le_bytes()).unwrap();
+            f.write_all(&body).unwrap();
+            f.flush().unwrap();
+        }
+        assert!(std::fs::metadata(&active).unwrap().len() > valid_size);
+
+        // Reopen -> previously hard-failed (Err from recover); now the broken
+        // tail frame is truncated and the 2 valid frames are recovered.
+        let ledger2 = Ledger::open(cfg).unwrap();
+        assert_eq!(ledger2.last_sequence().await, 2, "valid prefix recovered");
+        let size = std::fs::metadata(&active).map(|m| m.len()).unwrap();
+        assert_eq!(size, valid_size, "broken chain tail not truncated");
+    }
+
     #[test]
     fn seal_date_is_ymd() {
         let s = chrono_now_utc_ymd();
