@@ -323,6 +323,25 @@
       "runCommand": "VS Code VSIX (extension host)",
       "deployTarget": "VS Code extension VSIX",
       "dependsOn": []
+    },
+    {
+      "name": "kilo-gastown",
+      "workspacePath": "C:\\src\\kilo-gastown-local",
+      "description": "Gas Town — Kilo Org's dashboard agentic control plane, forked on the pre-strip commit (last week Kilo Org removed features behind their paid Kilo Cloud / Cloudflare Workers / kilo gateway). We forked it before the stripping and added a full LOCAL-ONLY control plane with support for ANY provider, plus custom tweaks. It lets multiple agents (like you here in chat) communicate in a mesh/hedron agent network, so the human only solves critical stuff and agents work autonomously — backed by a review agent + a NAI Inquisitor agent (gives a score; delivery is NOT finished until the score is 10/10). Still in development. Custom integration lives in NAI-Lattice (lattice-gastown). IMPORTANT: the Qdrant collection was indexed by Kilo under the exact path C:\\src\\kilo-gastown-local (backslashes, C:\\ — NOT the forward-slash form git reports as C:/src/kilo-gastown-local, which hashes to a different, empty collection).",
+      "techStack": [
+        "TypeScript",
+        "Control plane",
+        "Agent mesh",
+        "Svelte",
+        "Provider-agnostic",
+        "Local-only"
+      ],
+      "buildCommand": "pnpm install && turbo build (Kilo Org fork)",
+      "runCommand": "local Gas Town dashboard / control plane + agents",
+      "deployTarget": "Local control plane for the NAI agent mesh (NAI-Inquisitor review gate; 10/10 required)",
+      "dependsOn": [
+        "nai-lattice"
+      ]
     }
   ]
 }
