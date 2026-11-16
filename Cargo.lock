@@ -1847,10 +1847,13 @@ dependencies = [
 name = "lattice-observability"
 version = "0.1.0"
 dependencies = [
+ "lattice-client",
  "lattice-core",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2311,14 +2314,17 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "lattice-cas",
+ "lattice-client",
  "lattice-gastown",
  "lattice-ledger",
+ "lattice-observability",
  "lattice-protocol",
  "lattice-runtime",
  "prost",
  "rusqlite",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
