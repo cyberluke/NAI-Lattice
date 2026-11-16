@@ -34,6 +34,7 @@ mod win_acl;
 mod endpoints;
 mod gastown_orto;
 mod dashboard_ui;
+mod lattice_dashboard;
 mod notifications;
 mod release;
 mod convoy_a;

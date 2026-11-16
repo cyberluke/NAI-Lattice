@@ -32,11 +32,43 @@ impl NamedPipeStream {
         Ok(Self { pipe })
     }
 
-    /// Per-user NAF/1 pipe name derived from the current user identity.
+    /// Per-user NAF/1 pipe name.
+    ///
+    /// Discovery order (single-fabric coordination):
+    ///   1. The host-published canonical endpoint manifest
+    ///      (`%LOCALAPPDATA%\NAI\Lattice\v1\endpoint.json`, written atomically by the
+    ///      host and carrying `canonical_pipe` = `NAF1.<blake3(SID)[..6]>` + a
+    ///      `legacy_alias`). Reading it guarantees ALL fabric clients resolve the
+    ///      SAME canonical SID pipe — no client fabricates a divergent name.
+    ///   2. Fallback to the legacy lowercase-username alias (`NAF1.<blake3(lower(USERNAME))[..6]>`),
+    ///      which the host also serves from the same singleton.
+    /// The OLD behavior (blake3 of the RAW case-preserved `USERNAME`) produced a
+    /// third name the host NEVER exposes, so clients using it could not reach the
+    /// shared fabric at all.
     pub fn pipe_name() -> String {
-        let user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into());
-        let sid_hash = quick_hash(user.as_bytes());
-        format!(r"\\.\pipe\NAI.AmbientFabric.NAF1.{sid_hash}")
+        // 1. Canonical manifest (authoritative SID endpoint).
+        if let Some(endpoint) = std::env::var("NAI_FABRIC_PIPE").ok().filter(|s| !s.is_empty()) {
+            return endpoint;
+        }
+        let local = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+        let manifest = local
+            .as_deref()
+            .map(|p| p.join("NAI").join("Lattice").join("v1").join("endpoint.json"));
+        if let Some(path) = manifest {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(p) = v.get("canonical_pipe").and_then(|x| x.as_str()) {
+                        if !p.is_empty() {
+                            return p.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        // 2. Legacy lowercase-username alias (host serves it from the SAME host).
+        let user = std::env::var("USERNAME").unwrap_or_else(|_| "unknown".into()).to_lowercase();
+        let user_hash = quick_hash(user.as_bytes());
+        format!(r"\\.\pipe\NAI.AmbientFabric.NAF1.{user_hash}")
     }
 }
 

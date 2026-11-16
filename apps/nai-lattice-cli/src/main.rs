@@ -109,11 +109,276 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "log" => {
+            cli_log(&args);
+            ExitCode::SUCCESS
+        }
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: nai-lattice-cli [inspect|verify-ledger|rebuild [--projection hot-state]|verify <hash>|gastown <sub>]");
+            eprintln!("usage: nai-lattice-cli [inspect|verify-ledger|rebuild [--projection hot-state]|verify <hash>|gastown <sub>|log <sub>]");
             ExitCode::from(2)
         }
+    }
+}
+
+/// `log` domain: tail / search / by-trace over the canonical `observability.log.v1`
+/// ledger stream. Opens the shared per-user runtime (same root as the fabric host)
+/// and reads `event.read_range` back, then filters in-process with
+/// `lattice_observability::filter` — no new runtime dispatch handler needed.
+/// Usage:
+///   nai-lattice-cli log tail [limit] [--component <c>]
+///   nai-lattice-cli log search <text> [limit] [--component <c>] [--level <warn|error>]
+///   nai-lattice-cli log by-trace <traceId> [limit]
+fn cli_log(args: &[String]) {
+    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("tail");
+
+    // Connect to the RUNNING fabric host over the NAF pipe (like NAI OS does)
+    // and query the ledger through `event.read_range`. We must NOT open the
+    // runtime directly here — the live host holds the single-writer ledger lock
+    // (os error 33 / file locked), so a direct open would fail on a live box.
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("log: tokio runtime: {e}");
+            return;
+        }
+    };
+
+    let raw = rt.block_on(async {
+        use lattice_client::transport::NafTransport;
+        let pipe = lattice_client::win_pipe::NamedPipeStream::pipe_name();
+        let stream = match lattice_client::win_pipe::NamedPipeStream::connect(&pipe) {
+            Ok(s) => s,
+            Err(e) => return Err(format!("fabric pipe connect: {e}")),
+        };
+        let transport: NafTransport = Box::new(stream);
+        let request = lattice_protocol::pb::HandshakeRequest {
+            client_app_id: "nai-lattice-cli".into(),
+            client_version: env!("CARGO_PKG_VERSION").into(),
+            client_pid: std::process::id() as i64,
+            naf_min: 1,
+            naf_max: 1,
+            requested_capabilities: vec!["event.read_range".into(), "event.append_batch".into()],
+            package_identity: "observability.log.v1".into(),
+            build_sha: String::new(),
+            nonce: vec![],
+        };
+        let mut client = match lattice_client::NafClient::connect(transport, request).await {
+            Ok(c) => c,
+            Err(e) => return Err(format!("fabric handshake: {e}")),
+        };
+
+        // `self-test`: append two canonical log records so the round-trip can be
+        // verified (write via event.append_batch → read back via event.read_range).
+        if sub == "self-test" {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let record = lattice_observability::LogRecord {
+                ts_ms: now,
+                level: "info".to_string(),
+                component: "nai-lattice-cli/self-test".to_string(),
+                trace_id: Some(format!("selftest-{now}")),
+                caller: Some("n.a.".to_string()),
+                message: "canonical observability fabric self-test ping".to_string(),
+                extras: serde_json::Map::new(),
+            };
+            let args = lattice_observability::build_batch_args("nai-lattice-cli", &[record]);
+            let json = match serde_json::to_vec(&args) {
+                Ok(j) => j,
+                Err(e) => return Err(format!("append serde: {e}")),
+            };
+            match client.dispatch("event.append_batch", &json, None).await {
+                Ok(b) => {
+                    let body = String::from_utf8_lossy(&b).to_string();
+                    println!("self-test: append response: {body}");
+                }
+                Err(e) => return Err(format!("self-test append failed: {e}")),
+            }
+            println!("self-test: policy-checking that read_range sees it next");
+        }
+        // records are present and under what namespace the host stored them.
+        if sub == "debug-ns" {
+            let ns_args = serde_json::json!({ "limit": 50 });
+            match client
+                .dispatch(
+                    "event.read_range",
+                    &serde_json::to_vec(&ns_args).unwrap_or_default(),
+                    None,
+                )
+                .await
+            {
+                Ok(b) => {
+                    let v: serde_json::Value =
+                        serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null);
+                    println!("debug-ns raw: {}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                }
+                Err(e) => println!("debug-ns read failed: {e}"),
+            }
+            return Ok(Vec::new());
+        }
+        if sub == "debug-filtered" {
+            let f_args = serde_json::json!({
+                "namespace": "observability.log.v1",
+                "event_type": "log.record",
+                "limit": 5000,
+            });
+            match client
+                .dispatch(
+                    "event.read_range",
+                    &serde_json::to_vec(&f_args).unwrap_or_default(),
+                    None,
+                )
+                .await
+            {
+                Ok(b) => {
+                    let v: serde_json::Value =
+                        serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null);
+                    println!(
+                        "debug-filtered raw: {}",
+                        serde_json::to_string_pretty(&v).unwrap_or_default()
+                    );
+                }
+                Err(e) => println!("debug-filtered read failed: {e}"),
+            }
+            return Ok(Vec::new());
+        }
+
+        let range_args = serde_json::json!({
+            "namespace": "observability.log.v1",
+            "event_type": "log.record",
+            "limit": 5000,
+        });
+        client
+            .dispatch(
+                "event.read_range",
+                &serde_json::to_vec(&range_args).unwrap_or_default(),
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())
+    });
+
+    let raw = match raw {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("log: query failed (is the fabric host running?): {e}");
+            return;
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("log: bad response: {e}");
+            return;
+        }
+    };
+    // Parse each payload into a LogRecord (newest-first sort happens in filter).
+    let mut records: Vec<lattice_observability::LogRecord> = Vec::new();
+    if let Some(events) = value["events"].as_array() {
+        for ev in events {
+            let payload = &ev["payload"];
+            if let Some(rec) = lattice_observability::parse_record(payload) {
+                records.push(rec);
+            }
+        }
+    }
+
+    let level_min = match args.iter().position(|a| a == "--level") {
+        Some(i) => args
+            .get(i + 1)
+            .and_then(|s| match s.as_str() {
+                "trace" => Some(lattice_observability::Level::Trace),
+                "debug" => Some(lattice_observability::Level::Debug),
+                "info" => Some(lattice_observability::Level::Info),
+                "warn" => Some(lattice_observability::Level::Warn),
+                "error" => Some(lattice_observability::Level::Error),
+                _ => None,
+            }),
+        None => None,
+    };
+    let component_eq = match args.iter().position(|a| a == "--component") {
+        Some(i) => args.get(i + 1).map(|s| s.as_str()),
+        None => None,
+    };
+
+    let filtered = match sub {
+        "search" => {
+            let needle = args.get(3).map(|s| s.as_str()).unwrap_or("");
+            let limit = args
+                .iter()
+                .position(|a| a == "--limit")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(50);
+            lattice_observability::filter(
+                &records,
+                level_min,
+                component_eq,
+                Some(needle),
+                None,
+                None,
+                None,
+                limit,
+            )
+        }
+        "by-trace" => {
+            let trace = args.get(3).map(|s| s.as_str()).unwrap_or("");
+            let limit = 100;
+            lattice_observability::filter(
+                &records,
+                level_min,
+                component_eq,
+                None,
+                Some(trace),
+                None,
+                None,
+                limit,
+            )
+        }
+        _ => {
+            // tail
+            let limit = args
+                .iter()
+                .position(|a| a == "--limit")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(20);
+            lattice_observability::filter(
+                &records,
+                level_min,
+                component_eq,
+                None,
+                None,
+                None,
+                None,
+                limit,
+            )
+        }
+    };
+
+    let printed = filtered.len();
+    for r in &filtered {
+        let ts = r.ts_ms;
+        println!(
+            "[{}] {} {}{}: {}",
+            ts,
+            r.level,
+            r.component,
+            r.trace_id
+                .as_deref()
+                .map(|t| format!(" trace={t}"))
+                .unwrap_or_default(),
+            r.message
+        );
+    }
+    if printed == 0 {
+        println!("(no log records match)");
     }
 }
 

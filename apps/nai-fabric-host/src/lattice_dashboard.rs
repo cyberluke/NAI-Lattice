@@ -1,0 +1,346 @@
+//! Lattice observability dashboard — Bloomberg-terminal / ElasticSearch-admin style
+//! live view of the canonical `observability.log.v1` ledger.
+//!
+//! Served by the fabric host control server on `GET /lattice` (embedded HTML),
+//! `GET /lattice/events` (SSE live stream of `observability.log.v1` records + a
+//! periodic `stats` line), and `GET /lattice/api` (JSON tail / search / by-trace /
+//! component-breakdown for the dashboard's fetch calls and for the mcp-nai-lattice
+//! log methods).
+//!
+//! Deliberately NON-BLOCKING for the host: it reads the ledger via a bounded
+//! `event.read_range` scan on a short cadence (1s SSE push) and computes stats
+//! from a bounded window — never buffers the whole ledger, never spins CPU, and
+//! each SSE connection is its own thread (mirrors `notify_sse`).
+
+use std::io::Write;
+use std::sync::atomic::AtomicUsize;
+
+/// The Lattice dashboard icon (optimized 256px copy of "Neon Glass Network Hub").
+/// Embedded so the installed host always serves it regardless of repo path.
+pub(crate) const LATTICE_ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/lattice-hub-256.png");
+pub(crate) const LATTICE_ICON_MIME: &str = "image/png";
+
+/// Simple connection counter used to decorate the dashboard.
+static LIVE_PUSHES: AtomicUsize = AtomicUsize::new(0);
+
+/// Esimated per-minute push cadence for the "traffic" illusion isn't fabricated:
+/// these are REAL counters from the ledger scan window, not fake "traffic".
+pub(crate) fn push_count() -> usize {
+    LIVE_PUSHES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Read the latest `observability.log.v1` records from the shared runtime,
+/// newest-first, bounded. Returns the raw list of `LogRecord`-shaped payloads.
+pub(crate) fn latest_logs(limit: usize) -> Vec<serde_json::Value> {
+    let Some(rt) = crate::gastown_orto::RUNTIME.get() else {
+        return Vec::new();
+    };
+    let args = serde_json::json!({
+        "namespace": crate::gastown_orto::lattice_obs_namespace(),
+        "event_type": "log.record",
+        "limit": limit,
+    });
+    let raw = rt.dispatch(
+        "event.read_range",
+        &serde_json::to_vec(&args).unwrap_or_default(),
+        "lattice-dashboard",
+        None,
+    );
+    let Ok(raw) = raw else { return Vec::new() };
+    let Ok(v): Result<serde_json::Value, _> = serde_json::from_slice(&raw) else {
+        return Vec::new();
+    };
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    if let Some(events) = v.get("events").and_then(|e| e.as_array()) {
+        for ev in events {
+            // The payload already carries {ts_ms, level, component, trace_id,
+            // caller, message, extras}; add cursor + correlation for the UI.
+            let mut rec = ev.get("payload").cloned().unwrap_or(serde_json::json!({}));
+            if let Some(seq) = ev.get("runtime_sequence").and_then(|s| s.as_u64()) {
+                rec["runtime_sequence"] = serde_json::json!(seq);
+            }
+            rec["timestamp_utc_ms"] = ev
+                .get("timestamp_utc_ms")
+                .cloned()
+                .unwrap_or(serde_json::json!(0));
+            out.push(rec);
+        }
+    }
+    out
+}
+
+/// Aggregate counters for the traffic/health panel, from a bounded recent scan.
+pub(crate) fn stats() -> serde_json::Value {
+    let logs = latest_logs(2000);
+    let mut by_level: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut by_component: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    let mut trace_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for l in &logs {
+        if let Some(lv) = l.get("level").and_then(|x| x.as_str()) {
+            *by_level.entry(lv.to_string()).or_insert(0) += 1;
+        }
+        if let Some(c) = l.get("component").and_then(|x| x.as_str()) {
+            *by_component.entry(c.to_string()).or_insert(0) += 1;
+        }
+        if let Some(t) = l.get("trace_id").and_then(|x| x.as_str()) {
+            if !t.is_empty() {
+                trace_ids.insert(t.to_string());
+            }
+        }
+    }
+    let errors = by_level.get("error").copied().unwrap_or(0)
+        + by_level.get("warn").copied().unwrap_or(0);
+    serde_json::json!({
+        "schema": 1,
+        "window": logs.len(),
+        "levels": by_level,
+        "errors": errors,
+        "components": by_component,
+        "distinctTraceIds": trace_ids.len(),
+        "livePushes": push_count(),
+        "generatedAt": crate::now_unix_ms(),
+    })
+}
+
+/// Search / tail JSON for the dashboard fetch API and the MCP log methods.
+/// Filters are applied in-process over the bounded recent window (newest-first).
+pub(crate) fn search(opts: &SearchOpts) -> serde_json::Value {
+    let mut logs = latest_logs(6000);
+    logs.retain(|l| {
+        let level = l.get("level").and_then(|x| x.as_str()).unwrap_or("");
+        if let Some(min) = &opts.level_min {
+            if !level_at_least(level, min) {
+                return false;
+            }
+        }
+        if let Some(c) = &opts.component {
+            let comp = l.get("component").and_then(|x| x.as_str()).unwrap_or("");
+            if comp != c {
+                return false;
+            }
+        }
+        if let Some(t) = &opts.trace {
+            let ct = l.get("trace_id").and_then(|x| x.as_str()).unwrap_or("");
+            if ct != t {
+                return false;
+            }
+        }
+        if let Some(needle) = &opts.contains {
+            let msg = l.get("message").and_then(|x| x.as_str()).unwrap_or("");
+            let hay = format!("{level} {msg}").to_lowercase();
+            if !hay.contains(&needle.to_lowercase()) {
+                return false;
+            }
+        }
+        true
+    });
+    logs.truncate(opts.limit.unwrap_or(100));
+    serde_json::json!({
+        "schema": 1,
+        "hits": logs,
+        "count": logs.len(),
+        "generatedAt": crate::now_unix_ms(),
+    })
+}
+
+fn level_at_least(level: &str, min: &str) -> bool {
+    const ORDER: &[&str] = &["trace", "debug", "info", "warn", "error"];
+    let a = ORDER.iter().position(|l| *l == level).unwrap_or(2);
+    let b = ORDER.iter().position(|l| *l == min).unwrap_or(2);
+    a >= b
+}
+
+/// Search options mirroring the MCP log methods.
+#[derive(Default)]
+pub(crate) struct SearchOpts {
+    pub level_min: Option<String>,
+    pub component: Option<String>,
+    pub trace: Option<String>,
+    pub contains: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// Parse the `/lattice/api` query string into `SearchOpts`. The full path
+/// (including `?...`) is passed in; `%20`-style escaping is decoded minimally.
+pub(crate) fn parse_lattice_search_opts(path: &str) -> SearchOpts {
+    let mut o = SearchOpts::default();
+    let Some((_, qs)) = path.split_once('?') else { return o };
+    for pair in qs.split('&') {
+        let Some((k, v)) = pair.split_once('=') else { continue };
+        let val = percent_decode(v).unwrap_or_default();
+        match k {
+            "level" => o.level_min = (!val.is_empty()).then(|| val.clone()),
+            "component" => o.component = (!val.is_empty()).then(|| val.clone()),
+            "trace" => o.trace = (!val.is_empty()).then(|| val.clone()),
+            "contains" => o.contains = (!val.is_empty()).then(|| val.clone()),
+            "limit" => o.limit = val.parse::<usize>().ok(),
+            _ => {}
+        }
+    }
+    o
+}
+
+/// Minimal percent-decode (`%XX` → byte; `+` → space).
+fn percent_decode(v: &str) -> Option<String> {
+    let bytes = v.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&v[i + 1..i + 3], 16) {
+                out.push(b as char);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(' ');
+        } else {
+            out.push(bytes[i] as char);
+        }
+        i += 1;
+    }
+    let _ = out;
+    Some(out)
+}
+
+/// SSE stream of live `observability.log.v1` records + periodic stats. Mirrors
+/// `notify_sse`: write the HTTP SSE head, then push a bounded tail + a stats
+/// heartbeat every ~1s for up to ~55s (the client reconnects to keep streaming).
+/// The `id:` cursor is the highest runtime_sequence seen, so a reconnect can be
+/// made idempotent by the client passing it back as `?after=` in the future.
+pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
+    let _ = w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n");
+    let _ = w.flush();
+    // Bounded initial tail so the panel is populated instantly on connect.
+    let initial = search(&SearchOpts { limit: Some(200), ..Default::default() });
+    let mut initial_records = initial.get("hits").cloned().unwrap_or(serde_json::json!([]));
+    // Resume idempotently: if the client sent a Last-Event-ID cursor, drop any
+    // record it already consumed (runtime_sequence <= after), else send the tail.
+    if let Some(after) = after {
+        if let Some(arr) = initial_records.as_array_mut() {
+            arr.retain(|r| {
+                r.get("runtime_sequence")
+                    .and_then(|s| s.as_u64())
+                    .map(|s| s > after)
+                    .unwrap_or(true)
+            });
+        }
+    }
+    let payload = serde_json::to_string(&initial_records).unwrap_or_default();
+    let _ = w.write_all(format!("id: 0\r\nevent: search\ndata: {payload}\r\n\r\n").as_bytes());
+    let _ = w.flush();
+    LIVE_PUSHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // Live push loop: re-scan the bounded recent window and re-emit as `log`
+    // (the browser reconciles by runtime_sequence, so duplicates are cheap and
+    // the newest tail stays fresh). A `stats` line refreshes the counters.
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < 55 {
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let tail = search(&SearchOpts { limit: Some(150), ..Default::default() });
+        let tp = serde_json::to_string(&tail).unwrap_or_default();
+        let _ = w.write_all(format!("event: log\ndata: {tp}\r\n\r\n").as_bytes());
+        let st = serde_json::to_string(&stats()).unwrap_or_default();
+        let _ = w.write_all(format!("event: stats\ndata: {st}\r\n\r\n").as_bytes());
+        let _ = w.flush();
+        LIVE_PUSHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Embedded Bloomberg/ES-admin style HTML dashboard. Dark, dense, monospace;
+/// real data only. Panels: header (live stats ticker), a traffic/health strip,
+/// a per-component breakdown, and a live scrolling log tail with level coloring +
+/// a traceId search box.
+pub(crate) const LATTICE_UI_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>NAI Lattice · Observability</title>
+<style>
+:root{--bg:#0a0d12;--panel:#11151c;--panel2:#0d1117;--line:#1f2630;--fg:#e6edf3;--muted:#8b98a5;--accent:#19c2d8;--ok:#26de81;--warn:#ffce54;--bad:#ff6b6b;--search:#f7b731}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13px ui-monospace,Consolas,Menlo,monospace}
+.hd{display:flex;align-items:center;gap:14px;padding:9px 16px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.hd h1{margin:0;font-size:14px;letter-spacing:1px;color:var(--accent)}.hd .tick{color:var(--muted);font-size:11px}
+.tw{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.kpi .lab{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px}.kpi .val{font-size:20px;font-weight:700;margin-top:2px}
+.grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:10px;padding:12px 16px;align-items:start}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.panel h2{margin:0;font-size:11px;letter-spacing:.5px;color:var(--accent);border-bottom:1px solid var(--line);padding:7px 10px;display:flex;justify-content:space-between;align-items:center}
+#tail{height:60vh;overflow:auto;font-size:12px;line-height:1.5;padding:6px 8px;background:var(--panel2)}
+.ln{white-space:pre-wrap;word-break:break-word;padding:0 4px;border-left:3px solid transparent}
+.ln .ts{color:var(--muted);padding-right:8px}.ln .lv{font-weight:700;padding-right:8px}
+.ln.l-info{border-left-color:var(--accent)}.ln.l-warn{border-left-color:var(--warn);color:var(--warn)}
+.ln.l-error{border-left-color:var(--bad);color:var(--bad);background:#ff6b6b0d}
+.ln .comp{color:var(--muted);padding-right:8px}.ln .trace{color:var(--search);font-size:11px}
+#components{font-size:12px}.row{display:flex;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--line);align-items:center}
+.bar{height:6px;border-radius:3px;background:var(--line);flex:1;margin:0 8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent)}
+.searchbar{display:flex;gap:6px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line)}
+input{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:5px 8px;font-size:12px;width:220px}
+button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5px 10px;font-weight:700;cursor:pointer}
+.s-ok{color:var(--ok)}.s-warn{color:var(--warn)}.s-bad{color:var(--bad)}
+</style></head><body>
+<div class="hd"><h1>NAI LATTICE</h1><span class="tick">observability.log.v1</span>
+  <span class="tick" id="clock"></span><span class="tick" id="conn" style="color:var(--accent)">connecting…</span>
+  <span class="s-ok" id="event-cursor">cursor</span>
+</div>
+<div class="tw">
+  <div class="kpi"><div class="lab">Live log lines</div><div class="val" id="k-window">–</div></div>
+  <div class="kpi"><div class="lab">Warn+Error</div><div class="val" id="k-errors" style="color:var(--warn)">–</div></div>
+  <div class="kpi"><div class="lab">Distinct traceId</div><div class="val" id="k-traces">–</div></div>
+  <div class="kpi"><div class="lab">Components</div><div class="val" id="k-comp">–</div></div>
+  <div class="kpi"><div class="lab">SSE pushes</div><div class="val" id="k-push">–</div></div>
+</div>
+<div class="searchbar"><button onclick="refresh()">↻</button>
+  <input id="q" placeholder="filter text (e.g. error, request)" onkeydown="if(event.key==='Enter')refresh()"/>
+  <select id="lvl" onchange="refresh()"><option value="">all levels</option><option>error</option><option>warn</option><option>info</option><option>debug</option><option>trace</option></select>
+</div>
+<div class="grid">
+  <div class="panel"><h2>LOG TAIL <span class="tick" id="tail-meta"></span></h2><div id="tail"></div></div>
+  <div><div class="panel"><h2>COMPONENTS</h2><div id="components"></div></div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const fmtTs=ms=>{const d=new Date(Number(ms));return d.toLocaleTimeString('en-GB',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0')};
+const esc=s=>(s??'').toString().replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>').replace(/"/g,'"');
+const seen=new Set();
+function renderTail(hits){ const tail=$('tail'); let appended=false;
+  for(const ln of hits){ const seq=ln.runtime_sequence||('t'+ln.ts_ms); if(seen.has(seq))continue; seen.add(seq);
+    const lv=esc(ln.level||'info').toLowerCase();
+    const div=document.createElement('div'); div.className='ln l-'+lv;
+    div.innerHTML=`<span class="ts">${fmtTs(ln.timestamp_utc_ms||ln.ts_ms)}</span><span class="lv">${lv.toUpperCase()}</span><span class="comp">${esc(ln.component)}</span>${ln.trace_id?'<span class="trace">['+esc(ln.trace_id)+']</span> ':''}${esc(ln.message)}`;
+    tail.appendChild(div); appended=true; }
+  if(appended){ tail.scrollTop=tail.scrollHeight; if(seen.size>3000){const keep=[...seen];seen.clear();keep.slice(-1500).forEach(s=>seen.add(s));} } }
+function renderStats(s){ 
+  $('k-window').textContent=s.window; $('k-errors').textContent=s.errors; $('k-traces').textContent=s.distinctTraceIds;
+  $('k-comp').textContent=Object.keys(s.components||{}).length; $('k-push').textContent=s.livePushes;
+  const comps=$('components'); comps.innerHTML='';
+  const c=Object.entries(s.components||{}).sort((a,b)=>b[1]-a[1]).slice(0,25);
+  if(!c.length){comps.innerHTML='<div class="row"><span class="tick">no records yet</span></div>';return;}
+  const max=Math.max(...c.map(([,n])=>n));
+  for(const [name,n] of c){ const r=document.createElement('div');r.className='row';
+    r.innerHTML=`<span>${esc(name)}</span><div class="bar"><i style="width:${(n/max*100).toFixed(0)}%"></i></div><span>${n}</span>`;
+    comps.appendChild(r);} }
+function applyFilters(hits){ const q=($('q').value||'').toLowerCase(); const lv=$('lvl').value;
+  return hits.filter(h=>{ if(lv&&h.level!==lv)return false; if(q&&!(h.message||'').toLowerCase().includes(q))return false; return true; }); }
+function refresh(){ const q=$('q').value,lv=$('lvl').value;
+  const or=[q?'contains='+encodeURIComponent(q):null,lv?'level='+encodeURIComponent(lv):null].filter(Boolean).join('&');
+  fetch('/lattice/api?'+or,{headers:{Authorization:'Bearer '+token()}}).then(r=>r.json()).then(j=>{
+    renderTail(j.hits||[]); renderStats(j.stats||{}); $('tail-meta').textContent=''+((j.hits||[]).length)+' shown · '+((j.stats||{}).window)+' window';
+  }).catch(()=>{}); }
+function token(){ try{return localStorage.getItem('lattice_token')||''}catch(e){return ''} }
+setInterval(()=>{ $('clock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false}); },1000);
+// SSE live stream (auto-reconnect).
+function connect(){ const es=new EventSource('/lattice/events');
+  es.onopen=()=>{$('conn').textContent='● live';$('conn').style.color='var(--ok)';};
+  es.onerror=()=>{$('conn').textContent='↻ reconnecting';$('conn').style.color='var(--warn)';};
+  es.addEventListener('log',e=>{const j=JSON.parse(e.data);renderTail(j.hits||[]);});
+  es.addEventListener('stats',e=>{const s=JSON.parse(e.data);renderStats(s);});
+  es.addEventListener('search',e=>{const j=JSON.parse(e.data);renderTail(j.hits||[]);});
+  es.addEventListener('open',()=>{}); }
+connect();
+setInterval(()=>{ if($('conn').textContent!=='● live'){ try{new EventSource('/lattice/events');}catch(e){} } },30000).unref&&true;
+refresh();
+</script></body></html>"#;

@@ -15,6 +15,9 @@ lattice-ledger = { path = "../../crates/lattice-ledger" }
 lattice-cas = { path = "../../crates/lattice-cas" }
 lattice-gastown = { path = "../../crates/lattice-gastown" }
 lattice-protocol = { path = "../../crates/lattice-protocol" }
+lattice-client = { path = "../../crates/lattice-client" }
+lattice-observability = { path = "../../crates/lattice-observability" }
+tokio.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 prost.workspace = true

@@ -32,6 +32,11 @@ import { basename, dirname, join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod"
+import { fetchLogs, fetchStats } from "./fabric.js"
+import {
+  readTodos, upsertTask, newTask, doneCheck, persistTask,
+  type Task, type GateKind,
+} from "./todo.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LM_BASE = process.env.LM_STUDIO_URL ?? "http://127.0.0.1:1234/v1"
@@ -688,6 +693,312 @@ workspacePaths: z.array(z.string()).min(1).describe(
     return {
       content: [{ type: "text" as const, text: JSON.stringify({ hits: ordered }) }],
       structuredContent: { hits: ordered },
+    }
+  },
+)
+
+server.registerTool(
+  "log_tail",
+  {
+    title: "Tail the NAI Lattice observability ledger (latest log records)",
+    description:
+      "Read the latest structured log records from the canonical observability.log.v1 ledger on the fabric host (NAI OS backend, webview consoles, sidecar output, and the Lattice dashboard/CLI all write here). Kibana/ElasticSearch-style tail. Filter by level, component (a Rust module, a webview label, or sidecar[pid]), traceId, or message text. Use this when an agent needs to inspect real runtime logs instead of asking a human to open DevTools or NAI OS.log. Returns newest-first records with ts_ms, level, component, trace_id, caller, message.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(500).optional().describe("Max records (default 50)."),
+      level: z.enum(["trace", "debug", "info", "warn", "error"]).optional().describe("Only records at least this severity (e.g. 'error' shows error+warn)."),
+      component: z.string().optional().describe("Exact component to filter (Rust module, webview label, or sidecar[pid])."),
+      trace: z.string().optional().describe("Filter by an exact traceId to follow one request end-to-end."),
+      contains: z.string().optional().describe("Case-insensitive substring matched against level+message."),
+    },
+  },
+  async ({ limit, level, component, trace, contains }) => {
+    const { records, error } = await fetchLogs({
+      limit: limit ?? 50,
+      level,
+      component,
+      trace,
+      contains,
+    })
+    if (error) {
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error }) }],
+        isError: true,
+      }
+    }
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true, count: records.length, records }) }],
+      structuredContent: { ok: true, records },
+    }
+  },
+)
+
+server.registerTool(
+  "log_search",
+  {
+    title: "Search the NAI Lattice observability ledger for a substring",
+    description:
+      "Search the structured observability.log.v1 ledger for records whose level or message contains a text substring (case-insensitive). Kibana/ES-style free-text search over the live log stream on the fabric host. Use to find a specific error, a request id, a component's messages, or a string that appeared in a recent failure — without touching DevTools or NAI OS.log.",
+    inputSchema: {
+      contains: z.string().describe("Substring to search in level + message (case-insensitive)."),
+      limit: z.number().int().min(1).max(500).optional().describe("Max hit records (default 50)."),
+      level: z.enum(["trace", "debug", "info", "warn", "error"]).optional().describe("Only records at least this severity."),
+      component: z.string().optional().describe("Exact component to narrow to."),
+    },
+  },
+  async ({ contains, limit, level, component }) => {
+    if (!contains) {
+      return { content: [{ type: "text" as const, text: "log_search requires a non-empty `contains`." }], isError: true }
+    }
+    const { records, error } = await fetchLogs({ limit: limit ?? 50, level, component, contains })
+    if (error) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error }) }], isError: true }
+    }
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true, count: records.length, records }) }],
+      structuredContent: { ok: true, records },
+    }
+  },
+)
+
+server.registerTool(
+  "log_traffic",
+  {
+    title: "NAI Lattice observability traffic/health summary",
+    description:
+      "Aggregate traffic and health over the observability.log.v1 ledger: how many records, per-level counts, error+warn total, per-component breakdown, and distinct traceIds in a bounded recent window. Use to answer 'is the runtime healthy, how deep is the traffic, which component is noisy, how many distinct concurrent requests' — a live health pulse without opening the dashboard.",
+    inputSchema: {},
+  },
+  async () => {
+    const s = await fetchStats()
+    if (s.error) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: s.error }) }], isError: true }
+    }
+    const text = `${JSON.stringify(s)}`
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { ok: true, ...s },
+    }
+  },
+)
+
+// ── Shared mind-map TODO tools (authoritative in the lattice, cross-agent) ────
+// Agents DO NOT hunt for a per-repo TODO file. The authoritative list is the
+// `todo.jsonl` ledger in this package's `state/` dir, read/written via these
+// tools. `todo_done_check` is the quality gate: a list is milestone-DONE only
+// when every item is done OR the still-open gated items have their build/deploy
+// gate recorded with evidence. Commit the returned `commitChecklist` when the
+// current list reaches a milestone.
+
+function tasksToStructured(tasks: Task[]) {
+  return tasks.map((t) => ({
+    id: t.id,
+    parent: t.parent ?? null,
+    title: t.title,
+    status: t.status,
+    createdBy: t.createdBy,
+    createdAt: t.createdAt,
+    doneAt: t.doneAt ?? null,
+    gated: t.gated ? { needsBuild: !!t.gated.needsBuild, needsDeploy: !!t.gated.needsDeploy } : null,
+    gates: t.gates
+      ? {
+          build: t.gates.build ? { ok: t.gates.build.ok, cmd: t.gates.build.cmd ?? "", evidence: t.gates.build.evidence ?? "", doneAt: t.gates.build.doneAt } : null,
+          deploy: t.gates.deploy ? { ok: t.gates.deploy.ok, cmd: t.gates.deploy.cmd ?? "", evidence: t.gates.deploy.evidence ?? "", doneAt: t.gates.deploy.doneAt } : null,
+        }
+      : null,
+  }))
+}
+
+server.registerTool(
+  "todo_add",
+  {
+    title: "Add a task to the shared mind-map todo list",
+    description:
+      "Append a task to the NAI-Lattice shared todo ledger (cross-project, cross-agent). The list is authoritative and lives in the lattice, NOT in a per-repo file — use this instead of searching for a local TODO/buglist. Optional `parent` links it as a sub-task (mind-map nesting). Optional `needsBuild` / `needsDeploy` marks it as quality-gated: it can only be marked done after the corresponding gate is recorded via todo_gate. Use this automatically whenever the human asks to 'add to the todo list'.",
+    inputSchema: {
+      title: z.string().describe("The task. Keep it a single, actionable, evidence-able statement."),
+      parent: z.string().optional().describe("Optional parent task id to nest this as a child (mind-map)."),
+      needsBuild: z.boolean().optional().describe("If true, this task is NOT done until a build gate is recorded (todo_gate)."),
+      needsDeploy: z.boolean().optional().describe("If true, this task is NOT done until a deploy gate is recorded (todo_gate)."),
+    },
+    outputSchema: {
+      ok: z.boolean(),
+      task: z.object({ id: z.string(), parent: z.string().nullable(), title: z.string(), status: z.string(), createdBy: z.string(), createdAt: z.string(), gated: z.any().optional() }),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ title, parent, needsBuild, needsDeploy }) => {
+    const t = newTask(title, {
+      parent: parent ?? null,
+      gated: needsBuild || needsDeploy ? { needsBuild: !!needsBuild, needsDeploy: !!needsDeploy } : undefined,
+      createdBy: "agent",
+    })
+    const r = await persistTask(t)
+    if (!r.ok) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: r.reason ?? "failed to persist" }) }], isError: true }
+    }
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true, task: t.id, title }) }],
+      structuredContent: { ok: true, task: t },
+    }
+  },
+)
+
+server.registerTool(
+  "todo_list",
+  {
+    title: "List the shared mind-map todo + done determination",
+    description:
+      "Render the NAI-Lattice shared todo list as a tree (parent/child). Returns every task with status/timestamps, plus the AUTHORITATIVE `doneCheck`: whether the CURRENT list has reached a done milestone (all_items, build_done, or deploy_done) and, if not, which tasks still block it (open_remaining / needs_build / needs_deploy / blocked). Use to keep the shared list up to date and to decide when to commit.",
+    inputSchema: {},
+    outputSchema: {
+      tasks: z.array(z.any()),
+      doneCheck: z.any(),
+    },
+    annotations: READ_ONLY,
+  },
+  async () => {
+    const tasks = readTodos()
+    const check = doneCheck()
+    const text = JSON.stringify({ tasks: tasksToStructured(tasks), doneCheck: check }, null, 2)
+    return {
+      content: [{ type: "text" as const, text }],
+      structuredContent: { tasks: tasksToStructured(tasks), doneCheck: check },
+    }
+  },
+)
+
+server.registerTool(
+  "todo_update",
+  {
+    title: "Update a task status or parent",
+    description:
+      "Transition a task in the shared todo ledger (open / in_progress / blocked / done). A task marked `needsBuild`/`needsDeploy` cannot be set `done` unless its gate is satisfied — the server refuses the `done` transition and tells you to record the gate via todo_gate first. This is the enforcement half of the quality gate.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      status: z.enum(["open", "in_progress", "blocked", "done"]).optional().describe("New status."),
+      parent: z.string().nullable().optional().describe("Change the parent (reparent in the mind map)."),
+      title: z.string().optional().describe("Edit the title."),
+    },
+    outputSchema: {
+      ok: z.boolean(),
+      task: z.any().optional(),
+      error: z.string().optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ id, status, parent, title }) => {
+    const todos = readTodos()
+    const t = todos.find((x) => x.id === id)
+    if (!t) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: `no task ${id}` }) }], isError: true }
+    }
+    const next: Task = { ...t }
+    if (title !== undefined) next.title = title
+    if (parent !== undefined) next.parent = parent
+    if (status !== undefined) {
+      if (status === "done") {
+        const gated = next.gated
+        const buildOk = gated?.needsBuild && next.gates?.build?.ok
+        const deployOk = gated?.needsDeploy && next.gates?.deploy?.ok
+        const ungated = !gated?.needsBuild && !gated?.needsDeploy
+        if (!ungated && !(buildOk && (!gated.needsDeploy || deployOk))) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task is quality-gated; record the build/deploy gate via todo_gate before marking done", gates: next.gates }) }],
+            isError: true,
+          }
+        }
+        next.status = "done"
+        next.doneAt = new Date().toISOString()
+      } else {
+        // status !== "done" here (the if/else narrowed it), so just assign; no
+        // doneAt mutation needed. doneAt stays undefined unless it was re-done.
+        next.status = status
+      }
+    }
+    const saved = upsertTask(next)
+    if (!saved) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "failed to persist update" }) }], isError: true }
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }], structuredContent: { ok: true, task: saved } }
+  },
+)
+
+server.registerTool(
+  "todo_gate",
+  {
+    title: "Record a build/deploy quality-gate result for a task",
+    description:
+      "Record that a build (or deploy) was actually performed for a task, with evidence: the exact command run, its exit code, and where the artifact landed. Only tasks marked `needsBuild`/`needsDeploy` are affected. This is how a quality-gated task becomes eligible for `done`. Evidence-backed: never record a gate you did not actually run.",
+    inputSchema: {
+      id: z.string().describe("The task id."),
+      kind: z.enum(["build", "deploy"]).describe("Which gate you performed."),
+      ok: z.boolean().describe("Did it pass?"),
+      cmd: z.string().optional().describe("The exact command you ran."),
+      evidence: z.string().optional().describe("Where the build/deploy artifact landed, or the observed result."),
+    },
+    outputSchema: {
+      ok: z.boolean(),
+      task: z.any().optional(),
+      error: z.string().optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  async ({ id, kind, ok, cmd, evidence }) => {
+    const todos = readTodos()
+    const t = todos.find((x) => x.id === id)
+    if (!t) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: `no task ${id}` }) }], isError: true }
+    }
+    if (!t.gated?.needsBuild && !t.gated?.needsDeploy) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task is not quality-gated (no needsBuild/needsDeploy), gate not recorded" }) }], isError: true }
+    }
+    const next: Task = { ...t, gates: { ...(t.gates ?? {}) } }
+    const gk: GateKind = kind
+    if (gk === "build" && !t.gated.needsBuild) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task does not require a build gate" }) }], isError: true }
+    }
+    if (gk === "deploy" && !t.gated.needsDeploy) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task does not require a deploy gate" }) }], isError: true }
+    }
+    next.gates![gk] = { kind: gk, ok: !!ok, cmd, evidence, doneAt: new Date().toISOString() }
+    const saved = upsertTask(next)
+    if (!saved) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "failed to persist gate" }) }], isError: true }
+    }
+    return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, gate: next.gates![gk] }) }], structuredContent: { ok: true, task: saved } }
+  },
+)
+
+server.registerTool(
+  "todo_done_check",
+  {
+    title: "Quality-gate check: is the current list done, and what to commit?",
+    description:
+      "The authoritative 'is the current list done' test. Returns done:true with a milestone (all_items / build_done / deploy_done) and an exact commitChecklist (evidence-bearing commit message body) when the current list is at a done milestone. Returns done:false with the list of blocking tasks when it isn't. When done:true, the agent/host should commit the commitChecklist to mark the milestone — the list itself is durable in the lattice ledger, the commit is the team-facing record. Work is infinite-scroll: this is a MILESTONE on the current list, not a terminal end.",
+    inputSchema: {},
+    outputSchema: {
+      done: z.boolean(),
+      milestone: z.string().optional(),
+      reason: z.string().optional(),
+      summary: z.any(),
+      commitChecklist: z.array(z.string()).optional(),
+      incomplete: z.array(z.any()).optional(),
+    },
+    annotations: READ_ONLY,
+  },
+  async () => {
+    const check = doneCheck()
+    const incomplete = check.done ? [] : (check as { incomplete?: Task[] }).incomplete ?? []
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(check, null, 2) }],
+      structuredContent: {
+        done: check.done,
+        milestone: check.done ? (check as { milestone: string }).milestone : undefined,
+        reason: check.done ? undefined : (check as { reason: string }).reason,
+        summary: check.summary,
+        commitChecklist: check.done ? (check as { commitChecklist: string[] }).commitChecklist : undefined,
+        incomplete: incomplete.map((t) => ({ id: t.id, title: t.title, status: t.status })),
+      },
     }
   },
 )

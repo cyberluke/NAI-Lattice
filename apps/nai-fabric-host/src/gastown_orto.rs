@@ -23,7 +23,14 @@ pub(crate) static STORE: std::sync::OnceLock<Arc<OrchestrationStore>> = std::syn
 pub(crate) static CTRL: std::sync::OnceLock<Arc<ControlApi>> = std::sync::OnceLock::new();
 /// Runtime handle for the HTTP control API (so /mayor etc. can tick the
 /// orchestrator + supervise real agents).
-static RUNTIME: std::sync::OnceLock<Arc<LatticeRuntime>> = std::sync::OnceLock::new();
+pub(crate) static RUNTIME: std::sync::OnceLock<Arc<LatticeRuntime>> = std::sync::OnceLock::new();
+
+/// Canonical namespace for the observability log stream. Exposed here so the
+/// Lattice dashboard (lattice_dashboard.rs) queries the SAME ledger surface the
+/// log observer and CLI write/read.
+pub(crate) fn lattice_obs_namespace() -> &'static str {
+    "observability.log.v1"
+}
 
 /// Supervised real-model Gas Town agent worker subcommand. Reads a request JSON
 /// (via argv[1] temp file), runs the real model once, applies file changes to
@@ -1064,6 +1071,35 @@ pub(crate) fn dispatch_orto(
                 serde_json::json!({"ok": false, "error": "bead not found"})
             }
         }
+        "gt.project.set_bead_controls" => {
+            // Per-task behavior controls (the "enable/disable on the fly" UI):
+            //   { inquisitor: bool, reviewer: bool, agents: bool,
+            //     review_mode: "ReviewThenLand" | "ReviewAndMerge" }
+            // Stored in the primary bead's metadata as `hive_controls`. The
+            // Inquisitor governor (process_hook_events), the reviewer dispatch,
+            // and the town-agent scheduler read these flags to gate execution
+            // per Kanban task, so a task can opt in/out of each live.
+            let bead = args["bead_id"].as_str().unwrap_or("");
+            let inquisitor = args["inquisitor"].as_bool();
+            let reviewer = args["reviewer"].as_bool();
+            let agents = args["agents"].as_bool();
+            let review_mode = args["review_mode"].as_str().map(str::to_string);
+            if inquisitor.is_none() && reviewer.is_none() && agents.is_none() && review_mode.is_none() {
+                return serde_json::json!({"ok": false, "error": "at least one of {inquisitor, reviewer, agents, review_mode} is required"});
+            }
+            if let Some(mut b) = store.get_bead(bead) {
+                let mut c = b.metadata["hive_controls"].as_object().cloned().unwrap_or_default();
+                if let Some(v) = inquisitor { c.insert("inquisitor".into(), serde_json::json!(v)); }
+                if let Some(v) = reviewer { c.insert("reviewer".into(), serde_json::json!(v)); }
+                if let Some(v) = agents { c.insert("agents".into(), serde_json::json!(v)); }
+                if let Some(v) = review_mode { c.insert("review_mode".into(), serde_json::json!(v)); }
+                b.metadata["hive_controls"] = serde_json::Value::Object(c);
+                store.put_bead(&b);
+                serde_json::json!({"ok": true, "bead_id": bead, "hive_controls": b.metadata["hive_controls"]})
+            } else {
+                serde_json::json!({"ok": false, "error": "bead not found"})
+            }
+        }
         "gt.project.set_resource_roots" => {
             // P0 (multi-repo): set/refresh the project's allowed RESOURCE ROOTS.
             // A real project like TaoAvatar spans several repos (MNN framework,
@@ -1554,6 +1590,24 @@ impl HostAgentRunner {
 
 impl AgentRunner for HostAgentRunner {
     fn run_agent(&self, ctx: &DispatchCtx) -> Result<DispatchResult, String> {
+        // Per-task controls (UI toggles "on the fly", stored per bead in
+        // metadata.hive_controls). If a Kanban task disables the reviewer or the
+        // town agents, skip that dispatch here WITHOUT running any model so the
+        // toggle has real effect (not just UI).
+        let hive_controls = ctx.bead.metadata.get("hive_controls");
+        // Reviewer toggle: skip a REVIEW-PASS dispatch when reviewer=false.
+        if ctx.review_role.is_some() {
+            if hive_controls.and_then(|c| c.get("reviewer")).and_then(|v| v.as_bool()) == Some(false) {
+                return Ok(DispatchResult { done: false, pr_url: None, summary: Some("review pass skipped (hive_controls.reviewer=false)".into()), review: None });
+            }
+        }
+        // Town-agent toggle: skip a non-review agent dispatch (polecat/refinery/
+        // mayor) when agents=false.
+        if ctx.review_role.is_none() {
+            if hive_controls.and_then(|c| c.get("agents")).and_then(|v| v.as_bool()) == Some(false) {
+                return Ok(DispatchResult { done: false, pr_url: None, summary: Some("agent dispatch skipped (hive_controls.agents=false)".into()), review: None });
+            }
+        }
         use lattice_supervisor::{ProcessSpec, WorkerLimits};
         // REVIEW-PASS dispatch: the worker consumes the resolved role-specific
         // model (per-role registry) and returns a review decision + anchored
@@ -1912,6 +1966,36 @@ pub(crate) fn start_control_server() {
                             }
                             None => serde_json::json!({"ok":false, "error":"orchestration not ready"}),
                         }
+                    } else if path.split('?').next() == Some("/lattice/icon") {
+                        // Serve the Lattice dashboard icon (embedded PNG) so the
+                        // Fancy toolbar button can display it live from the host.
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: max-age=3600\r\nContent-Length: 89804\r\n\r\n");
+                        let _ = stream.write_all(crate::lattice_dashboard::LATTICE_ICON_PNG);
+                        return;
+                    } else if path.split('?').next() == Some("/lattice") || path.split('?').next() == Some("/lattice/") {
+                        // Lattice observability dashboard (Bloomberg/ES style).
+                        // Embedded single-file HTML+JS, no external deps.
+                        write_html(&mut stream, crate::lattice_dashboard::LATTICE_UI_HTML);
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/events") {
+                        // SSE live stream of observability.log.v1 + periodic stats.
+                        // Resumes from the client's Last-Event-ID (runtime_sequence
+                        // cursor) so reconnects replay only the missed window.
+                        let last = last_event_id_from_headers(&req)
+                            .trim()
+                            .parse::<u64>()
+                            .ok();
+                        crate::lattice_dashboard::lattice_sse(&mut stream, last);
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/api") {
+                        // JSON search / stats for the dashboard fetch + MCP reuse.
+                        let opts = crate::lattice_dashboard::parse_lattice_search_opts(&path);
+                        let mut out = crate::lattice_dashboard::search(&opts);
+                        if let Some(mut o) = out.as_object_mut() {
+                            o.insert("stats".into(), crate::lattice_dashboard::stats());
+                        }
+                        write_resp_status(&mut stream, 200, &out);
+                        return;
                     } else if path.starts_with("/recall") {
                         // Recall: pin an existing Kilo session and surface its
                         // message history / context in the UI. READ-ONLY against
