@@ -56,8 +56,16 @@ pub(crate) fn publish_endpoint_manifest(
     ep: &Endpoints,
     instance_id: &str,
 ) -> Result<(), String> {
+    let control_port = std::env::var("GASTOWN_CTRL_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .unwrap_or(8787);
     let manifest = serde_json::json!({
         "app": "nai-lattice",
+        // The shell discovers the running host from THIS canonical manifest,
+        // rather than assuming its own unrelated environment has the port.
+        "control_http_port": control_port,
         "endpoint_kind": "naf1",
         "protocol": {"min": 1, "max": 1, "selected": 1},
         "canonical_pipe": ep.canonical,
