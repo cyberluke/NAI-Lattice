@@ -213,26 +213,24 @@ pub(crate) fn parse_lattice_search_opts(path: &str) -> SearchOpts {
 
 /// Minimal percent-decode (`%XX` → byte; `+` → space).
 fn percent_decode(v: &str) -> Option<String> {
-    let bytes = v.as_bytes();
-    let mut out = String::new();
+    // Percent decoding is BYTE-based: building chars from %C5%99 separately
+    // corrupts Czech/Vietnamese UTF-8 text and silently breaks log searches.
+    let raw = v.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(raw.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&v[i + 1..i + 3], 16) {
-                out.push(b as char);
+    while i < raw.len() {
+        match raw[i] {
+            b'%' if i + 2 < raw.len() => {
+                let h = std::str::from_utf8(&raw[i + 1..i + 3]).ok()?;
+                let b = u8::from_str_radix(h, 16).ok()?;
+                out.push(b);
                 i += 3;
-                continue;
             }
+            b'+' => { out.push(b' '); i += 1; }
+            b => { out.push(b); i += 1; }
         }
-        if bytes[i] == b'+' {
-            out.push(' ');
-        } else {
-            out.push(bytes[i] as char);
-        }
-        i += 1;
     }
-    let _ = out;
-    Some(out)
+    String::from_utf8(out).ok()
 }
 
 /// Bounded, cursor-resumable SSE. Exactly one connection consumes one lease.
@@ -280,7 +278,7 @@ pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
             }
         }
         tick += 1;
-        if tick.is_multiple_of(4) {
+        if tick % 4 == 0 {
             let payload = serde_json::to_string(&stats()).unwrap_or_default();
             if w.write_all(format!("event: stats\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err() {
                 break;
@@ -469,3 +467,19 @@ window.addEventListener('pagehide',()=>{if(stream)stream.close();});
 connect();
 refresh();
 </script></body></html>"#;
+#[cfg(test)]
+mod dashboard_parser_tests {
+    use super::*;
+    #[test]
+    fn percent_decoder_preserves_utf8_and_plus() {
+        assert_eq!(percent_decode("Praha+%C5%99%C3%ADjen"), Some("Praha říjen".into()));
+        assert_eq!(percent_decode("%E1%BB%87"), Some("ệ".into()));
+        assert_eq!(percent_decode("%FF"), None);
+    }
+    #[test]
+    fn search_limits_are_hard_bounded() {
+        let opts = parse_lattice_search_opts("/lattice/api?limit=9999999&contains=GPU%20hot");
+        assert_eq!(opts.limit, Some(500));
+        assert_eq!(opts.contains.as_deref(), Some("GPU hot"));
+    }
+}
