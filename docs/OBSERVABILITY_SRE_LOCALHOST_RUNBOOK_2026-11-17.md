@@ -61,6 +61,24 @@ exports them. Message contents may nonetheless be sensitive and need redaction.
 9. Restrict sensitive log data and test cross-user READ access. Read
    authentication is NOT yet implemented on these local HTTP routes.
 
+## High-volume ledger indexing gate (NOT CLOSED)
+
+The old dashboard consumed the FIRST N ascending events from event.read_range,
+so after N historical entries it stopped showing new logs. PR #1 fixes
+correctness: tail=true returns the actual last N; SSE uses an exclusive
+after runtime_sequence cursor, so a burst of more than 240 events/tick does
+not silently skip the middle (each tick paginates <=4096 until caught up).
+
+**But:** crates/lattice-ledger/src/lib.rs scan_events presently loads ALL
+sealed and active segment frames, sorts them and then applies the after/limit
+filters. Consequently, correctness of historical queries is repaired but
+their disk I/O and memory remain O(total ledger size), even for a small cursor
+delta. This is NOT suitable for a large 20-hour high-volume stream without
+a durable sequence-to-segment offset index or a singlehost hot-queue projection.
+Before production promotion, implement segment high-water-mark pruning,
+a bounded indexed tail, and a measured high-volume soak. Keep these slow
+queries in the separate Lattice host, never in NAI OS's UI activation path.
+
 ## Security limitations and release ruling
 
 Loopback binding and Host/Origin validation are useful but not equivalent to
