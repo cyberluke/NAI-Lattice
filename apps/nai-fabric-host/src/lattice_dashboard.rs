@@ -45,13 +45,26 @@ pub(crate) fn push_count() -> usize {
 /// Read the latest `observability.log.v1` records from the shared runtime,
 /// newest-first, bounded. Returns the raw list of `LogRecord`-shaped payloads.
 pub(crate) fn latest_logs(limit: usize) -> Vec<serde_json::Value> {
+    read_logs(limit, None, true)
+}
+
+/// Durable cursor pagination is essential: fetching only "most recent 240"
+/// once per second silently skips records during bursts. Every emitted cursor
+/// advances to the LAST ACTUALLY DELIVERED record; the next tick catches up.
+fn logs_after(after: u64, limit: usize) -> Vec<serde_json::Value> {
+    read_logs(limit, Some(after), false)
+}
+
+fn read_logs(limit: usize, after: Option<u64>, tail: bool) -> Vec<serde_json::Value> {
     let Some(rt) = crate::gastown_orto::RUNTIME.get() else {
         return Vec::new();
     };
     let args = serde_json::json!({
         "namespace": crate::gastown_orto::lattice_obs_namespace(),
         "event_type": "log.record",
-        "limit": limit,
+        "limit": limit.min(4096),
+        "tail": tail,
+        "after": after,
     });
     let raw = rt.dispatch(
         "event.read_range",
@@ -247,8 +260,7 @@ pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
     let mut cursor = after.unwrap_or(0);
     // Initial tail, or missing records on reconnect. Never reset the browser's
     // Last-Event-ID to zero (that used to trigger duplicate replay storms).
-    let mut initial = latest_logs(200);
-    initial.retain(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0) > cursor || after.is_none());
+    let mut initial = if after.is_some() { logs_after(cursor, 4096) } else { latest_logs(200) };
     initial.sort_by_key(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0));
     cursor = initial.iter()
         .filter_map(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()))
@@ -264,8 +276,7 @@ pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
     let mut tick = 0usize;
     while started.elapsed() < std::time::Duration::from_secs(55) {
         std::thread::sleep(std::time::Duration::from_millis(1250));
-        let mut recent = latest_logs(240);
-        recent.retain(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0) > cursor);
+        let mut recent = logs_after(cursor, 4096);
         recent.sort_by_key(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0));
         if !recent.is_empty() {
             cursor = recent.iter()
