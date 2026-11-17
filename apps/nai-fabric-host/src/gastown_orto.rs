@@ -1835,6 +1835,27 @@ pub(crate) fn start_scheduler_thread() {
     tracing::info!("Gas Town durable scheduler thread (Inquisitor governor) started");
 }
 
+// A localhost HTTP request still consumes an OS thread in this control
+// server. Bound concurrency so a disconnected dashboard or hostile local
+// client cannot strand hundreds of request workers.
+static ACTIVE_CTRL_HTTP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_CTRL_HTTP: usize = 64;
+struct HttpLease;
+impl HttpLease {
+    fn acquire() -> Option<Self> {
+        ACTIVE_CTRL_HTTP.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |n| (n < MAX_CTRL_HTTP).then_some(n + 1),
+        ).ok().map(|_| Self)
+    }
+}
+impl Drop for HttpLease {
+    fn drop(&mut self) {
+        ACTIVE_CTRL_HTTP.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 /// Minimal HTTP control server (127.0.0.1:8787) — the usable interface
 /// independent of VS Code (town/rig conveyor/bead/agent dashboard).
 pub(crate) fn start_control_server() {
@@ -1855,8 +1876,15 @@ pub(crate) fn start_control_server() {
             tracing::info!(port, "Gas Town control server listening on http://127.0.0.1:{port}/dashboard");
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
+                let Some(lease) = HttpLease::acquire() else {
+                    let _ = write_resp_status(&mut stream, 503, &serde_json::json!({"error":"local control server saturated"}));
+                    continue;
+                };
                 std::thread::spawn(move || {
+                    let _lease = lease;
                     use std::io::{Read as _, Write as _};
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(4)));
+                    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(4)));
                     let mut buf = [0u8; 8192];
                     let n = stream.read(&mut buf).unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]);
@@ -1969,8 +1997,10 @@ pub(crate) fn start_control_server() {
                     } else if path.split('?').next() == Some("/lattice/icon") {
                         // Serve the Lattice dashboard icon (embedded PNG) so the
                         // Fancy toolbar button can display it live from the host.
-                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: max-age=3600\r\nContent-Length: 89804\r\n\r\n");
-                        let _ = stream.write_all(crate::lattice_dashboard::LATTICE_ICON_PNG);
+                        let data = crate::lattice_dashboard::LATTICE_ICON_PNG;
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nCache-Control: private, max-age=3600\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\n\r\n", data.len());
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.write_all(data);
                         return;
                     } else if path.split('?').next() == Some("/lattice") || path.split('?').next() == Some("/lattice/") {
                         // Lattice observability dashboard (Bloomberg/ES style).

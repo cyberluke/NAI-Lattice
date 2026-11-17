@@ -20,7 +20,7 @@
 
 use serde_json::{json, Value};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -62,6 +62,8 @@ impl Level {
     }
 }
 
+static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -73,6 +75,9 @@ fn now_ms() -> u64 {
 /// `observability.log.v1` event payload.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogRecord {
+    /// Process-local monotonic record identity, persisted for idempotent batch retries.
+    #[serde(default)]
+    pub producer_seq: u64,
     #[serde(default)]
     pub ts_ms: u64,
     #[serde(default)]
@@ -93,6 +98,7 @@ impl LogRecord {
     /// Build a record with monotonic-ish timestamp, level and component context.
     pub fn new(level: Level, component: &str, message: impl Into<String>) -> Self {
         Self {
+            producer_seq: LOG_SEQUENCE.fetch_add(1, Ordering::Relaxed),
             ts_ms: now_ms(),
             level: level.as_str().to_string(),
             component: component.to_string(),
@@ -139,8 +145,10 @@ pub fn build_batch_args(producer: &str, records: &[LogRecord]) -> Value {
 /// One item in the `event.append_batch` array.
 fn server_payload(r: &LogRecord, producer: &str) -> Value {
     let idem = format!(
-        "{}||{}||{}||{}",
+        "{}||{}||{}||{}||{}||{}",
         producer,
+        std::process::id(),
+        r.producer_seq,
         r.ts_ms,
         r.component,
         hash_message(&r.message)
@@ -152,6 +160,7 @@ fn server_payload(r: &LogRecord, producer: &str) -> Value {
         "correlation_id": r.trace_id.clone().unwrap_or_default(),
         "payload": json!({
             "ts_ms": r.ts_ms,
+            "producer_seq": r.producer_seq,
             "level": r.level,
             "component": r.component,
             "trace_id": r.trace_id,
@@ -194,38 +203,56 @@ pub trait LogSink: Send + Sync + 'static {
     fn append_batch(&self, producer: &str, records: &[LogRecord]) -> Result<(), String>;
 }
 
-/// Default payload: `event.append_batch` over an existing `NafClient`.
-///
-/// The sink owns a ready `tokio::Runtime` and blocks on the dispatch inside the
-/// (background flush thread) call — the hot `emit()` path never touches it. A
-/// down host just yields an error on flush (degraded, not blocking producers).
+/// A reactor-bound NAF client. Tokio Windows named pipes register their IOCP
+/// handle with the reactor where connect ran: dispatch MUST run on that same
+/// runtime, not on a second Tokio runtime created in a sink constructor.
+pub type DynNafClient = lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>;
+type ConnectFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<DynNafClient, String>> + Send>,
+>;
+type Reconnector = dyn Fn() -> ConnectFuture + Send + Sync;
+
+/// Canonical durable batch sink. The only blocking caller is LogEmitter's
+/// dedicated worker; producers never enter this sink. Failed or timed-out
+/// dispatches discard the protocol stream so a later retry must handshake
+/// cleanly instead of reading a response to an abandoned request.
 pub struct NafSink {
-    client: std::sync::Mutex<lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>>,
-    rt: tokio::runtime::Runtime,
+    client: Mutex<Option<DynNafClient>>,
+    reactor: tokio::runtime::Handle,
+    reconnect: Option<Box<Reconnector>>,
     threshold: Level,
     _producer: String,
 }
 
 impl NafSink {
-    pub fn new(
-        client: lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>,
-        producer: &str,
-    ) -> Self {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("lattice-observability: tokio runtime");
+    /// Must be constructed inside the SAME Tokio runtime that connected the
+    /// client. This is intentional and avoids moving IOCP handles across
+    /// unrelated reactors.
+    pub fn new(client: DynNafClient, producer: &str) -> Self {
+        let reactor = tokio::runtime::Handle::try_current()
+            .expect("NafSink::new must run on the NAF client's Tokio reactor");
         Self {
-            client: std::sync::Mutex::new(client),
-            rt,
-            threshold: Level::Info,
+            client: Mutex::new(Some(client)),
+            reactor,
+            reconnect: None,
+            threshold: Level::Trace,
             _producer: producer.to_string(),
         }
     }
-    /// Set the minimum level to persist (default Info).
+
     pub fn with_threshold(mut self, lvl: Level) -> Self {
         self.threshold = lvl;
+        self
+    }
+
+    /// Provide a reconnect operation scheduled on the SAME reactor. Used by
+    /// NAI OS so a host restart is recoverable without restarting the shell.
+    pub fn with_reconnector<F, Fut>(mut self, connect: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<DynNafClient, String>> + Send + 'static,
+    {
+        self.reconnect = Some(Box::new(move || Box::pin(connect())));
         self
     }
 }
@@ -241,14 +268,33 @@ impl LogSink for NafSink {
             return Ok(());
         }
         let args = build_batch_args(producer, &keep);
-        let json = serde_json::to_vec(&args).map_err(|e| e.to_string())?;
-        let mut client = self.client.lock().map_err(|e| e.to_string())?;
-        let body = self
-            .rt
-            .block_on(client.dispatch("event.append_batch", &json, None))
-            .map_err(|e| e.to_string())?;
-        let _ = body;
-        Ok(())
+        let body = serde_json::to_vec(&args).map_err(|e| e.to_string())?;
+        let mut guard = self.client.lock().map_err(|e| e.to_string())?;
+        if guard.is_none() {
+            let reconnect = self.reconnect.as_ref()
+                .ok_or_else(|| "NAF connection closed and no reconnector registered".to_string())?;
+            let connected = self.reactor.block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), reconnect()).await
+            }).map_err(|_| "NAF reconnect timed out".to_string())??;
+            *guard = Some(connected);
+        }
+        let result = self.reactor.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                guard.as_mut().expect("client connected").dispatch("event.append_batch", &body, None),
+            ).await
+        });
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => {
+                *guard = None;
+                Err(format!("NAF batch dispatch failed, connection reset: {e}"))
+            }
+            Err(_) => {
+                *guard = None;
+                Err("NAF batch timed out, connection reset".to_string())
+            }
+        }
     }
 }
 
@@ -276,6 +322,7 @@ pub struct LogEmitter {
     flush_interval: Duration,
     dropped: AtomicU64,
     flushed: AtomicU64,
+    flush_requested: AtomicBool,
 }
 
 impl LogEmitter {
@@ -292,6 +339,7 @@ impl LogEmitter {
             flush_interval,
             dropped: AtomicU64::new(0),
             flushed: AtomicU64::new(0),
+            flush_requested: AtomicBool::new(false),
         }
     }
 
@@ -342,13 +390,45 @@ impl LogEmitter {
         }
     }
 
-    /// Run the flusher loop (call on its own thread). Stops when `stop` fires.
-    pub fn run_forever(&self, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    /// Ask the background flusher to drain soon. Safe from UI/logger threads;
+    /// unlike flush_now this never calls NAF synchronously.
+    pub fn request_flush(&self) {
+        self.flush_requested.store(true, Ordering::Release);
+    }
+
+    /// Bounded worker: batch on cadence/pressure, exponential retry on a dead
+    /// fabric, and never dispatch from a log producer or UI thread.
+    pub fn run_forever(&self, stop: std::sync::Arc<AtomicBool>) {
+        let mut last_flush = std::time::Instant::now();
+        let mut next_retry = std::time::Instant::now();
+        let mut retry = Duration::from_secs(1);
         while !stop.load(Ordering::Relaxed) {
-            std::thread::sleep(self.flush_interval);
-            self.flush_now();
+            std::thread::sleep(Duration::from_millis(100));
+            let queued = self.ring.lock().unwrap_or_else(|e| e.into_inner()).len();
+            if queued == 0 {
+                last_flush = std::time::Instant::now();
+                continue;
+            }
+            let forced = self.flush_requested.swap(false, Ordering::AcqRel);
+            let now = std::time::Instant::now();
+            if now < next_retry {
+                // Honor recovery backoff even if producers are flooding us.
+                continue;
+            }
+            if !forced && queued < self.batch_size && last_flush.elapsed() < self.flush_interval {
+                continue;
+            }
+            let sent = self.flush_now();
+            last_flush = now;
+            if sent == 0 {
+                next_retry = now + retry;
+                retry = (retry * 2).min(Duration::from_secs(30));
+            } else {
+                next_retry = now;
+                retry = Duration::from_secs(1);
+            }
         }
-        // Final drain on stop.
+        // On orderly shutdown make one final best-effort attempt.
         self.flush_now();
     }
 
@@ -358,6 +438,7 @@ impl LogEmitter {
             "queued": self.ring.lock().unwrap().len(),
             "dropped": self.dropped.load(Ordering::Relaxed),
             "flushed": self.flushed.load(Ordering::Relaxed),
+            "flushRequested": self.flush_requested.load(Ordering::Relaxed),
         })
     }
 }
@@ -424,4 +505,66 @@ pub fn filter<'a>(
     out.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
     out.truncate(limit);
     out
+}
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn repeated_same_millisecond_identical_logs_are_distinct() {
+        let mut a = LogRecord::new(Level::Warn, "npilot", "gateway unavailable");
+        let mut b = LogRecord::new(Level::Warn, "npilot", "gateway unavailable");
+        a.ts_ms = 1234567;
+        b.ts_ms = 1234567;
+        let first = build_batch_args("nai-os", &[a, b]);
+        let keys: Vec<&str> = first["events"].as_array().unwrap().iter()
+            .map(|e| e["idempotency_key"].as_str().unwrap()).collect();
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0], keys[1]);
+    }
+
+    struct ProbeSink {
+        calls: Arc<AtomicUsize>,
+        successes: Arc<Mutex<Vec<LogRecord>>>,
+        fail_first: bool,
+    }
+    impl LogSink for ProbeSink {
+        fn append_batch(&self, _producer: &str, records: &[LogRecord]) -> Result<(), String> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_first && call == 0 { return Err("host down".into()) }
+            self.successes.lock().unwrap().extend_from_slice(records);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn queued_events_survive_transient_sink_failure() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let emitter = LogEmitter::new("test", Box::new(ProbeSink {
+            calls: calls.clone(), successes: saved.clone(), fail_first: true,
+        }));
+        emitter.emit(LogRecord::new(Level::Info, "npilot", "one"));
+        emitter.emit(LogRecord::new(Level::Info, "npilot", "two"));
+        assert_eq!(emitter.flush_now(), 0);
+        assert_eq!(emitter.stats()["queued"], 2);
+        assert_eq!(emitter.flush_now(), 2);
+        assert_eq!(saved.lock().unwrap().len(), 2);
+        assert_eq!(emitter.stats()["flushed"], 2);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn hot_path_flush_request_never_calls_sink() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let emitter = LogEmitter::new("test", Box::new(ProbeSink {
+            calls: calls.clone(), successes: Arc::new(Mutex::new(Vec::new())), fail_first: false,
+        }));
+        emitter.emit(LogRecord::new(Level::Debug, "dock", "frame"));
+        emitter.request_flush();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(emitter.stats()["flushRequested"], true);
+    }
 }
