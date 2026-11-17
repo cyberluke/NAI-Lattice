@@ -20,7 +20,7 @@
 
 use serde_json::{json, Value};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -62,6 +62,8 @@ impl Level {
     }
 }
 
+static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -73,6 +75,9 @@ fn now_ms() -> u64 {
 /// `observability.log.v1` event payload.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LogRecord {
+    /// Process-local monotonic record identity, persisted for idempotent batch retries.
+    #[serde(default)]
+    pub producer_seq: u64,
     #[serde(default)]
     pub ts_ms: u64,
     #[serde(default)]
@@ -93,6 +98,7 @@ impl LogRecord {
     /// Build a record with monotonic-ish timestamp, level and component context.
     pub fn new(level: Level, component: &str, message: impl Into<String>) -> Self {
         Self {
+            producer_seq: LOG_SEQUENCE.fetch_add(1, Ordering::Relaxed),
             ts_ms: now_ms(),
             level: level.as_str().to_string(),
             component: component.to_string(),
@@ -139,8 +145,10 @@ pub fn build_batch_args(producer: &str, records: &[LogRecord]) -> Value {
 /// One item in the `event.append_batch` array.
 fn server_payload(r: &LogRecord, producer: &str) -> Value {
     let idem = format!(
-        "{}||{}||{}||{}",
+        "{}||{}||{}||{}||{}||{}",
         producer,
+        std::process::id(),
+        r.producer_seq,
         r.ts_ms,
         r.component,
         hash_message(&r.message)
@@ -152,6 +160,7 @@ fn server_payload(r: &LogRecord, producer: &str) -> Value {
         "correlation_id": r.trace_id.clone().unwrap_or_default(),
         "payload": json!({
             "ts_ms": r.ts_ms,
+            "producer_seq": r.producer_seq,
             "level": r.level,
             "component": r.component,
             "trace_id": r.trace_id,
@@ -219,7 +228,9 @@ impl NafSink {
         Self {
             client: std::sync::Mutex::new(client),
             rt,
-            threshold: Level::Info,
+            // The observer applies the configurable threshold at the source.
+            // Never silently discard DEBUG/TRACE a producer explicitly emitted.
+            threshold: Level::Trace,
             _producer: producer.to_string(),
         }
     }
@@ -243,10 +254,13 @@ impl LogSink for NafSink {
         let args = build_batch_args(producer, &keep);
         let json = serde_json::to_vec(&args).map_err(|e| e.to_string())?;
         let mut client = self.client.lock().map_err(|e| e.to_string())?;
-        let body = self
-            .rt
-            .block_on(client.dispatch("event.append_batch", &json, None))
-            .map_err(|e| e.to_string())?;
+        let body = self.rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                client.dispatch("event.append_batch", &json, None),
+            ).await
+        }).map_err(|_| "observability append timed out after 5s".to_string())?
+          .map_err(|e| e.to_string())?;
         let _ = body;
         Ok(())
     }
@@ -276,6 +290,7 @@ pub struct LogEmitter {
     flush_interval: Duration,
     dropped: AtomicU64,
     flushed: AtomicU64,
+    flush_requested: AtomicBool,
 }
 
 impl LogEmitter {
@@ -292,6 +307,7 @@ impl LogEmitter {
             flush_interval,
             dropped: AtomicU64::new(0),
             flushed: AtomicU64::new(0),
+            flush_requested: AtomicBool::new(false),
         }
     }
 
@@ -342,13 +358,45 @@ impl LogEmitter {
         }
     }
 
-    /// Run the flusher loop (call on its own thread). Stops when `stop` fires.
-    pub fn run_forever(&self, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    /// Ask the background flusher to drain soon. Safe from UI/logger threads;
+    /// unlike flush_now this never calls NAF synchronously.
+    pub fn request_flush(&self) {
+        self.flush_requested.store(true, Ordering::Release);
+    }
+
+    /// Bounded worker: batch on cadence/pressure, exponential retry on a dead
+    /// fabric, and never dispatch from a log producer or UI thread.
+    pub fn run_forever(&self, stop: std::sync::Arc<AtomicBool>) {
+        let mut last_flush = std::time::Instant::now();
+        let mut next_retry = std::time::Instant::now();
+        let mut retry = Duration::from_secs(1);
         while !stop.load(Ordering::Relaxed) {
-            std::thread::sleep(self.flush_interval);
-            self.flush_now();
+            std::thread::sleep(Duration::from_millis(100));
+            let queued = self.ring.lock().unwrap_or_else(|e| e.into_inner()).len();
+            if queued == 0 {
+                last_flush = std::time::Instant::now();
+                continue;
+            }
+            let forced = self.flush_requested.swap(false, Ordering::AcqRel);
+            let now = std::time::Instant::now();
+            if now < next_retry {
+                // Honor recovery backoff even if producers are flooding us.
+                continue;
+            }
+            if !forced && queued < self.batch_size && last_flush.elapsed() < self.flush_interval {
+                continue;
+            }
+            let sent = self.flush_now();
+            last_flush = now;
+            if sent == 0 {
+                next_retry = now + retry;
+                retry = (retry * 2).min(Duration::from_secs(30));
+            } else {
+                next_retry = now;
+                retry = Duration::from_secs(1);
+            }
         }
-        // Final drain on stop.
+        // On orderly shutdown make one final best-effort attempt.
         self.flush_now();
     }
 
@@ -358,6 +406,7 @@ impl LogEmitter {
             "queued": self.ring.lock().unwrap().len(),
             "dropped": self.dropped.load(Ordering::Relaxed),
             "flushed": self.flushed.load(Ordering::Relaxed),
+            "flushRequested": self.flush_requested.load(Ordering::Relaxed),
         })
     }
 }
