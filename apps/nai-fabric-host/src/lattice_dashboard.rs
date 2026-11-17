@@ -289,13 +289,14 @@ fn recent_is_empty_tick(tick: usize) -> bool { tick % 2 == 0 }
 pub(crate) const LATTICE_UI_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>NAI Lattice · Observability</title>
+<link rel="icon" href="/lattice/icon" type="image/png">
 <style>
 :root{--bg:#0a0d12;--panel:#11151c;--panel2:#0d1117;--line:#1f2630;--fg:#e6edf3;--muted:#8b98a5;--accent:#19c2d8;--ok:#26de81;--warn:#ffce54;--bad:#ff6b6b;--search:#f7b731}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13px ui-monospace,Consolas,Menlo,monospace}
 .hd{display:flex;align-items:center;gap:14px;padding:9px 16px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:20;flex-wrap:wrap}
-.hd h1{margin:0;font-size:14px;letter-spacing:1px;color:var(--accent)}.hd .tick{color:var(--muted);font-size:11px}
-.tw{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
-.kpi{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.hd h1{margin:0;font-size:14px;letter-spacing:1px;color:var(--accent);display:flex;align-items:center;gap:9px;text-shadow:0 0 13px #19c2d855}.hd .tick{color:var(--muted);font-size:11px}
+ .tw{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.kpi{background:linear-gradient(125deg,var(--panel),#0a1720);border:1px solid #23505a;border-radius:6px;padding:8px 10px;box-shadow:inset 0 1px #ffffff0d}
 .kpi .lab{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px}.kpi .val{font-size:20px;font-weight:700;margin-top:2px}
 .grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:10px;padding:12px 16px;align-items:start}
 @media(max-width:1000px){.grid{grid-template-columns:1fr}}
@@ -310,12 +311,12 @@ pub(crate) const LATTICE_UI_HTML: &str = r#"<!DOCTYPE html>
 #components{font-size:12px}.row{display:flex;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--line);align-items:center}
 .bar{height:6px;border-radius:3px;background:var(--line);flex:1;margin:0 8px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--accent)}
-.searchbar{display:flex;gap:6px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line)}
+ .searchbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid var(--line)}
 input{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:5px 8px;font-size:12px;width:220px}
 button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5px 10px;font-weight:700;cursor:pointer}
 .s-ok{color:var(--ok)}.s-warn{color:var(--warn)}.s-bad{color:var(--bad)}
 </style></head><body>
-<div class="hd"><h1>NAI LATTICE</h1><span class="tick">observability.log.v1</span>
+<div class="hd"><h1><img src="/lattice/icon" alt="" width="26" height="26">NAI LATTICE</h1><span class="tick">observability.log.v1</span>
   <span class="tick" id="clock"></span><span class="tick" id="conn" style="color:var(--accent)">connecting…</span>
   <span class="s-ok" id="event-cursor">cursor</span>
 </div>
@@ -325,9 +326,12 @@ button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5p
   <div class="kpi"><div class="lab">Distinct traceId</div><div class="val" id="k-traces">–</div></div>
   <div class="kpi"><div class="lab">Components</div><div class="val" id="k-comp">–</div></div>
   <div class="kpi"><div class="lab">SSE pushes</div><div class="val" id="k-push">–</div></div>
+  <div class="kpi"><div class="lab">Active streams</div><div class="val" id="k-active">–</div></div>
 </div>
-<div class="searchbar"><button onclick="refresh()">↻</button>
-  <input id="q" placeholder="filter text (e.g. error, request)" onkeydown="if(event.key==='Enter')refresh()"/>
+<div class="searchbar"><button onclick="refresh()">↻</button><button id="pause" onclick="togglePause()">Ⅱ PAUSE</button><button onclick="clearTail()">CLEAR</button>
+  <input id="q" placeholder="grep message / error code" onkeydown="if(event.key==='Enter')refresh()"/>
+  <input id="component" placeholder="component (exact)" onkeydown="if(event.key==='Enter')refresh()" />
+  <input id="trace" placeholder="traceId (exact)" onkeydown="if(event.key==='Enter')refresh()" />
   <select id="lvl" onchange="refresh()"><option value="">all levels</option><option>error</option><option>warn</option><option>info</option><option>debug</option><option>trace</option></select>
 </div>
 <div class="grid">
@@ -336,44 +340,107 @@ button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5p
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const fmtTs=ms=>{const d=new Date(Number(ms));return d.toLocaleTimeString('en-GB',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0')};
-const esc=s=>(s??'').toString().replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>').replace(/"/g,'"');
+const fmtTs=ms=>{const d=new Date(Number(ms));return Number.isFinite(d.getTime())?d.toLocaleTimeString('en-GB',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0'):'--:--:--'};
 const seen=new Set();
-function renderTail(hits){ const tail=$('tail'); let appended=false;
-  for(const ln of hits){ const seq=ln.runtime_sequence||('t'+ln.ts_ms); if(seen.has(seq))continue; seen.add(seq);
-    const lv=esc(ln.level||'info').toLowerCase();
-    const div=document.createElement('div'); div.className='ln l-'+lv;
-    div.innerHTML=`<span class="ts">${fmtTs(ln.timestamp_utc_ms||ln.ts_ms)}</span><span class="lv">${lv.toUpperCase()}</span><span class="comp">${esc(ln.component)}</span>${ln.trace_id?'<span class="trace">['+esc(ln.trace_id)+']</span> ':''}${esc(ln.message)}`;
-    tail.appendChild(div); appended=true; }
-  if(appended){ tail.scrollTop=tail.scrollHeight; if(seen.size>3000){const keep=[...seen];seen.clear();keep.slice(-1500).forEach(s=>seen.add(s));} } }
-function renderStats(s){ 
-  $('k-window').textContent=s.window; $('k-errors').textContent=s.errors; $('k-traces').textContent=s.distinctTraceIds;
-  $('k-comp').textContent=Object.keys(s.components||{}).length; $('k-push').textContent=s.livePushes;
-  const comps=$('components'); comps.innerHTML='';
-  const c=Object.entries(s.components||{}).sort((a,b)=>b[1]-a[1]).slice(0,25);
-  if(!c.length){comps.innerHTML='<div class="row"><span class="tick">no records yet</span></div>';return;}
-  const max=Math.max(...c.map(([,n])=>n));
-  for(const [name,n] of c){ const r=document.createElement('div');r.className='row';
-    r.innerHTML=`<span>${esc(name)}</span><div class="bar"><i style="width:${(n/max*100).toFixed(0)}%"></i></div><span>${n}</span>`;
-    comps.appendChild(r);} }
-function applyFilters(hits){ const q=($('q').value||'').toLowerCase(); const lv=$('lvl').value;
-  return hits.filter(h=>{ if(lv&&h.level!==lv)return false; if(q&&!(h.message||'').toLowerCase().includes(q))return false; return true; }); }
-function refresh(){ const q=$('q').value,lv=$('lvl').value;
-  const or=[q?'contains='+encodeURIComponent(q):null,lv?'level='+encodeURIComponent(lv):null].filter(Boolean).join('&');
-  fetch('/lattice/api?'+or,{headers:{Authorization:'Bearer '+token()}}).then(r=>r.json()).then(j=>{
-    renderTail(j.hits||[]); renderStats(j.stats||{}); $('tail-meta').textContent=''+((j.hits||[]).length)+' shown · '+((j.stats||{}).window)+' window';
-  }).catch(()=>{}); }
-function token(){ try{return localStorage.getItem('lattice_token')||''}catch(e){return ''} }
-setInterval(()=>{ $('clock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false}); },1000);
-// SSE live stream (auto-reconnect).
-function connect(){ const es=new EventSource('/lattice/events');
-  es.onopen=()=>{$('conn').textContent='● live';$('conn').style.color='var(--ok)';};
-  es.onerror=()=>{$('conn').textContent='↻ reconnecting';$('conn').style.color='var(--warn)';};
-  es.addEventListener('log',e=>{const j=JSON.parse(e.data);renderTail(j.hits||[]);});
-  es.addEventListener('stats',e=>{const s=JSON.parse(e.data);renderStats(s);});
-  es.addEventListener('search',e=>{const j=JSON.parse(e.data);renderTail(j.hits||[]);});
-  es.addEventListener('open',()=>{}); }
+const MAX_ROWS=1400;
+let paused=false;
+let stream=null;
+function clearTail(){seen.clear();$('tail').replaceChildren();$('tail-meta').textContent='cleared';}
+function togglePause(){paused=!paused;$('pause').textContent=paused?'▶ RESUME':'Ⅱ PAUSE';$('pause').style.background=paused?'var(--warn)':'var(--accent)';}
+function filters(){
+ return {q:($('q').value||'').toLowerCase(),lv:$('lvl').value,
+  component:$('component').value.trim(),trace:$('trace').value.trim()};
+}
+function filtered(ln,f){
+ if(f.lv&&ln.level!==f.lv)return false;
+ if(f.component&&ln.component!==f.component)return false;
+ if(f.trace&&ln.trace_id!==f.trace)return false;
+ if(f.q&&!String(ln.message||'').toLowerCase().includes(f.q))return false;
+ return true;
+}
+function addSpan(parent,cls,value){
+ const span=document.createElement('span');span.className=cls;span.textContent=String(value??'');parent.append(span);
+}
+function renderTail(hits,force=false){
+ if(paused&&!force)return;
+ const tail=$('tail'),f=filters();
+ const stick=tail.scrollHeight-tail.scrollTop-tail.clientHeight<72;
+ let added=0;
+ for(const ln of hits){
+  if(!filtered(ln,f))continue;
+  const seq=String(ln.runtime_sequence??('legacy:'+ln.ts_ms+':'+ln.component+':'+ln.message));
+  if(seen.has(seq))continue;
+  const lv=['trace','debug','info','warn','error'].includes(ln.level)?ln.level:'info';
+  const div=document.createElement('div');div.className='ln l-'+lv;div.dataset.key=seq;
+  addSpan(div,'ts',fmtTs(ln.timestamp_utc_ms||ln.ts_ms));
+  addSpan(div,'lv',lv.toUpperCase());
+  addSpan(div,'comp',ln.component);
+  if(ln.trace_id)addSpan(div,'trace','['+ln.trace_id+'] ');
+  div.append(document.createTextNode(String(ln.message||'')));
+  tail.append(div);seen.add(seq);added++;
+  while(tail.childElementCount>MAX_ROWS){
+   const oldest=tail.firstElementChild;
+   if(!oldest)break;
+   seen.delete(oldest.dataset.key);
+   oldest.remove();
+  }
+ }
+ if(added&&stick)tail.scrollTop=tail.scrollHeight;
+ $('tail-meta').textContent=tail.childElementCount+' rows · '+(paused?'paused':'live');
+}
+function renderStats(s){
+ $('k-window').textContent=s.window??'—';
+ $('k-errors').textContent=s.errors??'—';
+ $('k-traces').textContent=s.distinctTraceIds??'—';
+ $('k-comp').textContent=Object.keys(s.components||{}).length;
+ $('k-push').textContent=s.livePushes??'—';
+ $('k-active').textContent=(s.activeSseClients??'—')+' / '+(s.maxSseClients??'—');
+ const comps=$('components');comps.replaceChildren();
+ const top=Object.entries(s.components||{}).sort((a,b)=>Number(b[1])-Number(a[1])).slice(0,25);
+ const max=Math.max(1,...top.map(([,n])=>Number(n)||0));
+ for(const [name,n] of top){
+  const row=document.createElement('div');row.className='row';
+  addSpan(row,'',name);
+  const bar=document.createElement('div');bar.className='bar';
+  const fill=document.createElement('i');fill.style.width=Math.max(0,Math.min(100,Number(n)/max*100))+'%';
+  bar.append(fill);row.append(bar);addSpan(row,'',n);comps.append(row);
+ }
+ if(!top.length)addSpan(comps,'row','no records yet');
+}
+async function refresh(){
+ const f=filters();
+ const qp=new URLSearchParams({limit:'350'});
+ if(f.q)qp.set('contains',f.q);
+ if(f.lv)qp.set('level',f.lv);
+ if(f.component)qp.set('component',f.component);
+ if(f.trace)qp.set('trace',f.trace);
+ try{
+  const response=await fetch('/lattice/api?'+qp.toString(),{cache:'no-store'});
+  if(!response.ok)throw new Error('HTTP '+response.status);
+  const json=await response.json();
+  clearTail();renderTail((json.hits||[]).slice().reverse(),true);
+  renderStats(json.stats||{});
+ }catch(error){$('tail-meta').textContent='QUERY ERROR '+String(error);}
+}
+setInterval(()=>$('clock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false}),1000);
+function connect(){
+ if(stream){stream.close();stream=null;}
+ stream=new EventSource('/lattice/events');
+ stream.onopen=()=>{$('conn').textContent='● live';$('conn').style.color='var(--ok)';};
+ stream.onerror=()=>{$('conn').textContent='↻ reconnecting';$('conn').style.color='var(--warn)';};
+ for(const kind of ['log','search','stats']){
+  stream.addEventListener(kind,event=>{
+   try{
+    const data=JSON.parse(event.data);
+    if(kind==='stats')renderStats(data);
+    else renderTail(kind==='search'?data:(data.hits||[]));
+   }catch(e){console.warn('[lattice] malformed SSE',kind,e);}
+  });
+ }
+ // EventSource automatically reconnects with Last-Event-ID. Never allocate
+ // an extra untracked stream on a timer: each costs a server worker.
+}
+window.addEventListener('pagehide',()=>{if(stream)stream.close();});
 connect();
-setInterval(()=>{ if($('conn').textContent!=='● live'){ try{new EventSource('/lattice/events');}catch(e){} } },30000).unref&&true;
 refresh();
 </script></body></html>"#;
