@@ -203,40 +203,56 @@ pub trait LogSink: Send + Sync + 'static {
     fn append_batch(&self, producer: &str, records: &[LogRecord]) -> Result<(), String>;
 }
 
-/// Default payload: `event.append_batch` over an existing `NafClient`.
-///
-/// The sink owns a ready `tokio::Runtime` and blocks on the dispatch inside the
-/// (background flush thread) call — the hot `emit()` path never touches it. A
-/// down host just yields an error on flush (degraded, not blocking producers).
+/// A reactor-bound NAF client. Tokio Windows named pipes register their IOCP
+/// handle with the reactor where connect ran: dispatch MUST run on that same
+/// runtime, not on a second Tokio runtime created in a sink constructor.
+type DynNafClient = lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>;
+type ConnectFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<DynNafClient, String>> + Send>,
+>;
+type Reconnector = dyn Fn() -> ConnectFuture + Send + Sync;
+
+/// Canonical durable batch sink. The only blocking caller is LogEmitter's
+/// dedicated worker; producers never enter this sink. Failed or timed-out
+/// dispatches discard the protocol stream so a later retry must handshake
+/// cleanly instead of reading a response to an abandoned request.
 pub struct NafSink {
-    client: std::sync::Mutex<lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>>,
-    rt: tokio::runtime::Runtime,
+    client: Mutex<Option<DynNafClient>>,
+    reactor: tokio::runtime::Handle,
+    reconnect: Option<Box<Reconnector>>,
     threshold: Level,
     _producer: String,
 }
 
 impl NafSink {
-    pub fn new(
-        client: lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>,
-        producer: &str,
-    ) -> Self {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("lattice-observability: tokio runtime");
+    /// Must be constructed inside the SAME Tokio runtime that connected the
+    /// client. This is intentional and avoids moving IOCP handles across
+    /// unrelated reactors.
+    pub fn new(client: DynNafClient, producer: &str) -> Self {
+        let reactor = tokio::runtime::Handle::try_current()
+            .expect("NafSink::new must run on the NAF client's Tokio reactor");
         Self {
-            client: std::sync::Mutex::new(client),
-            rt,
-            // The observer applies the configurable threshold at the source.
-            // Never silently discard DEBUG/TRACE a producer explicitly emitted.
+            client: Mutex::new(Some(client)),
+            reactor,
+            reconnect: None,
             threshold: Level::Trace,
             _producer: producer.to_string(),
         }
     }
-    /// Set the minimum level to persist (default Info).
+
     pub fn with_threshold(mut self, lvl: Level) -> Self {
         self.threshold = lvl;
+        self
+    }
+
+    /// Provide a reconnect operation scheduled on the SAME reactor. Used by
+    /// NAI OS so a host restart is recoverable without restarting the shell.
+    pub fn with_reconnector<F, Fut>(mut self, connect: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<DynNafClient, String>> + Send + 'static,
+    {
+        self.reconnect = Some(Box::new(move || Box::pin(connect())));
         self
     }
 }
@@ -252,17 +268,33 @@ impl LogSink for NafSink {
             return Ok(());
         }
         let args = build_batch_args(producer, &keep);
-        let json = serde_json::to_vec(&args).map_err(|e| e.to_string())?;
-        let mut client = self.client.lock().map_err(|e| e.to_string())?;
-        let body = self.rt.block_on(async {
+        let body = serde_json::to_vec(&args).map_err(|e| e.to_string())?;
+        let mut guard = self.client.lock().map_err(|e| e.to_string())?;
+        if guard.is_none() {
+            let reconnect = self.reconnect.as_ref()
+                .ok_or_else(|| "NAF connection closed and no reconnector registered".to_string())?;
+            let connected = self.reactor.block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), reconnect()).await
+            }).map_err(|_| "NAF reconnect timed out".to_string())??;
+            *guard = Some(connected);
+        }
+        let result = self.reactor.block_on(async {
             tokio::time::timeout(
                 Duration::from_secs(5),
-                client.dispatch("event.append_batch", &json, None),
+                guard.as_mut().expect("client connected").dispatch("event.append_batch", &body, None),
             ).await
-        }).map_err(|_| "observability append timed out after 5s".to_string())?
-          .map_err(|e| e.to_string())?;
-        let _ = body;
-        Ok(())
+        });
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => {
+                *guard = None;
+                Err(format!("NAF batch dispatch failed, connection reset: {e}"))
+            }
+            Err(_) => {
+                *guard = None;
+                Err("NAF batch timed out, connection reset".to_string())
+            }
+        }
     }
 }
 
