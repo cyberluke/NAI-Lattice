@@ -859,13 +859,13 @@ impl LatticeRuntime {
         use lattice_ledger::EventScanFilter;
         let tail = args.get("tail").and_then(|v| v.as_bool()).unwrap_or(false);
         let requested_limit = args.get("limit")
-            .and_then(|l| l.as_u64()).unwrap_or(200).clamp(1, 10_000);
+            .and_then(|l| l.as_u64()).map(|l| l.clamp(1, 10_000));
         let filter = EventScanFilter {
             after: args.get("after").and_then(|a| a.as_u64()),
             // A tail request asks for LAST N, not FIRST N. The ledger scan is
             // ascending, so only the runtime-facing projection applies the
             // reverse boundary. The ledger itself remains canonical.
-            limit: if tail { None } else { Some(requested_limit) },
+            limit: if tail { None } else { requested_limit },
             namespace: args.get("namespace").and_then(|n| n.as_str()).map(str::to_string),
             event_type: args.get("event_type").and_then(|e| e.as_str()).map(str::to_string),
             entity_id: args.get("entity_id").and_then(|e| e.as_str()).map(str::to_string),
@@ -873,7 +873,7 @@ impl LatticeRuntime {
         };
         let mut events = self.ledger.scan_events(&filter)?;
         if tail {
-            let skip = events.len().saturating_sub(requested_limit as usize);
+            let skip = events.len().saturating_sub(requested_limit.unwrap_or(200) as usize);
             events.drain(..skip);
         }
         let out: Vec<serde_json::Value> = events
