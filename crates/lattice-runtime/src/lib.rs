@@ -30,6 +30,14 @@ const RUNTIME_SERVED_CAPABILITIES: &[&str] = &[
     "event.append",
     "event.append_batch",
     "event.read_range",
+    // Observability log ledger: namespaced as `observability.log.v1`. The runtime
+    // serves it via event.append/append_batch (write) + event.read_range (read,
+    // used by the /lattice dashboard SSE + API). An NAI OS observer that requests
+    // `observability.log.v1` as a HANDshake capability was rejected with a 400
+    // ("capability not offered") until this canonical ledger name was actually
+    // offered here — so telemetry never reached the fabric. Advertising it keeps
+    // the negotiation honest (the ledger genuinely exists).
+    "observability.log.v1",
     "artifact.put",
     "artifact.open",
     "artifact.verify",
