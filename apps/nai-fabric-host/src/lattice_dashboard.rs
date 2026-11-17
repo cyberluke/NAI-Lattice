@@ -13,7 +13,7 @@
 //! each SSE connection is its own thread (mirrors `notify_sse`).
 
 use std::io::Write;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The Lattice dashboard icon (optimized 256px copy of "Neon Glass Network Hub").
 /// Embedded so the installed host always serves it regardless of repo path.
@@ -22,6 +22,19 @@ pub(crate) const LATTICE_ICON_MIME: &str = "image/png";
 
 /// Simple connection counter used to decorate the dashboard.
 static LIVE_PUSHES: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_SSE: AtomicUsize = AtomicUsize::new(0);
+const MAX_SSE_CLIENTS: usize = 6;
+struct SseLease;
+impl SseLease {
+    fn acquire() -> Option<Self> {
+        ACTIVE_SSE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < MAX_SSE_CLIENTS).then_some(n + 1)
+        }).ok().map(|_| Self)
+    }
+}
+impl Drop for SseLease {
+    fn drop(&mut self) { ACTIVE_SSE.fetch_sub(1, Ordering::AcqRel); }
+}
 
 /// Esimated per-minute push cadence for the "traffic" illusion isn't fabricated:
 /// these are REAL counters from the ledger scan window, not fake "traffic".
@@ -99,6 +112,8 @@ pub(crate) fn stats() -> serde_json::Value {
         "components": by_component,
         "distinctTraceIds": trace_ids.len(),
         "livePushes": push_count(),
+        "activeSseClients": ACTIVE_SSE.load(Ordering::Relaxed),
+        "maxSseClients": MAX_SSE_CLIENTS,
         "generatedAt": crate::now_unix_ms(),
     })
 }
@@ -135,7 +150,7 @@ pub(crate) fn search(opts: &SearchOpts) -> serde_json::Value {
         }
         true
     });
-    logs.truncate(opts.limit.unwrap_or(100));
+    logs.truncate(opts.limit.unwrap_or(100).clamp(1, 500));
     serde_json::json!({
         "schema": 1,
         "hits": logs,
@@ -174,7 +189,7 @@ pub(crate) fn parse_lattice_search_opts(path: &str) -> SearchOpts {
             "component" => o.component = (!val.is_empty()).then(|| val.clone()),
             "trace" => o.trace = (!val.is_empty()).then(|| val.clone()),
             "contains" => o.contains = (!val.is_empty()).then(|| val.clone()),
-            "limit" => o.limit = val.parse::<usize>().ok(),
+            "limit" => o.limit = val.parse::<usize>().ok().map(|n| n.clamp(1,500)),
             _ => {}
         }
     }
@@ -205,49 +220,67 @@ fn percent_decode(v: &str) -> Option<String> {
     Some(out)
 }
 
-/// SSE stream of live `observability.log.v1` records + periodic stats. Mirrors
-/// `notify_sse`: write the HTTP SSE head, then push a bounded tail + a stats
-/// heartbeat every ~1s for up to ~55s (the client reconnects to keep streaming).
-/// The `id:` cursor is the highest runtime_sequence seen, so a reconnect can be
-/// made idempotent by the client passing it back as `?after=` in the future.
+/// Bounded, cursor-resumable SSE. Exactly one connection consumes one lease.
+/// A dead browser releases its worker on the first failed write; a healthy
+/// client reconnects after 55s using the last actual runtime_sequence.
 pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
-    let _ = w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n");
-    let _ = w.flush();
-    // Bounded initial tail so the panel is populated instantly on connect.
-    let initial = search(&SearchOpts { limit: Some(200), ..Default::default() });
-    let mut initial_records = initial.get("hits").cloned().unwrap_or(serde_json::json!([]));
-    // Resume idempotently: if the client sent a Last-Event-ID cursor, drop any
-    // record it already consumed (runtime_sequence <= after), else send the tail.
-    if let Some(after) = after {
-        if let Some(arr) = initial_records.as_array_mut() {
-            arr.retain(|r| {
-                r.get("runtime_sequence")
-                    .and_then(|s| s.as_u64())
-                    .map(|s| s > after)
-                    .unwrap_or(true)
-            });
-        }
+    let Some(_lease) = SseLease::acquire() else {
+        let _ = w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 3\r\nConnection: close\r\n\r\n");
+        return;
+    };
+    if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache, no-transform\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\n\r\n").is_err() {
+        return;
     }
-    let payload = serde_json::to_string(&initial_records).unwrap_or_default();
-    let _ = w.write_all(format!("id: 0\r\nevent: search\ndata: {payload}\r\n\r\n").as_bytes());
-    let _ = w.flush();
-    LIVE_PUSHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    // Live push loop: re-scan the bounded recent window and re-emit as `log`
-    // (the browser reconciles by runtime_sequence, so duplicates are cheap and
-    // the newest tail stays fresh). A `stats` line refreshes the counters.
-    let start = std::time::Instant::now();
-    while start.elapsed().as_secs() < 55 {
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        let tail = search(&SearchOpts { limit: Some(150), ..Default::default() });
-        let tp = serde_json::to_string(&tail).unwrap_or_default();
-        let _ = w.write_all(format!("event: log\ndata: {tp}\r\n\r\n").as_bytes());
-        let st = serde_json::to_string(&stats()).unwrap_or_default();
-        let _ = w.write_all(format!("event: stats\ndata: {st}\r\n\r\n").as_bytes());
-        let _ = w.flush();
-        LIVE_PUSHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut cursor = after.unwrap_or(0);
+    // Initial tail, or missing records on reconnect. Never reset the browser's
+    // Last-Event-ID to zero (that used to trigger duplicate replay storms).
+    let mut initial = latest_logs(200);
+    initial.retain(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0) > cursor || after.is_none());
+    initial.sort_by_key(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0));
+    cursor = initial.iter()
+        .filter_map(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()))
+        .max().unwrap_or(cursor).max(cursor);
+    let payload = serde_json::to_string(&initial).unwrap_or_else(|_| "[]".into());
+    let id = if cursor > 0 { format!("id: {cursor}\r\n") } else { String::new() };
+    if w.write_all(format!("{id}event: search\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err()
+        || w.flush().is_err() {
+        return;
+    }
+    LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    let mut tick = 0usize;
+    while started.elapsed() < std::time::Duration::from_secs(55) {
+        std::thread::sleep(std::time::Duration::from_millis(1250));
+        let mut recent = latest_logs(240);
+        recent.retain(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0) > cursor);
+        recent.sort_by_key(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0));
+        if !recent.is_empty() {
+            cursor = recent.iter()
+                .filter_map(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()))
+                .max().unwrap_or(cursor).max(cursor);
+            let payload = serde_json::to_string(&serde_json::json!({"hits":recent}))
+                .unwrap_or_else(|_| "{\"hits\":[]}".into());
+            if w.write_all(format!("id: {cursor}\r\nevent: log\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err() {
+                break;
+            }
+        }
+        tick += 1;
+        if tick.is_multiple_of(4) {
+            let payload = serde_json::to_string(&stats()).unwrap_or_default();
+            if w.write_all(format!("event: stats\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err() {
+                break;
+            }
+        } else if recent_is_empty_tick(tick) {
+            // SSE comment heartbeat detects dead peers without ledger scans.
+            if w.write_all(b": heartbeat\r\n\r\n").is_err() { break; }
+        }
+        if w.flush().is_err() { break; }
+        LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+/// Heartbeats are cheap and ensure idle clients get disconnect detection.
+fn recent_is_empty_tick(tick: usize) -> bool { tick % 2 == 0 }
 
 /// Embedded Bloomberg/ES-admin style HTML dashboard. Dark, dense, monospace;
 /// real data only. Panels: header (live stats ticker), a traffic/health strip,
