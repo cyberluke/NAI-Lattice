@@ -506,3 +506,65 @@ pub fn filter<'a>(
     out.truncate(limit);
     out
 }
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn repeated_same_millisecond_identical_logs_are_distinct() {
+        let mut a = LogRecord::new(Level::Warn, "npilot", "gateway unavailable");
+        let mut b = LogRecord::new(Level::Warn, "npilot", "gateway unavailable");
+        a.ts_ms = 1234567;
+        b.ts_ms = 1234567;
+        let first = build_batch_args("nai-os", &[a, b]);
+        let keys: Vec<&str> = first["events"].as_array().unwrap().iter()
+            .map(|e| e["idempotency_key"].as_str().unwrap()).collect();
+        assert_eq!(keys.len(), 2);
+        assert_ne!(keys[0], keys[1]);
+    }
+
+    struct ProbeSink {
+        calls: Arc<AtomicUsize>,
+        successes: Arc<Mutex<Vec<LogRecord>>>,
+        fail_first: bool,
+    }
+    impl LogSink for ProbeSink {
+        fn append_batch(&self, _producer: &str, records: &[LogRecord]) -> Result<(), String> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_first && call == 0 { return Err("host down".into()) }
+            self.successes.lock().unwrap().extend_from_slice(records);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn queued_events_survive_transient_sink_failure() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        let emitter = LogEmitter::new("test", Box::new(ProbeSink {
+            calls: calls.clone(), successes: saved.clone(), fail_first: true,
+        }));
+        emitter.emit(LogRecord::new(Level::Info, "npilot", "one"));
+        emitter.emit(LogRecord::new(Level::Info, "npilot", "two"));
+        assert_eq!(emitter.flush_now(), 0);
+        assert_eq!(emitter.stats()["queued"], 2);
+        assert_eq!(emitter.flush_now(), 2);
+        assert_eq!(saved.lock().unwrap().len(), 2);
+        assert_eq!(emitter.stats()["flushed"], 2);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn hot_path_flush_request_never_calls_sink() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let emitter = LogEmitter::new("test", Box::new(ProbeSink {
+            calls: calls.clone(), successes: Arc::new(Mutex::new(Vec::new())), fail_first: false,
+        }));
+        emitter.emit(LogRecord::new(Level::Debug, "dock", "frame"));
+        emitter.request_flush();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(emitter.stats()["flushRequested"], true);
+    }
+}
