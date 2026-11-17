@@ -162,6 +162,15 @@ pub mod governor {
             if !is_project_primary {
                 continue;
             }
+            // Per-task control (UI toggle): if this project primary has the NAI
+            // Inquisitor explicitly DISABLED (hive_controls.inquisitor=false), do
+            // not converge it — the task opts out of governance on the fly while
+            // the watermark still advances so other tasks stay live.
+            if let Some(owner_b) = owner.as_ref() {
+                if owner_b.metadata.get("hive_controls").and_then(|c| c.get("inquisitor")).and_then(|v| v.as_bool()) == Some(false) {
+                    continue;
+                }
+            }
             let mut input = InquisitorInput {
                 objective: "advance Gas Town to verified 10/10".into(),
                 hook: hook.as_str().into(),
