@@ -89,7 +89,18 @@ pub(crate) fn stats() -> serde_json::Value {
     let mut by_component: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let mut trace_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Measured from the latest in-process NAI OS emitter health record.
+    // Absent means UNKNOWN, never synthesize zero backpressure.
+    let mut newest_emitter: Option<(u64, serde_json::Value)> = None;
     for l in &logs {
+        if l.get("component").and_then(|x| x.as_str()) == Some("nai-os.observability") {
+            if let Some(metrics) = l.pointer("/extras/emitter") {
+                let ts = l.get("ts_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+                if newest_emitter.as_ref().is_none_or(|(prior, _)| ts > *prior) {
+                    newest_emitter = Some((ts, metrics.clone()));
+                }
+            }
+        }
         if let Some(lv) = l.get("level").and_then(|x| x.as_str()) {
             *by_level.entry(lv.to_string()).or_insert(0) += 1;
         }
@@ -114,6 +125,10 @@ pub(crate) fn stats() -> serde_json::Value {
         "livePushes": push_count(),
         "activeSseClients": ACTIVE_SSE.load(Ordering::Relaxed),
         "maxSseClients": MAX_SSE_CLIENTS,
+        "emitter": newest_emitter.map(|(ts, metrics)| serde_json::json!({
+            "observedAt": ts,
+            "metrics": metrics,
+        })),
         "generatedAt": crate::now_unix_ms(),
     })
 }
@@ -336,7 +351,7 @@ button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5p
 </div>
 <div class="grid">
   <div class="panel"><h2>LOG TAIL <span class="tick" id="tail-meta"></span></h2><div id="tail"></div></div>
-  <div><div class="panel"><h2>COMPONENTS</h2><div id="components"></div></div></div>
+  <div><div class="panel"><h2>INGESTION / BACKPRESSURE</h2><div class="row" id="ingest" style="display:block;line-height:1.8">Waiting for measured producer health…</div></div><div class="panel" style="margin-top:10px"><h2>COMPONENTS</h2><div id="components"></div></div></div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -395,6 +410,16 @@ function renderStats(s){
  $('k-comp').textContent=Object.keys(s.components||{}).length;
  $('k-push').textContent=s.livePushes??'—';
  $('k-active').textContent=(s.activeSseClients??'—')+' / '+(s.maxSseClients??'—');
+ const h=s.emitter,el=$('ingest');el.replaceChildren();
+ if(!h||!h.metrics){el.textContent='NO PRODUCER TELEMETRY · runtime unknown';el.style.color='var(--warn)';}
+ else{
+  const age=Math.max(0,Date.now()-Number(h.observedAt||0));
+  const m=h.metrics;
+  el.style.color=age>35000?'var(--warn)':'var(--fg)';
+  el.textContent='Queued '+(m.queued??'?')+'  |  Dropped '+(m.dropped??'?')+
+   '  |  Flushed '+(m.flushed??'?')+'  |  Age '+Math.round(age/1000)+'s';
+  if(Number(m.dropped)>0)el.style.color='var(--bad)';
+ }
  const comps=$('components');comps.replaceChildren();
  const top=Object.entries(s.components||{}).sort((a,b)=>Number(b[1])-Number(a[1])).slice(0,25);
  const max=Math.max(1,...top.map(([,n])=>Number(n)||0));
