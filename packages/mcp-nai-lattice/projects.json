@@ -342,6 +342,24 @@
       "dependsOn": [
         "nai-lattice"
       ]
+    },
+    {
+      "name": "nai-foundry",
+      "workspacePath": "C:\\Users\\lukes.COREI9\\Documents\\Codex\\2026-11-16\\ki\\outputs\\NAI-Foundry\\",
+      "description": "Local source-backed component catalog and independent native verification service; full native/GPU/security acceptance remains incomplete.",
+      "techStack": [
+        "Node 24",
+        "Rust",
+        "SQLite FTS5",
+        "MCP",
+        "React/Svelte preview adapters"
+      ],
+      "buildCommand": "npm ci --ignore-scripts; cargo build --offline --release --manifest-path verifier/Cargo.toml",
+      "runCommand": "node src/cli.mjs serve",
+      "deployTarget": "Loopback workbench and MCP; separately enrolled Windows verifier service",
+      "dependsOn": [
+        "nai-lattice"
+      ]
     }
   ]
 }

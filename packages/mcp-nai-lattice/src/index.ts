@@ -28,15 +28,17 @@
 import { createHash } from "node:crypto"
 import { readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { basename, dirname, join } from "node:path"
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { basename, dirname, join, isAbsolute, win32 } from "node:path"
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { fetchLogs, fetchStats } from "./fabric.js"
+import {readCompanyPolicy} from './company-policy.js'
 import {
-  readTodos, upsertTask, newTask, doneCheck, persistTask,
-  type Task, type GateKind,
+  readTodos, updateTask, newTask, doneCheck, persistTask, todoPath, type Task,
 } from "./todo.js"
+import { acknowledgeFeed, followPath, followTask, makeFeed, readFeed, readFollowing, watchTodoChanges } from "./todo-feed.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LM_BASE = process.env.LM_STUDIO_URL ?? "http://127.0.0.1:1234/v1"
@@ -73,9 +75,9 @@ interface RegisteredProject {
 const TEAM_CONTRACT = {
   ownership: "Everyone owns all projects. Do not refuse work on a repo with 'not my scope', 'pre-existing bug', or 'not mine' — every NAI project is shared team property.",
   preexistingBugs: "Pre-existing bugs are in scope: fix and deliver, do not defer back to 'it was already broken'. The repo is a living organism, not a set of fiefdoms.",
-  aafRule: "Integrate and develop ONLY delta changes (AAF: build the delta). Change what the task requires and nothing else; never rewrite, regenerate, or re-derive an existing working chunk. Preserve exact pins; no scope creep.",
+  aafRule: "AAF means Ambient Asset Federation: before build/buy/download/provision/copy/train/store, discover and fingerprint equivalent capabilities already within reach, assess access, compatibility, risk and economics, federate them, then implement the missing delta. It is broader than code reuse. FIRST call get_company_policy for the full canonical doctrine at <workspace>/NAI-OS/docs/AAF.md (or Foundry foundry_company_policy). Never infer the doctrine from this summary or a repository name. Preserve the complete user scope.",
   crossRepo: "To change a project, first cross_project_semantic_query across it AND its dependsOn partners so the call-site in the consumer and the handler in the producer are both recovered in ONE retrieval — no md handoff, no pasting between windows.",
-  firstDoor: "semantic_query / cross_project_semantic_query are the FIRST door for ANY NAI-code question (where X lives, how X is implemented, what touches X, cross-repo protocol/integration). Reach for them BEFORE a repo-wide grep, a file-mask search, or reading through READMEs — they resolve in one call what a hunt finds after many. Only fall back to grep/docs when the index returns nothing.",
+  firstDoor: "For company doctrine such as AAF, call get_company_policy directly; code search is not the authority for policy. For code discovery use semantic_query / cross_project_semantic_query first, then inspect actual source. Empty, stale, unavailable or failed indexes permit local exploration; they do not establish that a capability or document is absent.",
   evidence: "Every change lands with proof against the real runtime; retain and surface raw failures. Reuse cached expensive generation (TTS/embedding) by content hash; do not regenerate unchanged work.",
 } as const
 
@@ -462,8 +464,14 @@ async function gpuRerankIfAvailable(query: string, hits: CodeHit[]): Promise<Arr
   return rr
 }
 
-const server = new McpServer({ name: "mcp-nai-lattice", version: "0.1.0" })
+const server = new McpServer({ name: "mcp-nai-lattice", version: "0.1.0" },{capabilities:{resources:{subscribe:true}}})
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const
+
+server.registerTool('get_company_policy',{
+  title:'Read canonical AAF company doctrine',
+  description:'Start here for AAF / Ambient Asset Federation. Read the full canonical company document and its SHA-256 directly, without Qdrant, embeddings or repo searches. AAF covers existing assets/capabilities across company, customer, partner and market environments; build-the-delta is only its shorthand. No path argument; host-enrolled document only.',
+  inputSchema:{},annotations:READ_ONLY,
+},async()=>{try{return {content:[{type:'text' as const,text:JSON.stringify(readCompanyPolicy())}]}}catch(error){return {isError:true,content:[{type:'text' as const,text:JSON.stringify({code:'AAF_DOCUMENT_UNAVAILABLE',error:String(error),next:'Use Foundry foundry_company_policy or inspect the enrolled canonical path; do not invent the doctrine.'})}]}}})
 
 server.registerTool(
   "list_indexed_projects",
@@ -553,7 +561,7 @@ server.registerTool(
     },
     outputSchema: {
       registered: z.boolean(),
-      entry: z.object({ name: z.string(), description: z.string().optional(), techStack: z.array(z.string()).optional(), workspacePath: z.string() }),
+      entry: z.object({ name: z.string(), description: z.string().optional(), techStack: z.array(z.string()).optional(), workspacePath: z.string(), buildCommand: z.string().optional(), runCommand: z.string().optional(), deployTarget: z.string().optional(), dependsOn: z.array(z.string()).optional() }),
       collection: z.string(),
       derived: z.object({ name: z.string(), techStack: z.array(z.string()) }).describe("What was auto-derived (could not find source: what the agent must supply)."),
     },
@@ -789,219 +797,277 @@ server.registerTool(
 // gate recorded with evidence. Commit the returned `commitChecklist` when the
 // current list reaches a milestone.
 
-function tasksToStructured(tasks: Task[]) {
-  return tasks.map((t) => ({
-    id: t.id,
-    parent: t.parent ?? null,
-    title: t.title,
-    status: t.status,
-    createdBy: t.createdBy,
-    createdAt: t.createdAt,
-    doneAt: t.doneAt ?? null,
-    gated: t.gated ? { needsBuild: !!t.gated.needsBuild, needsDeploy: !!t.gated.needsDeploy } : null,
-    gates: t.gates
-      ? {
-          build: t.gates.build ? { ok: t.gates.build.ok, cmd: t.gates.build.cmd ?? "", evidence: t.gates.build.evidence ?? "", doneAt: t.gates.build.doneAt } : null,
-          deploy: t.gates.deploy ? { ok: t.gates.deploy.ok, cmd: t.gates.deploy.cmd ?? "", evidence: t.gates.deploy.evidence ?? "", doneAt: t.gates.deploy.doneAt } : null,
-        }
-      : null,
-  }))
+const taskStatus = z.enum(["open", "in_progress", "blocked", "done"])
+const nodeKind = z.enum(["task", "decision", "fact", "lamp", "state", "blocker"])
+const actorInput = z.string().trim().min(1).max(120).optional()
+const revisionInput = z.number().int().nonnegative().optional()
+
+function todoWorkspace(selector: string) {
+  const normalized = (value: string) => process.platform === "win32"
+    ? value.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase()
+    : value.replace(/\/+$/, "")
+  const registered = loadRegistry().find(project => project.name.toLowerCase() === selector.toLowerCase() ||
+    normalized(project.workspacePath) === normalized(selector))
+  if (!registered && !isAbsolute(selector) && !win32.isAbsolute(selector)) {
+    throw Error("Use an exact absolute workspace path or a registered Lattice product")
+  }
+  const workspace = registered?.workspacePath ?? selector
+  return { workspace, product: registered?.name, workspaceId: workspaceCollection(workspace) }
 }
 
-server.registerTool(
-  "todo_add",
-  {
-    title: "Add a task to the shared mind-map todo list",
-    description:
-      "Append a task to the NAI-Lattice shared todo ledger (cross-project, cross-agent). The list is authoritative and lives in the lattice, NOT in a per-repo file — use this instead of searching for a local TODO/buglist. Optional `parent` links it as a sub-task (mind-map nesting). Optional `needsBuild` / `needsDeploy` marks it as quality-gated: it can only be marked done after the corresponding gate is recorded via todo_gate. Use this automatically whenever the human asks to 'add to the todo list'.",
-    inputSchema: {
-      title: z.string().describe("The task. Keep it a single, actionable, evidence-able statement."),
-      parent: z.string().optional().describe("Optional parent task id to nest this as a child (mind-map)."),
-      needsBuild: z.boolean().optional().describe("If true, this task is NOT done until a build gate is recorded (todo_gate)."),
-      needsDeploy: z.boolean().optional().describe("If true, this task is NOT done until a deploy gate is recorded (todo_gate)."),
-    },
-    outputSchema: {
-      ok: z.boolean(),
-      task: z.object({ id: z.string(), parent: z.string().nullable(), title: z.string(), status: z.string(), createdBy: z.string(), createdAt: z.string(), gated: z.any().optional() }),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  },
-  async ({ title, parent, needsBuild, needsDeploy }) => {
-    const t = newTask(title, {
-      parent: parent ?? null,
-      gated: needsBuild || needsDeploy ? { needsBuild: !!needsBuild, needsDeploy: !!needsDeploy } : undefined,
-      createdBy: "agent",
-    })
-    const r = await persistTask(t)
-    if (!r.ok) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: r.reason ?? "failed to persist" }) }], isError: true }
-    }
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({ ok: true, task: t.id, title }) }],
-      structuredContent: { ok: true, task: t },
-    }
-  },
-)
+function taskPreview(t: Task, full = false) {
+  const {drops:_drops,dropsPrunedThrough:_pruned,...task} = t
+  return {
+    ...task, revision: t.revision ?? 0, title: full ? t.title : t.title.slice(0, 300),
+    parent: t.parent ?? null, doneAt: t.doneAt ?? null,
+    ...(full ? {} : {gates: t.gates && Object.fromEntries(Object.entries(t.gates).map(([key, gate]) =>
+      [key, {ok:gate.ok, doneAt:gate.doneAt}]))}),
+  }
+}
 
-server.registerTool(
-  "todo_list",
-  {
-    title: "List the shared mind-map todo + done determination",
-    description:
-      "Render the NAI-Lattice shared todo list as a tree (parent/child). Returns every task with status/timestamps, plus the AUTHORITATIVE `doneCheck`: whether the CURRENT list has reached a done milestone (all_items, build_done, or deploy_done) and, if not, which tasks still block it (open_remaining / needs_build / needs_deploy / blocked). Use to keep the shared list up to date and to decide when to commit.",
-    inputSchema: {},
-    outputSchema: {
-      tasks: z.array(z.any()),
-      doneCheck: z.any(),
-    },
-    annotations: READ_ONLY,
-  },
-  async () => {
-    const tasks = readTodos()
-    const check = doneCheck()
-    const text = JSON.stringify({ tasks: tasksToStructured(tasks), doneCheck: check }, null, 2)
-    return {
-      content: [{ type: "text" as const, text }],
-      structuredContent: { tasks: tasksToStructured(tasks), doneCheck: check },
-    }
-  },
-)
+function todoReply(result: Awaited<ReturnType<typeof updateTask>>) {
+  if (!result.ok) {
+    const data = {ok:false, error:result.reason, current:result.current && taskPreview(result.current)}
+    return {content:[{type:"text" as const,text:JSON.stringify(data)}], isError:true}
+  }
+  const task = result.task
+  return {
+    content:[{type:"text" as const,text:JSON.stringify({ok:true, id:task.id, workspaceId:task.workspaceId,
+      product:task.product, status:task.status, revision:task.revision, assignee:task.assignee})}],
+    structuredContent:{ok:true,task:taskPreview(task,true)},
+  }
+}
 
-server.registerTool(
-  "todo_update",
-  {
-    title: "Update a task status or parent",
-    description:
-      "Transition a task in the shared todo ledger (open / in_progress / blocked / done). A task marked `needsBuild`/`needsDeploy` cannot be set `done` unless its gate is satisfied — the server refuses the `done` transition and tells you to record the gate via todo_gate first. This is the enforcement half of the quality gate.",
-    inputSchema: {
-      id: z.string().describe("The task id."),
-      status: z.enum(["open", "in_progress", "blocked", "done"]).optional().describe("New status."),
-      parent: z.string().nullable().optional().describe("Change the parent (reparent in the mind map)."),
-      title: z.string().optional().describe("Edit the title."),
-    },
-    outputSchema: {
-      ok: z.boolean(),
-      task: z.any().optional(),
-      error: z.string().optional(),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+server.registerTool("todo_add", {
+  title:"Add a shared workspace task or mind-map node",
+  description:"Record a task, decision, fact, lamp, state or blocker in the shared Lattice mind map. Pass the owning product or workspace and an actor label. A child without a workspace inherits its parent’s scope.",
+  inputSchema:{
+    title:z.string().trim().min(1).max(1500), kind:nodeKind.optional(), parent:z.string().optional(),
+    workspace:z.string().max(1024).optional().describe("Owning Lattice product name or exact absolute workspace path."),
+    actor:actorInput, needsBuild:z.boolean().optional(), needsDeploy:z.boolean().optional(),
   },
-  async ({ id, status, parent, title }) => {
-    const todos = readTodos()
-    const t = todos.find((x) => x.id === id)
-    if (!t) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: `no task ${id}` }) }], isError: true }
-    }
-    const next: Task = { ...t }
+  outputSchema:{ok:z.boolean(), task:z.any().optional(), error:z.string().optional()},
+  annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false},
+}, async ({title,kind,parent,workspace,actor,needsBuild,needsDeploy}) => {
+  const scope = workspace ? todoWorkspace(workspace) : {}
+  return todoReply(await persistTask(newTask(title,{
+    ...scope, parent, kind, createdBy:actor,
+    gated:needsBuild || needsDeploy ? {needsBuild, needsDeploy} : undefined,
+  })))
+})
+
+server.registerTool("todo_list", {
+  title:"Page the shared mind map by workspace, kind, or status",
+  description:"Read tasks, decisions, facts and lamps by product/path/ws hash. Use the task revision when claiming or changing work. Want a ping when a peer task lands? Follow its ID with todo_follow.",
+  inputSchema:{
+    workspace:z.string().max(1024).optional(), id:z.string().optional(), status:taskStatus.optional(),
+    kind:nodeKind.optional(), offset:z.number().int().nonnegative().optional(),
+    limit:z.number().int().min(1).max(30).optional(),
+  },
+  outputSchema:{tasks:z.array(z.any()),doneCheck:z.any(),total:z.number(),nextOffset:z.number().nullable()},
+  annotations:READ_ONLY,
+}, async ({workspace,id,status,kind,offset=0,limit=15}) => {
+  const workspaceId = workspace && (/^ws-[0-9a-f]{16}$/.test(workspace) ? workspace : todoWorkspace(workspace).workspaceId)
+  const scoped = readTodos().filter(task => !workspaceId || task.workspaceId === workspaceId)
+  const filtered = scoped.filter(task => (!id || task.id === id) &&
+    (!status || status === task.status) && (!kind || kind === (task.kind ?? "task")))
+  const check = doneCheck(undefined,scoped)
+  const outcome = check.done ? {done:true,milestone:check.milestone,summary:check.summary}
+    : {done:false,reason:check.reason,summary:check.summary}
+  const tasks = []
+  let bytes = 0
+  for (const task of filtered.slice(offset,offset + limit)) {
+    const preview = taskPreview(task,!!id)
+    const size = Buffer.byteLength(JSON.stringify(preview))
+    if (tasks.length && bytes + size > 6000) break
+    tasks.push(preview)
+    bytes += size
+  }
+  const nextOffset = offset + tasks.length < filtered.length ? offset + tasks.length : null
+  const data = {tasks,doneCheck:outcome,total:filtered.length,nextOffset}
+  return {content:[],structuredContent:data}
+})
+
+server.registerTool("todo_update", {
+  title:"Claim, update or complete a shared task",
+  description:"Transition open → in_progress → done, or mark blocked/reopen. Pass your actor label and the revision returned by todo_list to avoid overwriting a peer. Build/deploy evidence remains required for gated tasks.",
+  inputSchema:{
+    id:z.string(), status:taskStatus.optional(), parent:z.string().nullable().optional(),
+    title:z.string().trim().min(1).max(1500).optional(), workspace:z.string().max(1024).optional(),
+    actor:actorInput, expectedRevision:revisionInput,
+  },
+  outputSchema:{ok:z.boolean(),task:z.any().optional(),error:z.string().optional()},
+  annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false},
+}, async ({id,status,parent,title,workspace,actor,expectedRevision}) => {
+  const scope = workspace ? todoWorkspace(workspace) : {}
+  return todoReply(await updateTask(id,expectedRevision,current => {
+    const next:Task = {...current,...scope,updatedBy:actor ?? current.updatedBy ?? "agent"}
     if (title !== undefined) next.title = title
     if (parent !== undefined) next.parent = parent
-    if (status !== undefined) {
-      if (status === "done") {
-        const gated = next.gated
-        const buildOk = gated?.needsBuild && next.gates?.build?.ok
-        const deployOk = gated?.needsDeploy && next.gates?.deploy?.ok
-        const ungated = !gated?.needsBuild && !gated?.needsDeploy
-        if (!ungated && !(buildOk && (!gated.needsDeploy || deployOk))) {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task is quality-gated; record the build/deploy gate via todo_gate before marking done", gates: next.gates }) }],
-            isError: true,
-          }
-        }
-        next.status = "done"
-        next.doneAt = new Date().toISOString()
-      } else {
-        // status !== "done" here (the if/else narrowed it), so just assign; no
-        // doneAt mutation needed. doneAt stays undefined unless it was re-done.
-        next.status = status
+    if (status === undefined) return next
+    if (status === "done") {
+      if ((next.gated?.needsBuild && next.gates?.build?.ok !== true) ||
+          (next.gated?.needsDeploy && next.gates?.deploy?.ok !== true)) {
+        return "task is quality-gated; record the required build/deploy evidence via todo_gate"
       }
+      next.doneAt = current.doneAt ?? new Date().toISOString()
+    } else if (current.status === "done") {
+      delete next.doneAt
+      delete next.gates
     }
-    const saved = upsertTask(next)
-    if (!saved) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "failed to persist update" }) }], isError: true }
+    if (status === "in_progress" && actor && current.status === "in_progress" &&
+        current.assignee && current.assignee !== actor && expectedRevision === undefined) {
+      return "task is already assigned; refresh its revision before explicitly reassigning"
     }
-    return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }], structuredContent: { ok: true, task: saved } }
+    next.status = status
+    if (status === "in_progress" && actor) next.assignee = actor
+    if (status === "open") delete next.assignee
+    return next
+  }))
+})
+
+server.registerTool("todo_gate", {
+  title:"Record build or deploy evidence",
+  description:"Record an observed build/deploy result for a task that requires it. Pass the command, evidence, actor and current revision when available.",
+  inputSchema:{
+    id:z.string(), kind:z.enum(["build","deploy"]), ok:z.boolean(), cmd:z.string().max(1500).optional(),
+    evidence:z.string().max(1500).optional(), actor:actorInput, expectedRevision:revisionInput,
   },
+  outputSchema:{ok:z.boolean(),task:z.any().optional(),error:z.string().optional()},
+  annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false},
+}, async ({id,kind,ok,cmd,evidence,actor,expectedRevision}) =>
+  todoReply(await updateTask(id,expectedRevision,current => {
+    if (!(kind === "build" ? current.gated?.needsBuild : current.gated?.needsDeploy)) {
+      return "task does not require the " + kind + " gate"
+    }
+    const next:Task = {...current, updatedBy:actor ?? current.updatedBy ?? "agent",
+      gates:{...current.gates,[kind]:{kind,ok,cmd,evidence,doneAt:new Date().toISOString()}}}
+    if (!ok && next.status === "done") {
+      next.status = "blocked"
+      delete next.doneAt
+    }
+    return next
+  })),
 )
 
-server.registerTool(
-  "todo_gate",
-  {
-    title: "Record a build/deploy quality-gate result for a task",
-    description:
-      "Record that a build (or deploy) was actually performed for a task, with evidence: the exact command run, its exit code, and where the artifact landed. Only tasks marked `needsBuild`/`needsDeploy` are affected. This is how a quality-gated task becomes eligible for `done`. Evidence-backed: never record a gate you did not actually run.",
-    inputSchema: {
-      id: z.string().describe("The task id."),
-      kind: z.enum(["build", "deploy"]).describe("Which gate you performed."),
-      ok: z.boolean().describe("Did it pass?"),
-      cmd: z.string().optional().describe("The exact command you ran."),
-      evidence: z.string().optional().describe("Where the build/deploy artifact landed, or the observed result."),
-    },
-    outputSchema: {
-      ok: z.boolean(),
-      task: z.any().optional(),
-      error: z.string().optional(),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+server.registerTool("todo_done_check", {
+  title:"Check the shared or workspace-specific done milestone",
+  description:"Evaluate completion and build/deploy evidence for the selected workspace or the whole ledger. Pages evidence items for larger ledgers.",
+  inputSchema:{
+    workspace:z.string().max(1024).optional(), offset:z.number().int().nonnegative().optional(),
+    limit:z.number().int().min(1).max(30).optional(),
   },
-  async ({ id, kind, ok, cmd, evidence }) => {
-    const todos = readTodos()
-    const t = todos.find((x) => x.id === id)
-    if (!t) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: `no task ${id}` }) }], isError: true }
-    }
-    if (!t.gated?.needsBuild && !t.gated?.needsDeploy) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task is not quality-gated (no needsBuild/needsDeploy), gate not recorded" }) }], isError: true }
-    }
-    const next: Task = { ...t, gates: { ...(t.gates ?? {}) } }
-    const gk: GateKind = kind
-    if (gk === "build" && !t.gated.needsBuild) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task does not require a build gate" }) }], isError: true }
-    }
-    if (gk === "deploy" && !t.gated.needsDeploy) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "task does not require a deploy gate" }) }], isError: true }
-    }
-    next.gates![gk] = { kind: gk, ok: !!ok, cmd, evidence, doneAt: new Date().toISOString() }
-    const saved = upsertTask(next)
-    if (!saved) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "failed to persist gate" }) }], isError: true }
-    }
-    return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, gate: next.gates![gk] }) }], structuredContent: { ok: true, task: saved } }
+  outputSchema:{
+    done:z.boolean(),milestone:z.string().optional(),reason:z.string().optional(),summary:z.any(),
+    commitChecklist:z.array(z.string()).optional(),incomplete:z.array(z.any()).optional(),nextOffset:z.number().nullable(),
   },
-)
+  annotations:READ_ONLY,
+}, async ({workspace,offset=0,limit=12}) => {
+  const workspaceId = workspace && (/^ws-[0-9a-f]{16}$/.test(workspace) ? workspace : todoWorkspace(workspace).workspaceId)
+  const tasks = readTodos().filter(task => !workspaceId || task.workspaceId === workspaceId)
+  const check = doneCheck(undefined,tasks)
+  const all = check.done ? check.commitChecklist : check.incomplete.map(task => ({
+    id:task.id,title:task.title.slice(0,300),status:task.status,workspaceId:task.workspaceId,product:task.product,
+  }))
+  const page: Array<(typeof all)[number]> = []
+  let bytes = 0
+  for (const item of all.slice(offset,offset+limit)) {
+    const size = Buffer.byteLength(JSON.stringify(item))
+    if (page.length && bytes + size > 6000) break
+    page.push(item)
+    bytes += size
+  }
+  const result = {
+    done:check.done, milestone:check.done ? check.milestone : undefined,
+    reason:check.done ? undefined : check.reason, summary:check.summary,
+    commitChecklist:check.done ? page : undefined,
+    incomplete:check.done ? undefined : page,
+    nextOffset:offset+page.length < all.length ? offset+page.length : null,
+  }
+  return {content:[],structuredContent:result}
+})
 
-server.registerTool(
-  "todo_done_check",
-  {
-    title: "Quality-gate check: is the current list done, and what to commit?",
-    description:
-      "The authoritative 'is the current list done' test. Returns done:true with a milestone (all_items / build_done / deploy_done) and an exact commitChecklist (evidence-bearing commit message body) when the current list is at a done milestone. Returns done:false with the list of blocking tasks when it isn't. When done:true, the agent/host should commit the commitChecklist to mark the milestone — the list itself is durable in the lattice ledger, the commit is the team-facing record. Work is infinite-scroll: this is a MILESTONE on the current list, not a terminal end.",
-    inputSchema: {},
-    outputSchema: {
-      done: z.boolean(),
-      milestone: z.string().optional(),
-      reason: z.string().optional(),
-      summary: z.any(),
-      commitChecklist: z.array(z.string()).optional(),
-      incomplete: z.array(z.any()).optional(),
-    },
-    annotations: READ_ONLY,
-  },
-  async () => {
-    const check = doneCheck()
-    const incomplete = check.done ? [] : (check as { incomplete?: Task[] }).incomplete ?? []
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify(check, null, 2) }],
-      structuredContent: {
-        done: check.done,
-        milestone: check.done ? (check as { milestone: string }).milestone : undefined,
-        reason: check.done ? undefined : (check as { reason: string }).reason,
-        summary: check.summary,
-        commitChecklist: check.done ? (check as { commitChecklist: string[] }).commitChecklist : undefined,
-        incomplete: incomplete.map((t) => ({ id: t.id, title: t.title, status: t.status })),
-      },
+const fanSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,140}$/).describe("The fan ID shown by Satin for your chat or a stable ID for your client.")
+const feedURI = (fan: string) => "nai-lattice://task-feed/" + encodeURIComponent(fan)
+
+server.registerTool("todo_follow", {
+  title:"Follow this arc ✨",
+  description:"Follow or unfollow a task by ID, or list your follows. Done is the default drop. Set on to catch other statuses. Use the fan ID in your Satin prompt.",
+  inputSchema:{fan:fanSchema,id:z.string().min(1).max(120).optional(),action:z.enum(["follow","unfollow","list"]).default("follow"),
+    on:z.array(taskStatus).min(1).max(4).optional()},
+  annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+}, async ({fan,id,action,on}) => {
+  if (action === "list") {
+    return {content:[{type:"text" as const,text:JSON.stringify({following:readFollowing(fan),feed:feedURI(fan)})}]}
+  }
+  if (!id) throw Error("Pick a task ID to follow or unfollow.")
+  const result = await followTask(fan,id,action==="follow" ? on ?? ["done"] : undefined)
+  const data = {message:action==="follow" ? "Following this arc ✨" : "Unfollowed",id,following:result.following.length,
+    feed:feedURI(fan),next:"Use todo_feed for new drops or subscribe to the resource in an MCP client."}
+  return {content:[{type:"text" as const,text:JSON.stringify(data)}]}
+})
+
+server.registerTool("todo_feed", {
+  title:"Your drop feed",
+  description:"Read recent state changes on tasks you follow. Acknowledge consumed drops by task ID and revision. Unread drops survive reconnects; more means catch up another page after acknowledging.",
+  inputSchema:{fan:fanSchema,ack:z.array(z.object({id:z.string().max(120),revision:z.number().int().positive()})).max(12).optional()},
+  annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+}, async ({fan,ack}) => {
+  if (ack?.length) await acknowledgeFeed(fan,ack)
+  const {latest:_latest,...feed} = readFeed(fan)
+  return {content:[{type:"text" as const,text:JSON.stringify({...feed,following:readFollowing(fan).length})}]}
+})
+
+server.registerResource("Task drop feed",new ResourceTemplate("nai-lattice://task-feed/{fan}",{list:undefined}),
+  {mimeType:"application/json",description:"Unread state changes for the subscribed fan ID."}, (uri,variables) => {
+    const fan = fanSchema.parse(decodeURIComponent(variables.fan as string))
+    const {latest:_latest,...data} = readFeed(fan)
+    return {contents:[{uri:uri.href,mimeType:"application/json",text:JSON.stringify(data)}]}
+  })
+
+const resourceFollowers = new Map<string,{fan:string; latest:Record<string,number>}>()
+let stopResourceWatch: (() => void) | undefined
+function subscribeFan(uri: string) {
+  const matched = /^nai-lattice:\/\/task-feed\/([^/?#]+)$/.exec(uri)
+  if (!matched) throw Error("Unknown task feed resource")
+  return fanSchema.parse(decodeURIComponent(matched[1]))
+}
+
+server.server.setRequestHandler(SubscribeRequestSchema,({params}) => {
+  const fan = subscribeFan(params.uri)
+  if (resourceFollowers.has(params.uri) && stopResourceWatch) return {}
+  if (!resourceFollowers.has(params.uri) && resourceFollowers.size >= 32) throw Error("Resource subscription limit reached")
+  const ledger = todoPath()
+  stopResourceWatch ??= watchTodoChanges(ledger, file => {
+    let snapshot: Task[] | undefined
+    for (const [uri,sub] of resourceFollowers) {
+      if (file && file !== basename(ledger) && file !== basename(followPath(sub.fan,ledger))) continue
+      try {
+        const following = readFollowing(sub.fan,ledger)
+        if (!following.length) continue
+        const current = makeFeed(following,snapshot ??= readTodos(false,ledger)).latest
+        const newer = Object.entries(current).some(([id,rev]) => rev > (sub.latest[id] ?? 0))
+        Object.assign(sub.latest,current)
+        if (newer) void server.server.sendResourceUpdated({uri}).catch(() => {})
+      } catch { /* durable feed remains available on the next read */ }
     }
-  },
-)
+  },() => {stopResourceWatch = undefined})
+  resourceFollowers.set(params.uri,{fan,latest:readFeed(fan).latest})
+  return {}
+})
+server.server.setRequestHandler(UnsubscribeRequestSchema,({params}) => {
+  resourceFollowers.delete(params.uri)
+  if (!resourceFollowers.size) {
+    stopResourceWatch?.()
+    stopResourceWatch = undefined
+  }
+  return {}
+})
+server.server.onclose = () => {
+  stopResourceWatch?.()
+  stopResourceWatch = undefined
+  resourceFollowers.clear()
+}
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport()

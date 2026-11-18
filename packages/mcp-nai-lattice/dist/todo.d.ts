@@ -1,9 +1,23 @@
 /**
- * todo.ts — the NAI-Lattice shared mind-map todo ledger + quality gate.
+ * todo.ts — the NAI-Lattice shared MIND MAP ledger + quality gate.
  *
- * A cross-agent, cross-project "mind map" todo list owned by the lattice (the
- * same way projects.json is owned). Agents DO NOT hunt for a per-repo TODO file:
- * the authoritative list is this ledger, read/written through the MCP tools.
+ * This is NOT just a TODO list. It is the durable, cross-agent, cross-project
+ * "mind map" / breadcrumb knowledge graph that survives any agent's memory loss
+ * (context rotation / auto-condensing). Agents in ANY workspace write their
+ * durable state here so a future self or another Don can reattach to the same
+ * multiverse and continue — the Alice-in-Wonderland continuity contract.
+ *
+ * Each record is a NODE in that graph and may carry an optional `kind` so it is
+ * not forced to look like a chore:
+ *   - "task"      — work item (default; the classic todo).
+ *   - "decision"  — an architectural/scope decision we agreed on and why.
+ *   - "fact"      — a verified durable fact (source + evidence), not a promise.
+ *   - "lamp"      — a continuity handoff for a future self / a peer ("read this
+ *                   to know where we are and what's next").
+ *   - "state"     — a live status / ownership note (who owns which territory).
+ *   - "blocker"   — an open impediment (the "blocked" lifecycle lower half).
+ * All kinds share the same tree (parent nesting) + lifecycle status so a seminar
+ * thread, a decision, a lamp and a task can all live in one navigable mind map.
  *
  * Semantics the CTO asked for:
  *   - "done" can mean: (a) all open items done, OR (b) build was performed (a
@@ -15,15 +29,27 @@
  *     artifacts, timestamp) and the check consumes that evidence.
  *
  * Shape (mind map): each record has a parent (tree nesting) + a lifecycle.
- *   { id, parent?: id|null, title, status: open|in_progress|blocked|done,
+ *   { id, parent?: id|null, title, kind?: string,
+ *     status: open|in_progress|blocked|done,
  *     createdBy, createdAt, doneAt?, updatedAt?, gated?: { needsBuild?, needsDeploy? },
  *     gates?: { build?: {cmd,exit,evidence,doneAt,ok}, deploy?: {...} } }
  *
- * Store: durable append-only JSONL at <package>/state/todo.jsonl (like projects.json).
- * Writers serialize on a process-owned lock (reused pattern from the hardened satin gate).
+ * Store: durable JSONL at <package>/state/todo.jsonl, with atomic snapshots.
+ * Writers serialize via SQLite and check task revisions before applying changes.
  */
+export declare function todoPath(): string;
 export type TaskStatus = "open" | "in_progress" | "blocked" | "done";
 export type GateKind = "build" | "deploy";
+export declare const TASK_DROP_HISTORY = 16;
+export interface TaskDrop {
+    revision: number;
+    from: TaskStatus;
+    to: TaskStatus;
+    at: string;
+    actor?: string;
+    workspaceId?: string;
+    product?: string;
+}
 export interface GateRecord {
     kind: GateKind;
     ok: boolean;
@@ -33,8 +59,18 @@ export interface GateRecord {
 }
 export interface Task {
     id: string;
+    revision?: number;
+    drops?: TaskDrop[];
+    dropsPrunedThrough?: number;
+    workspace?: string;
+    workspaceId?: string;
+    product?: string;
+    assignee?: string;
+    updatedBy?: string;
     parent?: string | null;
     title: string;
+    /** Node kind in the mind map: "task" (default) | "decision" | "fact" | "lamp" | "state" | "blocker". */
+    kind?: string;
     status: TaskStatus;
     createdBy: string;
     createdAt: string;
@@ -48,14 +84,19 @@ export interface Task {
         doneAt: string;
     }>>;
 }
-export declare function readTodos(): Task[];
-declare function persist(append: Task): {
-    ok: boolean;
-    task?: Task;
-    reason?: string;
+export declare function readTodos(strict?: boolean, file?: string): Task[];
+type Mutation = {
+    ok: true;
+    task: Task;
+} | {
+    ok: false;
+    reason: string;
+    current?: Task;
 };
-export { persist as persistTask };
-/** In-place update of a task by id (append a new revision with updatedAt). */
+export declare function withTodoRetry<T>(operation: () => T): Promise<T>;
+export declare function writeTodoCompanion<T>(operation: (file: string) => T): Promise<T>;
+export declare function persistTask(task: Task): Promise<Mutation>;
+export declare function updateTask(id: string, expectedRevision: number | undefined, change: (current: Task) => Task | string): Promise<Mutation>;
 export declare function upsertTask(updated: Task): Task | null;
 export type DoneCheck = {
     done: true;
@@ -83,7 +124,8 @@ export interface Summary {
  *   (needsBuild => build gate ok recorded, needsDeploy => deploy gate ok recorded).
  * A `blocked` task always blocks done.
  */
-export declare function doneCheck(now?: string): DoneCheck;
+export declare function doneCheck(now?: string, todos?: Task[]): DoneCheck;
 /** The exact evidence-bearing commit message + checklist an agent/host commits. */
 export declare function commitChecklist(todos: Task[], milestone: string): string[];
 export declare function newTask(title: string, opts?: Partial<Task>): Task;
+export {};
