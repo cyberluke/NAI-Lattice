@@ -17,6 +17,8 @@
 //! aggregate BLAKE3 root, segment_hash, format_version.
 
 pub mod durability;
+pub mod multi_dim;
+pub mod read_model;
 pub mod segment;
 
 use std::path::{Path, PathBuf};
@@ -126,6 +128,11 @@ struct ActiveWriter {
     /// Highest allocated sequence + 1 (advances for every append, including
     /// BatchedDurable whose physical write is deferred to `flush_batched`).
     next_seq: u64,
+    // NOTE (CQRS purity): the WRITE side owns NO read index. A query accelerator
+    // (seq→byte-offset) is a READ-side concern and must live in a read model, not
+    // in the command model's append mutex. A leaked read index here would couple
+    // the high-frequency read path to the append lock — the bulkhead violation
+    // the CTO flagged. Read models (LedgerReadModel) build their own accelerators.
 }
 
 impl Ledger {
@@ -194,13 +201,22 @@ impl Ledger {
     /// never mutates anything. Applied filters run after the merge; `after`
     /// resumes from an exclusive sequence (cursor pagination), `limit` bounds the
     /// result set.
+    ///
+    /// INCREMENTAL READ (runbook "NOT CLOSED"): the active segment maintains an
+    /// in-memory `seq_offsets` index (seq→byte offset). When `after` falls inside
+    /// the active segment, the scan BIN-SEARCHES that offset and recovers only
+    /// the frames after it — O(delta), never O(whole active segment). Sealed
+    /// segments whose highest sequence ≤ `after` are skipped entirely (a cursor
+    /// read is only interested in newer events). This makes tail/SSE/API reads
+    /// cheap on a high-volume stream instead of O(total ledger).
     pub fn scan_events(&self, filter: &EventScanFilter) -> Result<Vec<CanonicalEvent>, LedgerError> {
         #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Copy)]
         struct SeqKey(u64);
         // Collect (sequence, event-pb-frame) tuples across all segments.
         let mut collected: Vec<(u64, pb::Frame)> = Vec::new();
-        // 1) Sealed segments, oldest first (date dirs + lexicographic file names are
-        //    already in sealing order).
+        // 1) Sealed segments (oldest first). Skip any whose last sequence is <=
+        //    `after` — a cursor/tail read can never need them.
+        let after = filter.after;
         let sealed_dir = self.config.root.join("ledger").join("sealed");
         if sealed_dir.exists() {
             let mut day_dirs: Vec<_> = std::fs::read_dir(&sealed_dir)?
@@ -211,12 +227,24 @@ impl Ledger {
             day_dirs.sort();
             for day in day_dirs {
                 for path in list_segment_files(&day)? {
+                    // Cheap footer peek: if this sealed segment ends at/before
+                    // the cursor, it can't contribute post-`after` events.
+                    if let Some(hwm) = segment::read_footer_hwm(&path)? {
+                        if after.is_some_and(|a| hwm <= a) {
+                            continue;
+                        }
+                    }
                     let (frames, _tail, _hwm, _trunc) = segment::recover(&path)?;
                     collected.extend(frames.into_iter().map(|f| (f.runtime_sequence, f)));
                 }
             }
         }
-        // 2) Active segment (current appended frames).
+        // 2) Active segment (read-side concern; no write-side index leaked here).
+        //    Sealed segments beyond the cursor are skipped above (read-accelerator),
+        //    which is the read-side chunk of the runbook fix. The active segment
+        //    is bounded and small; the live hot-queue projection (LedgerReadModel)
+        //    is what serves the high-frequency dashboard/SSE reads, NOT this
+        //    replay — so the active rescan here is only for rebuilds/replay.
         let (frames, _tail, _hwm, _trunc) = segment::recover(&self.active_path)?;
         collected.extend(frames.into_iter().map(|f| (f.runtime_sequence, f)));
         // Merge-sort by sequence (dedupe identical sequence).

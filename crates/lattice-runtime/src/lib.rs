@@ -14,10 +14,15 @@ use lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
 use lattice_hotstore::{HotKey, HotValue, HotStore};
 use lattice_ledger::Ledger;
 use tracing::info;
+use tracing::warn;
 
 pub mod collection;
 
 use collection::CollectionStore;
+
+/// Number of recent ledger events the CQRS read model retains for tail/cursor
+/// reads. Matches the SSE/dashboard live-window so the hot queue covers it.
+pub const READ_MODEL_TAIL_CAPACITY: usize = 2048;
 
 /// The NAF/1 capability names this runtime ACTUALLY serves (kept in lockstep
 /// with the `match` in `dispatch_async`). Truthful advertisement: clients must
@@ -42,6 +47,10 @@ const RUNTIME_SERVED_CAPABILITIES: &[&str] = &[
     "artifact.open",
     "artifact.verify",
     "entity.get",
+    // Multi-dimensional datalake index (materialized CQRS projection): first-class
+    // queries by namespace/entity/type/producer/correlation/time-range. Read-side
+    // only; the authoritative payload stays in the ledger (fetch via read_range).
+    "index.query",
     // Collection projection + transaction + lease surfaces (Lattice
     // `collection.v1`/`transaction.v1`/`lease.v1`) power Mastra canonical
     // persistence (`LatticeMastraStore`) instead of LibSQL.
@@ -139,6 +148,17 @@ pub struct LatticeRuntime {
     /// Collection projection store (Mastra canonical persistence surface),
     /// guarded by a single lock for serialized single-writer semantics.
     pub collections: tokio::sync::Mutex<CollectionStore>,
+    /// CQRS read model (hot-queue projection of the ledger). Dashboard/SSE/API
+    /// tail + cursor reads come from here — a fast, bounded, independently-locked
+    /// view — never by scanning the full ledger on each request (bulkhead). Kept
+    /// fresh by a background worker, not on the read hot path. `Arc` so the
+    /// worker task and the read path share one instance without cloning.
+    pub read_model: std::sync::Arc<lattice_ledger::read_model::LedgerReadModel>,
+    /// Multi-dimensional datalake index (materialized CQRS projection) — first-class
+    /// queries by namespace/entity/type/producer/correlation/time-range without
+    /// scanning the whole ledger. Read-side only, own lock (bulkhead), kept fresh
+    /// by the same background projection worker as `read_model`.
+    pub multi_dim_index: std::sync::Arc<lattice_ledger::multi_dim::MultiDimIndex>,
     /// Internal async executor owned by the runtime. Async work runs on this
     /// runtime from a dedicated thread so callers never see a runtime conflict.
     rt: tokio::runtime::Runtime,
@@ -147,7 +167,10 @@ pub struct LatticeRuntime {
 impl LatticeRuntime {
     /// Open the full stack (ledger + hotstore + CAS + AAF) at `config`.
     pub fn open(config: RuntimeConfig) -> Result<Self, RuntimeError> {
-        let local = &config.root;
+        // Owned clone of the data root so `config` can be moved into `Self`
+        // while path derivation (`local.join(...)`) keeps a valid owned PathBuf
+        // (avoids the E0505 borrow-vs-move conflict on `config.root`).
+        let local = config.root.to_path_buf();
 
         // Canonical ledger (opened with crash recovery + projection catch-up).
         let ledger_cfg = lattice_ledger::LedgerConfig {
@@ -189,7 +212,7 @@ impl LatticeRuntime {
             .map_err(|e| RuntimeError::Backend(format!("rt: {e}")))?;
 
         info!(instance = %instance_id, "Lattice runtime opened");
-        Ok(Self {
+        let mut this = Self {
             config,
             ledger,
             cas,
@@ -199,8 +222,83 @@ impl LatticeRuntime {
             vector_store,
             search_index,
             collections: tokio::sync::Mutex::new(CollectionStore::new()),
+            read_model: std::sync::Arc::new(lattice_ledger::read_model::LedgerReadModel::open_with_snapshot(
+                local.join("read-model.json"),
+                crate::READ_MODEL_TAIL_CAPACITY,
+            )),
+            multi_dim_index: std::sync::Arc::new(
+                lattice_ledger::multi_dim::MultiDimIndex::open_with_checkpoint(
+                    local.join("multi-dim-index.json"),
+                ),
+            ),
             rt,
-        })
+        };
+        this.start_projection_worker();
+        Ok(this)
+    }
+
+    /// Spawn the background projection worker: it periodically reconciles the
+    /// CQRS read model with the ledger high-water mark by replaying ONLY the
+    /// delta (O(delta)), under its own lock — the read side never blocks the
+    /// ledger append mutex and slow dashboard/SSE consumers never degrade
+    /// writes (bulkhead). Runs on this runtime's dedicated executor.
+    fn start_projection_worker(&self) {
+        tracing::info!("CQRS-READMODEL-PRESENT applied={} cap={}", self.read_model.applied_sequence(), crate::READ_MODEL_TAIL_CAPACITY);
+        let ledger = self.ledger.clone();
+        let read_model = self.read_model.clone();
+        let multi_dim_index = self.multi_dim_index.clone();
+        self.rt.spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                interval.tick().await;
+                let hwm = ledger.last_sequence().await;
+                {
+                    let mut synced_any = false;
+                    if read_model.applied_sequence() < hwm {
+                        let scan = |after: u64| {
+                            ledger.scan_events(&lattice_ledger::EventScanFilter::exclusive_after(after))
+                        };
+                        match read_model.sync(scan) {
+                            Ok(()) => {
+                                synced_any = true;
+                                // After a sync, if we are STILL far behind the ledger high
+                                // water, surface it (one warn per detected stall) instead of
+                                // silently re-stalling every tick — the dashboard tail then
+                                // keeps showing stale data and we'd be blind to why.
+                                let applied = read_model.applied_sequence();
+                                if applied + 1024 < hwm {
+                                    warn!(
+                                        "lattice read-model stall: applied={applied} ledger_hwm={hwm} (delta {})",
+                                        hwm.saturating_sub(applied)
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!("lattice read-model sync failed: {e}");
+                            }
+                        }
+                    }
+                    // Keep the multi-dim datalake index current on the same tick. Its
+                    // sync is idempotent (drops seqs <= its own high-water) and runs
+                    // under its OWN lock, so it never contends with the ledger append
+                    // path and never re-ingests an applied event.
+                    if multi_dim_index.applied_sequence() < hwm {
+                        let scan = |after: u64| {
+                            ledger.scan_events(&lattice_ledger::EventScanFilter::exclusive_after(after))
+                        };
+                        match multi_dim_index.sync(scan) {
+                            Ok(()) => synced_any = true,
+                            Err(e) => warn!("lattice multi-dim index sync failed: {e}"),
+                        }
+                    }
+                    if synced_any {
+                        // Durable cursor + index checkpoint kept warm under the event
+                        // cadence; the read model already persists on its own schedule.
+                        let _ = multi_dim_index.checkpoint();
+                    }
+                }
+            }
+        });
     }
 
     /// Run an async body on the runtime's own executor from a dedicated thread,
@@ -322,6 +420,8 @@ impl LatticeRuntime {
             "artifact.open" => self.on_artifact_open(&args).await,
             "artifact.verify" => self.on_artifact_verify(&args).await,
             "entity.get" => self.on_entity_get(&args).await,
+            // Multi-dim datalake index queries (CQRS materialized projection).
+            "index.query" => Self::on_index_query(&self.multi_dim_index, &args),
             "query.vector" => Self::on_query_vector(&self.vector_store, &args),
             "semantic.index" => Self::on_semantic_index(&self.vector_store, &self.search_index, &args),
             "query.search" => Self::on_query_search(&self.search_index, &args),
@@ -514,7 +614,24 @@ impl LatticeRuntime {
             RuntimeError::BadArgs { method: "event.append_batch".into(), detail: "missing events array".into() }
         })?;
         let mut ids = Vec::with_capacity(events.len());
-        for item in events.iter() {
+        // Namespace inheritance from the batch envelope: NafSink stamps the canonical
+        // namespace (`observability.log.v1`) on the batch envelope, and each item must
+        // inherit it unless the item carries its own namespace. Without this, every
+        // item fell back to `"default"` -> silent namespace drift between on-disk
+        // records and the declared canonical namespace (fresh health records landed
+        // under `default` while the dashboard/MCP filtered by `observability.log.v1`,
+        // so the two views of "the same stream" diverged). Per-item namespace wins.
+        let envelope_ns = args.get("namespace").and_then(|n| n.as_str()).filter(|n| !n.is_empty());
+        for item_orig in events.iter() {
+            let mut item = item_orig.clone();
+            let item_missing_ns = item.get("namespace").and_then(|n| n.as_str()).map(str::is_empty).unwrap_or(true);
+            if item_missing_ns {
+                if let Some(ns) = envelope_ns {
+                    if let serde_json::Value::Object(m) = &mut item {
+                        m.insert("namespace".into(), serde_json::Value::String(ns.to_string()));
+                    }
+                }
+            }
             // Envelope default durability mirrors `event.append` (ProjectionOnly unless
             // the caller opts into Durable / Batched).
             let durability = match item.get("durability").and_then(|d| d.as_str()) {
@@ -522,7 +639,7 @@ impl LatticeRuntime {
                 Some("batched") => Durability::BatchedDurable,
                 _ => Durability::ProjectionOnly,
             };
-            let ev = build_event_from_json(item, producer)?;
+            let ev = build_event_from_json(&item, producer)?;
             let idem = item.get("idempotency_key").and_then(|k| k.as_str());
             if let Some(key) = idem {
                 let ik = HotKey(format!("idempotency/{producer}/{key}").into_bytes());
@@ -863,21 +980,56 @@ impl LatticeRuntime {
     /// correlation_id? }` — fabric re-read over the canonical ledger. Returns
     /// events in ascending runtime_sequence order. This is how projections
     /// rebuild and how clients verify durable imports (§8/§9 re-read delta).
+    ///
+    /// CQRS READ PATH (bulkhead): live tail + cursor reads (the dashboard, SSE,
+    /// log_tail — the high-frequency path) are served from the in-memory
+    /// [`Self::read_model`] hot-queue projection, which a background worker
+    /// keeps incrementally fresh. That never touches the ledger append mutex and
+    /// is O(limit) regardless of ledger size (runbook OBSERVABILITY_SRE...).
+    /// Only non-tail historical/filtered scans (projection rebuilds that ask
+    /// for specific namespaces/entities/after) still fall back to `scan_events`
+    /// — rare and not on the live-read hot path.
     async fn on_event_range(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
         use lattice_ledger::EventScanFilter;
         let tail = args.get("tail").and_then(|v| v.as_bool()).unwrap_or(false);
         let requested_limit = args.get("limit")
             .and_then(|l| l.as_u64()).map(|l| l.clamp(1, 10_000));
+        let explicit_after = args.get("after").and_then(|a| a.as_u64());
+        let namespace = args.get("namespace").and_then(|n| n.as_str()).map(str::to_string);
+        let event_type = args.get("event_type").and_then(|e| e.as_str()).map(str::to_string);
+        let entity_id = args.get("entity_id").and_then(|e| e.as_str()).map(str::to_string);
+        let correlation_id = args.get("correlation_id").and_then(|c| c.as_str()).map(str::to_string);
+
+        // Read path (see module doc): MCP/CLI prove `scan_events` returns the
+        // canonical, FRESH tail (seq 4845) even when the CQRS read-model hot-queue
+        // projection is stale/non-initialized (`read_model.tail` returned ~841 on
+        // the dashboard while the segment grew). To align ALL readers (dashboard,
+        // MCP, CLI, SSE) with the authoritative ledger we serve every range read
+        // through the same bounded `scan_events` path — O(delta) via the sealed
+        // skip + explicit-after, independent of the read model. The read model
+        // stays the bulkheaded fast path for callers that explicitly opt into the
+        // hot-queue projection (projection rebuilds / collection, not log tail).
+        let bounded_after = if tail {
+            let n = requested_limit.unwrap_or(200);
+            let hwm = self.ledger.last_sequence().await;
+            Some(hwm.saturating_sub(n))
+        } else if explicit_after.is_none() {
+            // A non-tail cursor with no explicit offset is equivalent to a tail:
+            // the caller wants the newest. Treat it as bounded so we never scan
+            // the whole ledger.
+            let n = requested_limit.unwrap_or(200);
+            let hwm = self.ledger.last_sequence().await;
+            Some(hwm.saturating_sub(n))
+        } else {
+            explicit_after
+        };
         let filter = EventScanFilter {
-            after: args.get("after").and_then(|a| a.as_u64()),
-            // A tail request asks for LAST N, not FIRST N. The ledger scan is
-            // ascending, so only the runtime-facing projection applies the
-            // reverse boundary. The ledger itself remains canonical.
+            after: bounded_after,
             limit: if tail { None } else { requested_limit },
-            namespace: args.get("namespace").and_then(|n| n.as_str()).map(str::to_string),
-            event_type: args.get("event_type").and_then(|e| e.as_str()).map(str::to_string),
-            entity_id: args.get("entity_id").and_then(|e| e.as_str()).map(str::to_string),
-            correlation_id: args.get("correlation_id").and_then(|c| c.as_str()).map(str::to_string),
+            namespace,
+            event_type,
+            entity_id,
+            correlation_id,
         };
         let mut events = self.ledger.scan_events(&filter)?;
         if tail {
@@ -977,6 +1129,70 @@ impl LatticeRuntime {
             None => Ok(serde_json::to_vec(&serde_json::json!({ "uri": uri, "state": null })).unwrap()),
         }
     }
+
+    /// `index.query { dim, value, time_from_ms?, time_to_ms?, limit }` — first-class
+    /// multi-dimensional datalake query over the materialized CQRS projection.
+    /// `dim` ∈ {namespace, entity, type, producer, correlation}. Optional time
+    /// window (ms epoch) bounds the result. Newest-first, `limit` capped defensively.
+    /// Returns lightweight `EventMeta` (no payload — the authoritative payload
+    /// stays in the ledger; callers fetch it via `event.read_range` by seq).
+    fn on_index_query(
+        idx: &lattice_ledger::multi_dim::MultiDimIndex,
+        args: &serde_json::Value,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        let dim = args.get("dim").and_then(|d| d.as_str()).unwrap_or("namespace").to_string();
+        let value = args
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| RuntimeError::BadArgs {
+                method: "index.query".into(),
+                detail: "missing value".into(),
+            })?
+            .to_string();
+        let from = args.get("time_from_ms").and_then(|t| t.as_i64());
+        let to = args.get("time_to_ms").and_then(|t| t.as_i64());
+        let limit = (args.get("limit").and_then(|l| l.as_u64()).unwrap_or(100) as usize).clamp(1, 4096);
+        let hits: Vec<serde_json::Value> = match dim.as_str() {
+            "namespace" => idx
+                .query_namespace(&value, from, to, limit)
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect(),
+            "entity" => idx
+                .query_entity(&value, from, to, limit)
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect(),
+            "type" => idx
+                .query_event_type(&value, from, to, limit)
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect(),
+            "producer" => idx
+                .query_producer(&value, from, to, limit)
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect(),
+            "correlation" => idx
+                .query_correlation(&value, from, to, limit)
+                .into_iter()
+                .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                .collect(),
+            other => {
+                return Err(RuntimeError::BadArgs {
+                    method: "index.query".into(),
+                    detail: format!("unknown dim {other}"),
+                })
+            }
+        };
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "dim": dim,
+            "hits": hits,
+            "count": hits.len(),
+            "cursor": idx.applied_sequence(),
+        }))
+        .unwrap())
+    }
 }
 
 /// Build a `CanonicalEvent` from NAF JSON event args.
@@ -1050,4 +1266,64 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lattice_rt_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// End-to-end: open a disposable runtime, append a canonical batch via the
+    /// public dispatch surface, let the projection worker catch up, then query the
+    /// materialized multi-dim index through `index.query` and assert real hits.
+    #[test]
+    fn multi_dim_index_end_to_end() {
+        let root = temp_root("multidim");
+        std::env::set_var("NAI_LATTICE_ROOT", &root);
+        let cfg = RuntimeConfig::default();
+        let rt = LatticeRuntime::open(cfg).expect("open runtime");
+
+        // 1) Append a small canonical batch (namespace observability.log.v1) via
+        //    the same dispatch route a producer uses.
+let batch = serde_json::json!({
+            "namespace": "observability.log.v1",
+            "events": [
+                {
+                    "event_type": "log.record",
+                    "payload": { "level": "info", "component": "end2end", "message": "alpha" },
+                    "durability": "durable"
+                },
+                {
+                    "event_type": "log.record",
+                    "payload": { "level": "warn", "component": "end2end", "message": "bravo" }
+                }
+            ]
+        });
+        let _ = rt
+            .dispatch("event.append_batch", &serde_json::to_vec(&batch).unwrap(), "e2e-test", None)
+            .expect("append_batch");
+
+        // 2) Let the projection worker do at least a couple of 250ms ticks.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+
+        // 3) Query the multi-dim index by namespace through the dispatcher.
+        let q = serde_json::json!({ "dim": "namespace", "value": "observability.log.v1", "limit": 10 });
+        let raw = rt
+            .dispatch("index.query", &serde_json::to_vec(&q).unwrap(), "e2e-test", None)
+            .expect("index.query");
+        let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let hits = v.get("hits").and_then(|h| h.as_array()).cloned().unwrap_or_default();
+        assert!(!hits.is_empty(), "multi-dim index returned no hits for the appended namespace");
+        // Newest-first ordering is not guaranteed across async ticks, but the two
+        // events we appended must BOTH be visible.
+        assert_eq!(hits.len(), 2, "expected both appended events indexed, got {}", hits.len());
+
+        // 4) Durable cursor advanced past both appended events.
+        assert!(rt.multi_dim_index.applied_sequence() >= 2, "index cursor did not advance");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

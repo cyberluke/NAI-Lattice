@@ -228,9 +228,72 @@ fn cmd_rollback() -> ! {
     }
 }
 
+/// Path to the host-published endpoint manifest (`%LOCALAPPDATA%\NAI\Lattice\
+/// v1\endpoint.json`). The live worker writes this atomically with its `pid`.
+fn endpoint_manifest_path() -> PathBuf {
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    local.join("NAI").join("Lattice").join("v1").join("endpoint.json")
+}
+
+/// True when a host worker is already live for this user. Idempotency guard for
+/// `launch`: a periodic task wake must NEVER spawn a second monitor (which would
+/// spawn a `--child` that fails the per-user singleton guard and crash-loops).
+///
+/// Probe: read the host-published `endpoint.json` and check whether its `pid`
+/// still opens as a process. The host writes this file atomically at startup and
+/// re-publishes on swap; a dead/crashed worker leaves a stale pid that fails
+/// `OpenProcess`, so a periodic wake correctly relaunches after a crash or
+/// reboot. This needs no SID derivation or last-error semantics — it is the
+/// documented, reliable "is the singleton alive" test.
+fn host_already_running() -> bool {
+    let text = match std::fs::read_to_string(endpoint_manifest_path()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let json: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let pid: u32 = match json.get("pid").and_then(|p| p.as_u64()) {
+        Some(p) if p >= 1 && p <= u32::MAX as u64 => p as u32,
+        _ => return false,
+    };
+    // If the handle opens, the host (at least a process with that pid) lives.
+    unsafe {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let handle: HANDLE = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        // Confirm the pid is actually the host (guards against pid reuse to some
+        // unrelated process after a crash). Compare the leaf exe name.
+        let mut buf: Vec<u16> = vec![0u16; 4096];
+        let mut len: u32 = buf.len() as u32;
+        let is_host = QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+            .is_ok()
+            && {
+                let image = String::from_utf16_lossy(&buf[..len as usize]);
+                let leaf = image.rsplit('\\').next().unwrap_or("").to_lowercase();
+                leaf == "nai-fabric-host.exe"
+            };
+        let _ = CloseHandle(handle);
+        is_host
+    }
+}
+
 /// `launch` — resolve the currently active release and start its monitor
 /// singleton DETACHED (CREATE_NO_WINDOW, no console). Immune to killing the
 /// launching terminal/process: the monitor is its own process tree.
+/// IDEMPOTENT: if the host already has a live worker (endpoint pid alive), this
+/// no-ops with a zero exit so a periodic task wake is safe to re-run.
 fn cmd_launch() -> ! {
     let root = releases_root();
     let cur = match read_json::<Activation>(&root, CURRENT) {
@@ -253,6 +316,16 @@ fn cmd_launch() -> ! {
     if sha != cur.hash {
         println!("{}", serde_json::json!({"ok":false,"error":format!("active release integrity FAILED (sha {sha} != recorded {})", cur.hash)}));
         std::process::exit(2);
+    }
+    // IDEMPOTENCY (self-heal task safety): if a live host worker already runs
+    // for this user, do NOT spawn a second monitor — it would start a `--child`
+    // that fails the per-user singleton guard in the worker and crash-loop.
+    // A periodic task wake must be able to call `launch` every few minutes and
+    // get a cheap no-op when the host is healthy. This is what makes the
+    // scheduled-task periodic wake self-healing without duplicating the host.
+    if host_already_running() {
+        println!("{}", serde_json::json!({"ok":true,"already_running":true,"version":cur.version,"hash":cur.hash,"note":"host worker already live; no-op (idempotent launch)"}));
+        std::process::exit(0);
     }
     // Spawn the monitor (no `--child`); it supervises the `--child` worker.
     // Detach fully: CREATE_NO_WINDOW (no console flash) AND redirect the child's

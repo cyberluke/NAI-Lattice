@@ -241,6 +241,21 @@ impl SegmentWriter {
     }
 }
 
+/// Cheap high-water mark of a SEALED segment: its footer's `last_sequence`.
+/// Returns `None` when the file has no valid reader footer (active/partial/
+/// unsealed) or is missing — the caller then falls back to a full recover.
+/// This lets a cursor/tail scan SKIP whole sealed segments whose max sequence
+/// is already behind the `after` cursor, instead of decoding every frame.
+pub fn read_footer_hwm(path: &Path) -> Result<Option<u64>, RecoveryError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    match SegmentWriter::read_footer(path) {
+        Ok(f) => Ok(Some(f.last_sequence)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Crash recovery over a segment file. Returns `(frames, tail_hash,
 /// tail_sequence, truncate_offset)`. `truncate_offset` is `Some` when a
 /// partial/corrupt tail must be removed.

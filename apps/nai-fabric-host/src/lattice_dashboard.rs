@@ -59,39 +59,67 @@ fn read_logs(limit: usize, after: Option<u64>, tail: bool) -> Vec<serde_json::Va
     let Some(rt) = crate::gastown_orto::RUNTIME.get() else {
         return Vec::new();
     };
-    let args = serde_json::json!({
-        "namespace": crate::gastown_orto::lattice_obs_namespace(),
-        "event_type": "log.record",
-        "limit": limit.min(4096),
-        "tail": tail,
-        "after": after,
-    });
-    let raw = rt.dispatch(
-        "event.read_range",
-        &serde_json::to_vec(&args).unwrap_or_default(),
-        "lattice-dashboard",
-        None,
-    );
-    let Ok(raw) = raw else { return Vec::new() };
-    let Ok(v): Result<serde_json::Value, _> = serde_json::from_slice(&raw) else {
-        return Vec::new();
-    };
+    // IMPORTANT: do NOT constrain `event_type` here. The CQRS read model's fast
+    // tail path only triggers for an UNFILTERED event.read_range (all types). If
+    // we hard-filter `log.record`, the runtime falls back to the slow scan path
+    // AND — worse — when the current observer emits health/infrastructure records
+    // (not `log.record`), the bounded tail returns only the STALE historical
+    // log.record lines, making the live dashboard look frozen (the exact 7h-stale
+    // desync we're fixing). The dashboard filters in-process over the bounded
+    // real tail instead.
+    // Namespace-consolidated read: NAI OS temporarily emitted observer records
+    // (health / telemetry) under the runtime default namespace during the
+    // pre-fix window (~9h), while canonical observers went to
+    // `observability.log.v1`. The dashboard is the user's picture of the whole
+    // observability stream, so we read BOTH namespaces and merge by runtime
+    // sequence (desc). This keeps the UI live on the authoritative ledger without
+    // mutating stored records; once every producer sits under the canonical
+    // namespace the `default` bucket simply falls out of the recent window.
     let mut out: Vec<serde_json::Value> = Vec::new();
-    if let Some(events) = v.get("events").and_then(|e| e.as_array()) {
-        for ev in events {
-            // The payload already carries {ts_ms, level, component, trace_id,
-            // caller, message, extras}; add cursor + correlation for the UI.
-            let mut rec = ev.get("payload").cloned().unwrap_or(serde_json::json!({}));
-            if let Some(seq) = ev.get("runtime_sequence").and_then(|s| s.as_u64()) {
-                rec["runtime_sequence"] = serde_json::json!(seq);
+    for ns in [
+        crate::gastown_orto::lattice_obs_namespace().to_string(),
+        "default".to_string(),
+    ] {
+        let args = serde_json::json!({
+            "namespace": ns,
+            "limit": limit.min(4096),
+            "tail": tail,
+            "after": after,
+        });
+        let raw = rt.dispatch(
+            "event.read_range",
+            &serde_json::to_vec(&args).unwrap_or_default(),
+            "lattice-dashboard",
+            None,
+        );
+        let Ok(raw) = raw else { continue };
+        let Ok(v): Result<serde_json::Value, _> = serde_json::from_slice(&raw) else {
+            continue;
+        };
+        if let Some(events) = v.get("events").and_then(|e| e.as_array()) {
+            for ev in events {
+                // The payload already carries {ts_ms, level, component, trace_id,
+                // caller, message, extras}; add cursor + correlation for the UI.
+                let mut rec = ev.get("payload").cloned().unwrap_or(serde_json::json!({}));
+                if let Some(seq) = ev.get("runtime_sequence").and_then(|s| s.as_u64()) {
+                    rec["runtime_sequence"] = serde_json::json!(seq);
+                }
+                rec["timestamp_utc_ms"] = ev
+                    .get("timestamp_utc_ms")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(0));
+                out.push(rec);
             }
-            rec["timestamp_utc_ms"] = ev
-                .get("timestamp_utc_ms")
-                .cloned()
-                .unwrap_or(serde_json::json!(0));
-            out.push(rec);
         }
     }
+    // Merge both namespaces into one newest-first stream by runtime sequence so a
+    // stale `default` record never outranks a fresh canonical one (or vice versa).
+    out.sort_by(|a, b| {
+        let sa = a.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+        let sb = b.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0);
+        sb.cmp(&sa)
+    });
+    out.truncate(limit.clamp(1, 4096));
     out
 }
 
@@ -339,6 +367,24 @@ pub(crate) const LATTICE_UI_HTML: &str = r#"<!DOCTYPE html>
 input{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:4px;padding:5px 8px;font-size:12px;width:220px}
 button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5px 10px;font-weight:700;cursor:pointer}
 .s-ok{color:var(--ok)}.s-warn{color:var(--warn)}.s-bad{color:var(--bad)}
+/* ——— request/response trace explorer ——— */
+#traces{height:26vh;overflow:auto;font-size:12px;background:var(--panel2);padding:4px 8px}
+.tv{border:1px solid #1c2430;border-radius:4px;margin:4px 0;overflow:hidden}
+.tv .tv-hd{display:flex;gap:8px;align-items:center;padding:4px 8px;background:#0d141b;cursor:pointer;user-select:none}
+.tv .tv-hd:hover{background:#101822}
+.tv .tv-rid{color:var(--search);font-size:11px;font-weight:700;min-width:120px}
+.tv .tv-req{color:var(--fg);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tv .tv-ms{color:var(--muted);font-size:11px}
+.tv .tv-dur{color:var(--ok);font-weight:700;font-size:11px}
+.tv .tv-bad{color:var(--bad);font-size:11px}
+.tv .tv-body{display:none;padding:2px 10px 6px;border-top:1px solid #1c2430}
+.tv .tv-body.show{display:block}
+.tv .span{display:flex;gap:8px;padding:2px 0;align-items:baseline;border-left:2px solid #1c2430;margin-left:6px;padding-left:8px}
+.tv .span .kw{color:var(--accent);font-weight:700;min-width:130px;font-size:11px}
+.tv .span .sc{color:var(--muted);font-size:11px}
+.tv .span.s-tool{border-left-color:var(--warn)}
+.tv .span.s-term{border-left-color:var(--ok)}
+.tv .span.s-term.bad{border-left-color:var(--bad)}
 </style></head><body>
 <div class="hd"><h1><img src="/lattice/icon" alt="" width="26" height="26">NAI LATTICE</h1><span class="tick">observability.log.v1</span>
   <span class="tick" id="clock"></span><span class="tick" id="conn" style="color:var(--accent)">connecting…</span>
@@ -362,6 +408,9 @@ button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5p
   <div class="panel"><h2>LOG TAIL <span class="tick" id="tail-meta"></span></h2><div id="tail"></div></div>
   <div><div class="panel"><h2>INGESTION / BACKPRESSURE</h2><div class="row" id="ingest" style="display:block;line-height:1.8">Waiting for measured producer health…</div></div><div class="panel" style="margin-top:10px"><h2>COMPONENTS</h2><div id="components"></div></div></div>
 </div>
+<div class="panel" style="margin:0 16px 16px"><h2>REQUEST → RESPONSE TRACES
+  <span class="tick" id="trace-meta"></span>
+</h2><div id="traces"><div class="row" style="color:var(--muted)">Collecting request/response shapes (turn.submitted → tool.receipt → turn.terminal, keyed by request_id==trace_id)…</div></div></div>
 <script>
 const $=id=>document.getElementById(id);
 const fmtTs=ms=>{const d=new Date(Number(ms));return Number.isFinite(d.getTime())?d.toLocaleTimeString('en-GB',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0'):'--:--:--'};
@@ -389,9 +438,10 @@ function renderTail(hits,force=false){
  if(paused&&!force)return;
  const tail=$('tail'),f=filters();
  const stick=tail.scrollHeight-tail.scrollTop-tail.clientHeight<72;
- let added=0;
- for(const ln of hits){
-  if(!filtered(ln,f))continue;
+let added=0;
+  for(const ln of hits){
+   feedTrace(ln); // accumulate request/response shapes regardless of filter view
+   if(!filtered(ln,f))continue;
   const seq=String(ln.runtime_sequence??('legacy:'+ln.ts_ms+':'+ln.component+':'+ln.message));
   if(seen.has(seq))continue;
   const lv=['trace','debug','info','warn','error'].includes(ln.level)?ln.level:'info';
@@ -411,6 +461,7 @@ function renderTail(hits,force=false){
  }
  if(added&&stick)tail.scrollTop=tail.scrollHeight;
  $('tail-meta').textContent=tail.childElementCount+' rows · '+(paused?'paused':'live');
+ renderTraces();
 }
 function renderStats(s){
  $('k-window').textContent=s.window??'—';
@@ -440,6 +491,87 @@ function renderStats(s){
   bar.append(fill);row.append(bar);addSpan(row,'',n);comps.append(row);
  }
  if(!top.length)addSpan(comps,'row','no records yet');
+}
+
+/* ——— request→response trace accumulation ———
+   Keyed by trace_id (which NAI-OS sets == request_id for npilot.turn.* events).
+   For each trace we remember:
+     req   — the turn.submitted record (prompt + shape)
+     tools — tool.receipt spans (in order)
+     term  — the turn.terminal record (terminal kind + duration_ms)
+   When a trace sees terminal, it is "closed". We keep the last 30 closed + any
+   open ones, newest-first, so the dashboard shows every request/response shape
+   as a controlled trace without unbounded memory. */
+const traceMap=new Map();
+function feedTrace(ln){
+ if(!ln||!ln.trace_id)return;
+ const tid=ln.trace_id;
+ const msg=String(ln.message||'');
+ const isReq=/npilot\.lattice|turn\.submitted/.test(msg);
+	const isTerm=/turn\.terminal/.test(msg);
+	const isTool=/tool\.receipt/.test(msg)||ln.extras?.event_type==='tool.receipt';
+	if(!isReq&&!isTerm&&!isTool)return;
+	const t=traceMap.get(tid)||{rid:tid,req:null,tools:[],term:null,firstTs:ln.ts_ms,lastTs:ln.ts_ms};
+	t.lastTs=Math.max(t.lastTs,ln.ts_ms||t.firstTs);
+	if(isReq&&!t.req)t.req=ln;
+	if(isTerm&&!t.term)t.term=ln;
+	if(isTool)t.tools.push(ln);
+	traceMap.set(tid,t);
+	// bounds: drop oldest closed traces beyond 30, keep open ones
+	let closed=[...traceMap.values()].filter(x=>x.term);
+	if(closed.length>30){
+		closed.sort((a,b)=>(a.lastTs||0)-(b.lastTs||0));
+		for(const old of closed.slice(0,closed.length-30))if(old.term)traceMap.delete(old.rid);
+	}
+}
+function renderTraces(){
+	const el=$('traces');el.replaceChildren();
+	const items=[...traceMap.values()].sort((a,b)=>(b.lastTs||0)-(a.lastTs||0)).slice(0,40);
+	if(!items.length){el.innerHTML='<div class="row" style="color:var(--muted)">No request→response traces in the live window yet — send an N-Pilot turn and it appears here, keyed by request_id.</div>';$('trace-meta').textContent='0 traces';return;}
+	let nClosed=0,nOpen=0;
+	for(const t of items){
+		if(t.term)nClosed++;else nOpen++;
+		const root=document.createElement('div');root.className='tv';
+		const hd=document.createElement('div');hd.className='tv-hd';
+		addSpan(hd,'tv-rid',t.rid.slice(0,18)+(t.rid.length>18?'…':''));
+		const reqHint=t.req?(String(t.req.extras?.prompt||t.req.extras?.request_id||'').slice(0,60)||'(prompt)'):'(not seen yet)';
+		addSpan(hd,'tv-req',reqHint);
+		addSpan(hd,'tv-ms',fmtTs(t.firstTs));
+		if(t.term){
+			const termMsg=String(t.term.extras?.terminal||t.term.message||'').replace(/^turn\.terminal\s*/,'');
+			const ok=!/(failed|cancelled|budget|approval|error)/i.test(termMsg);
+			const dur=t.term.extras?.duration_ms;
+			addSpan(hd,'tv-dur',(ok?'✓ ':'✗ ')+String(termMsg||'term'));
+			if(!ok)hd.classList.add('tv-bad');
+			if(dur)addSpan(hd,'tv-ms',dur+'ms');
+		}else addSpan(hd,'tv-ms','… running');
+		const body=document.createElement('div');body.className='tv-body';
+		if(t.req){
+			const r=document.createElement('div');r.className='span s-req';
+			addSpan(r,'kw','request');
+			const shape=JSON.stringify(t.req.extras||{});
+			addSpan(r,'sc',shape.length>140?shape.slice(0,140)+'…':shape);
+			body.append(r);
+		}
+		if(t.tools.length){
+			for(const tl of t.tools.slice(-6)){
+				const d=document.createElement('div');d.className='span s-tool';
+				addSpan(d,'kw','tool');
+				addSpan(d,'sc',String(tl.extras?.tool||tl.message||'').slice(0,90));
+				body.append(d);
+			}
+		}
+		if(t.term){
+			const d=document.createElement('div');d.className='span s-term'+(t.term.extras?.terminal&&/failed|cancelled|budget|approval|error/i.test(String(t.term.extras.terminal))?' bad':'');
+			addSpan(d,'kw','terminal');
+			const es=t.term.extras||{};
+			addSpan(d,'sc','kind='+String(es.terminal||'')+' ms='+(es.duration_ms??'?'));
+			body.append(d);
+		}
+		hd.addEventListener('click',()=>body.classList.toggle('show'));
+		root.append(hd,body);el.append(root);
+	}
+	$('trace-meta').textContent=(nClosed+' closed · '+nOpen+' running · '+items.length+' shown');
 }
 async function refresh(){
  const f=filters();
