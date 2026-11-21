@@ -50,6 +50,34 @@ export function todoPath() {
     return process.env.TODO_PATH ?? join(__dirname, "..", "state", "todo.jsonl");
 }
 export const TASK_DROP_HISTORY = 16;
+/** The key a gate is stored under, scoped by the PRODUCT THAT RAN the build/deploy. */
+export function gateKey(attestorProduct, kind) {
+    return (attestorProduct && attestorProduct.trim() ? `${kind}:${attestorProduct}` : kind);
+}
+/** The key the task's OWNING product's gate lives under (attestor == task owner). */
+export function owningGateKey(task, kind) {
+    return gateKey(task?.product, kind);
+}
+/** True when the gate for `kind` owned by `task.product` is recorded ok.
+ *  Backward-compatible: an OLD bare `build`/`deploy` record counts only when its
+ *  stamped `product` (if present) matches the task owner, so a pre-per-product
+ *  gate recorded by the right owner still unblocks a gated task. */
+export function owningGateOk(task, kind) {
+    const ownerKey = owningGateKey(task, kind);
+    const gate = task.gates?.[ownerKey];
+    if (gate?.ok === true)
+        return true;
+    if (ownerKey === kind)
+        return false;
+    // Legacy bare key (build/deploy without product suffix).
+    const legacy = task.gates?.[kind];
+    if (legacy?.ok === true) {
+        // If the legacy record stamped a product, it must match the owner; otherwise
+        // (pre-provenance records) accept it so existing gated tasks still complete.
+        return legacy.product == null || !task.product || legacy.product === task.product;
+    }
+    return false;
+}
 // ---------------------------------------------------------------------------
 // Store (append-only, bounded)
 // ---------------------------------------------------------------------------
@@ -259,9 +287,10 @@ export function doneCheck(now = new Date().toISOString(), todos = readTodos()) {
     const needsBuild = notDone.filter((t) => t.gated?.needsBuild);
     const needsDeploy = notDone.filter((t) => t.gated?.needsDeploy);
     const ungated = notDone.filter((t) => !t.gated?.needsBuild && !t.gated?.needsDeploy);
-    // Prefer the most specific milestone explanation.
-    const buildUnsatisfied = needsBuild.filter((t) => t.gates?.build?.ok !== true);
-    const deployUnsatisfied = needsDeploy.filter((t) => t.gates?.deploy?.ok !== true);
+    // Prefer the most specific milestone explanation. A gated task is satisfied
+    // only when its OWNING product's gate for that kind is recorded ok.
+    const buildUnsatisfied = needsBuild.filter((t) => !owningGateOk(t, "build"));
+    const deployUnsatisfied = needsDeploy.filter((t) => !owningGateOk(t, "deploy"));
     if (ungated.length || buildUnsatisfied.length || deployUnsatisfied.length) {
         const incomplete = [
             ...ungated,
@@ -287,12 +316,12 @@ export function commitChecklist(todos, milestone) {
     for (const t of done) {
         lines.push(`- [${t.doneAt ? "x" : " "}] ${t.title}` + (t.doneAt ? ` (finished ${t.doneAt})` : ""));
     }
-    // add gate evidence
+    // add gate evidence (per-product keys; show each recorded ok gate)
     for (const t of todos) {
-        if (t.gates?.build?.ok)
-            lines.push(`- build gate ok: ${t.title} @ ${t.gates.build.doneAt} ${mkCmd(t.gates.build.cmd)}`);
-        if (t.gates?.deploy?.ok)
-            lines.push(`- deploy gate ok: ${t.title} @ ${t.gates.deploy.doneAt} ${mkCmd(t.gates.deploy.cmd)}`);
+        for (const [key, gate] of Object.entries(t.gates ?? {})) {
+            if (gate?.ok)
+                lines.push(`- gate ok ${key}: ${t.title} @ ${gate.doneAt} ${mkCmd(gate.cmd)}`);
+        }
     }
     lines.push(`completed-at: ${new Date().toISOString()}`);
     return lines;
@@ -309,6 +338,8 @@ export function newTask(title, opts = {}) {
         id: opts.id ?? randomUUID(),
         parent: opts.parent ?? null,
         title,
+        description: opts.description,
+        attachments: opts.attachments,
         kind: opts.kind ?? "task",
         status: opts.status ?? "open",
         createdBy: opts.createdBy ?? "agent",

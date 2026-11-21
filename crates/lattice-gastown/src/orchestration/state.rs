@@ -1,9 +1,9 @@
-//! Durable Gas Town orchestration state model (`lattice-gastown::orchestration`).
+﻿//! Durable Gas Town orchestration state model (`lattice-gastown::orchestration`).
 //!
-//! Mirrors the hosted Gas Town data model (`services/gastown/src/db/tables/`) —
+//! Mirrors the hosted Gas Town data model (`services/gastown/src/db/tables/`) â€”
 //! beads (issues / merge_requests / convoys / agents / messages), agents +
 //! agent metadata, review metadata, convoy metadata, bead dependencies, and
-//! escalations — persisted through the NAI-Lattice hot-store (SurrealKV) under
+//! escalations â€” persisted through the NAI-Lattice hot-store (SurrealKV) under
 //! a namespaced keyspace, with a monotonically advancing version value per
 //! entity so the orchestrator can compute durable actions. NAI-Lattice is the
 //! single data fabric; the canonical ledger records committed orchestration
@@ -58,9 +58,9 @@ pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Entity types (faithful to upstream zod schemas / DB columns)
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Bead type (`services/gastown/src/types.ts` `BeadType`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -457,15 +457,15 @@ pub struct RoleModels {
     pub mayor: Option<String>,
     pub refinery: Option<String>,
     pub polecat: Option<String>,
-    /// Reviewer A (code-review pass) — can be routed to a different family than
+    /// Reviewer A (code-review pass) â€” can be routed to a different family than
     /// the implementing polecat (e.g. Codex) by configuring this model.
     pub reviewer_a: Option<String>,
     /// Reviewer B (independent second code-review pass, a different family when
     /// cross-model review is configured).
     pub reviewer_b: Option<String>,
-    /// Adversarial reviewer — a strong, independent model looking for defects.
+    /// Adversarial reviewer â€” a strong, independent model looking for defects.
     pub adversarial: Option<String>,
-    /// Adjudicator — validates evidence (review_evidence contract) before a
+    /// Adjudicator â€” validates evidence (review_evidence contract) before a
     /// pass is accepted.
     pub adjudicator: Option<String>,
 }
@@ -729,7 +729,7 @@ pub fn parse_iso_ms(s: &str) -> Option<i64> {
         let mut parts = time.split(':');
         let hh: i64 = parts.next()?.parse().ok()?;
         let mm: i64 = parts.next()?.parse().ok()?;
-        // Seconds include ".mmm" — take only the integer part.
+        // Seconds include ".mmm" â€” take only the integer part.
         let sec_field = parts.next()?;
         let ss: i64 = sec_field.split('.').next()?.parse().ok()?;
         (hh, mm, ss)
@@ -739,7 +739,7 @@ pub fn parse_iso_ms(s: &str) -> Option<i64> {
     Some((days * 86400 + hh * 3600 + mm * 60 + ss) * 1000 + millis)
 }
 
-/// Days from civil (Howard Hinnant) — inverse of `civil_from_days`.
+/// Days from civil (Howard Hinnant) â€” inverse of `civil_from_days`.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -750,13 +750,13 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
-/// Next severity in the escalation ladder (low→medium→high→critical).
+/// Next severity in the escalation ladder (lowâ†’mediumâ†’highâ†’critical).
 fn next_severity(cur: &str, order: &[&str; 4]) -> &'static str {
     let idx = order.iter().position(|&s| s == cur).unwrap_or(0);
     match idx {
         0 => "medium",
         1 => "high",
-        _ => "critical", // high→critical; critical stays critical
+        _ => "critical", // highâ†’critical; critical stays critical
     }
 }
 
@@ -764,10 +764,10 @@ fn next_severity(cur: &str, order: &[&str; 4]) -> &'static str {
 ///
 /// When a Polecat completes a bead (MR submitted), the engine runs a bounded
 /// chain of independent review passes before the change is accepted:
-///   ReviewerA → ReviewerB (adversarial) → Adjudicator
+///   ReviewerA â†’ ReviewerB (adversarial) â†’ Adjudicator
 /// Each pass is dispatched to a review agent whose model resolves through the
 /// per-role registry (`RoleModels.reviewer_a/reviewer_b/adversarial/adjudicator`)
-/// — enabling cross-model review (e.g. Reviewer A on one family, Reviewer B on
+/// â€” enabling cross-model review (e.g. Reviewer A on one family, Reviewer B on
 /// another, the Adjudicator validating evidence).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewPass {
@@ -866,9 +866,9 @@ pub struct ReviewCycleState {
     pub satisfied: bool,
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Durable store over the hot-store (SurrealKV) with a per-prefix index list.
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Namespaced, typed key-value store for orchestration state.
 #[derive(Clone)]
@@ -887,7 +887,7 @@ impl OrchestrationStore {
     }
 
     fn idx_key(prefix: &str) -> HotKey {
-        HotKey(format!("gastown/idx/{prefix}").into_bytes())
+        HotKey(format!("helldesk/idx/{prefix}").into_bytes())
     }
 
     // -- generic string JSON persistence --
@@ -905,11 +905,11 @@ impl OrchestrationStore {
 
     // -- towns --
     pub fn put_town(&self, town: &Town) {
-        self.put_json(&Self::key(&["gastown/town", &town.town_id]), town);
+        self.put_json(&Self::key(&["helldesk/department", &town.town_id]), town);
         self.add_idx("town", &town.town_id);
     }
     pub fn get_town(&self, town_id: &str) -> Option<Town> {
-        self.get_json(&Self::key(&["gastown/town", town_id]))
+        self.get_json(&Self::key(&["helldesk/department", town_id]))
     }
     pub fn list_towns(&self) -> Vec<Town> {
         self.list_idx("town")
@@ -918,7 +918,7 @@ impl OrchestrationStore {
             .collect()
     }
     pub fn delete_town(&self, town_id: &str) {
-        let _ = self.hot.delete(&Self::key(&["gastown/town", town_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/department", town_id]));
         self.del_idx("town", town_id);
         // Cascade rigs + beads.
         let rigs = self.list_rigs_for_town(town_id);
@@ -935,12 +935,12 @@ impl OrchestrationStore {
 
     // -- rigs --
     pub fn put_rig(&self, rig: &Rig) {
-        self.put_json(&Self::key(&["gastown/rig", &rig.rig_id]), rig);
+        self.put_json(&Self::key(&["helldesk/workstation", &rig.rig_id]), rig);
         self.add_idx("rig", &rig.rig_id);
         self.add_idx(&format!("rig_town/{}", rig.town_id), &rig.rig_id);
     }
     pub fn get_rig(&self, rig_id: &str) -> Option<Rig> {
-        self.get_json(&Self::key(&["gastown/rig", rig_id]))
+        self.get_json(&Self::key(&["helldesk/workstation", rig_id]))
     }
     pub fn list_rigs(&self) -> Vec<Rig> {
         self.list_idx("rig")
@@ -957,18 +957,18 @@ impl OrchestrationStore {
     pub fn delete_rig(&self, rig_id: &str) {
         if let Some(rig) = self.get_rig(rig_id) {
             self.del_idx(&format!("rig_town/{}", rig.town_id), rig_id);
-            let _ = self.hot.delete(&Self::key(&["gastown/rig", rig_id]));
+            let _ = self.hot.delete(&Self::key(&["helldesk/workstation", rig_id]));
             self.del_idx("rig", rig_id);
         }
     }
 
     // -- agents --
     pub fn put_agent(&self, agent: &Agent) {
-        self.put_json(&Self::key(&["gastown/agent", &agent.bead_id]), agent);
+        self.put_json(&Self::key(&["helldesk/agent", &agent.bead_id]), agent);
         self.add_idx("agent", &agent.bead_id);
     }
     pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
-        self.get_json(&Self::key(&["gastown/agent", agent_id]))
+        self.get_json(&Self::key(&["helldesk/agent", agent_id]))
     }
     pub fn list_agents(&self) -> Vec<Agent> {
         self.list_idx("agent")
@@ -983,25 +983,25 @@ impl OrchestrationStore {
             .collect()
     }
     pub fn delete_agent(&self, agent_id: &str) {
-        let _ = self.hot.delete(&Self::key(&["gastown/agent", agent_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/agent", agent_id]));
         self.del_idx("agent", agent_id);
-        let _ = self.hot.delete(&Self::key(&["gastown/agent_bead", agent_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/agent_ticket", agent_id]));
     }
 
     // -- beads --
     pub fn put_bead(&self, bead: &Bead) {
-        self.put_json(&Self::key(&["gastown/bead", &bead.bead_id]), bead);
+        self.put_json(&Self::key(&["helldesk/ticket", &bead.bead_id]), bead);
         self.add_idx("bead", &bead.bead_id);
     }
     pub fn get_bead(&self, bead_id: &str) -> Option<Bead> {
-        self.get_json(&Self::key(&["gastown/bead", bead_id]))
+        self.get_json(&Self::key(&["helldesk/ticket", bead_id]))
     }
     /// Raw serialized bytes of a bead's persisted record, used as the optimistic
     /// concurrency token for the atomic CAS transition boundary (rule: expected-
     /// version CAS at the physical persistence boundary).
     pub fn bead_serialized(&self, bead_id: &str) -> Option<Vec<u8>> {
         self.hot
-            .get(&Self::key(&["gastown/bead", bead_id]))
+            .get(&Self::key(&["helldesk/ticket", bead_id]))
             .ok()
             .flatten()
             .map(|v| v.0)
@@ -1017,7 +1017,7 @@ impl OrchestrationStore {
         expected: Option<&[u8]>,
     ) -> Result<bool, HotStoreErrorLike> {
         let json = serde_json::to_vec(bead).map_err(|e| HotStoreErrorLike(e.to_string()))?;
-        let key = Self::key(&["gastown/bead", &bead.bead_id]);
+        let key = Self::key(&["helldesk/ticket", &bead.bead_id]);
         let expected_hv = expected.map(|b| HotValue(b.to_vec()));
         let applied = self
             .hot
@@ -1059,19 +1059,19 @@ impl OrchestrationStore {
     /// True only when the bead's durable VERIFIED_10_10 stamp is present AND its
     /// source_revision still matches the current portability epoch. A manually
     /// closed bead (no stamp), a Failed bead, or a stamp from a superseded
-    /// revision all return false → they do NOT release a downstream `blocks` gate.
+    /// revision all return false â†’ they do NOT release a downstream `blocks` gate.
     pub fn is_bead_verified_current(&self, bead_id: &str) -> bool {
         let Some(b) = self.get_bead(bead_id) else { return false };
         let Some(serde_json::Value::Object(m)) = b.metadata.get("gastown_verified") else { return false };
         let rev = m.get("source_revision").and_then(|r| r.as_str()).unwrap_or("");
         let ok = m.get("inquisitor").and_then(|v| v.as_str()) == Some("COMPLETE")
             && m.get("gates_pass").and_then(|v| v.as_bool()) == Some(true)
-            && rev == self.hot_get("gastown/portability/epoch").unwrap_or_default();
+            && rev == self.hot_get("helldesk/portability/epoch").unwrap_or_default();
         ok && b.status.is_terminal()
     }
     /// Like `is_bead_verified_current` but WITHOUT the terminal-status
     /// requirement. Used by the transition boundary so a scheduler may stamp
-    /// verification first, then close — the stamp is the proof, and the terminal
+    /// verification first, then close â€” the stamp is the proof, and the terminal
     /// transition is its consequence. Returns true only for a current, gated-pass
     /// stamp whose revision matches the active epoch.
     pub fn has_verified_stamp_current(&self, bead_id: &str) -> bool {
@@ -1080,7 +1080,7 @@ impl OrchestrationStore {
         let rev = m.get("source_revision").and_then(|r| r.as_str()).unwrap_or("");
         m.get("inquisitor").and_then(|v| v.as_str()) == Some("COMPLETE")
             && m.get("gates_pass").and_then(|v| v.as_bool()) == Some(true)
-            && rev == self.hot_get("gastown/portability/epoch").unwrap_or_default()
+            && rev == self.hot_get("helldesk/portability/epoch").unwrap_or_default()
     }
     pub fn list_beads(&self) -> Vec<Bead> {
         self.list_idx("bead")
@@ -1114,31 +1114,31 @@ impl OrchestrationStore {
         for dep in self.list_dependencies() {
             if dep.bead_id == bead_id || dep.depends_on_bead_id == bead_id {
                 let _ = self.hot.delete(&Self::key(&[
-                    "gastown/dep",
+                    "helldesk/dependency",
                     &dep.bead_id,
                     &dep.depends_on_bead_id,
                 ]));
             }
         }
-        let _ = self.hot.delete(&Self::key(&["gastown/bead", bead_id]));
-        let _ = self.hot.delete(&Self::key(&["gastown/reviewmeta", bead_id]));
-        let _ = self.hot.delete(&Self::key(&["gastown/convoymeta", bead_id]));
-        let _ = self.hot.delete(&Self::key(&["gastown/escalation", bead_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/ticket", bead_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/reviewmeta", bead_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/batchmeta", bead_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/escalation", bead_id]));
         self.del_idx("bead", bead_id);
     }
 
     // -- dependencies --
     pub fn put_dependency(&self, dep: &Dependency) {
         self.put_json(
-            &Self::key(&["gastown/dep", &dep.bead_id, &dep.depends_on_bead_id]),
+            &Self::key(&["helldesk/dependency", &dep.bead_id, &dep.depends_on_bead_id]),
             dep,
         );
     }
     pub fn delete_dependency(&self, bead_id: &str, depends_on_bead_id: &str) {
-        let _ = self.hot.delete(&Self::key(&["gastown/dep", bead_id, depends_on_bead_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/dependency", bead_id, depends_on_bead_id]));
     }
     pub fn list_dependencies(&self) -> Vec<Dependency> {
-        self.scan_json::<Dependency>("gastown/dep/")
+        self.scan_json::<Dependency>("helldesk/dependency/")
     }
     pub fn dependencies_for(&self, bead_id: &str) -> Vec<Dependency> {
         self.list_dependencies()
@@ -1153,9 +1153,9 @@ impl OrchestrationStore {
             .collect()
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Dependency DAG topology validation
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Validate the whole dependency graph and return a detailed report.
     /// Rejects (flags) self-dependencies, duplicate edges, references to
@@ -1171,12 +1171,12 @@ impl OrchestrationStore {
         // 1) Self-dependencies.
         for d in &deps {
             if d.bead_id == d.depends_on_bead_id {
-                issues.push(format!("self-dependency {} → itself", d.bead_id));
+                issues.push(format!("self-dependency {} â†’ itself", d.bead_id));
             }
             // 2) Duplicate edges (same (depends, depends_on) pair).
             let pair = (d.bead_id.clone(), d.depends_on_bead_id.clone());
             if !seen.insert(pair) {
-                issues.push(format!("duplicate edge {} → {}", d.bead_id, d.depends_on_bead_id));
+                issues.push(format!("duplicate edge {} â†’ {}", d.bead_id, d.depends_on_bead_id));
             }
             // 3) Nonexistent bead references.
             if !all_beads.contains(&d.bead_id) {
@@ -1202,7 +1202,7 @@ impl OrchestrationStore {
         );
         fn dfs(adj: &std::collections::HashMap<String, Vec<String>>, n: &str, state: &mut std::collections::HashMap<String, u8>, cycle: &mut Option<String>, path: &mut Vec<String>) {
             match state.get(n).copied() {
-                Some(1) => { *cycle = Some(format!("cycle: {}", path.iter().cloned().collect::<Vec<_>>().join(" → ") + " → " + n)); return; }
+                Some(1) => { *cycle = Some(format!("cycle: {}", path.iter().cloned().collect::<Vec<_>>().join(" â†’ ") + " â†’ " + n)); return; }
                 Some(2) => return,
                 _ => {}
             }
@@ -1245,12 +1245,12 @@ impl OrchestrationStore {
         }
         // Duplicate check.
         if self.dependencies_for(bead_id).iter().any(|d| d.depends_on_bead_id == depends_on_bead_id) {
-            return Err(format!("duplicate dependency {bead_id} → {depends_on_bead_id}"));
+            return Err(format!("duplicate dependency {bead_id} â†’ {depends_on_bead_id}"));
         }
-        // Cycle check: adding bead_id → depends_on would create a cycle iff
+        // Cycle check: adding bead_id â†’ depends_on would create a cycle iff
         // depends_on can already reach bead_id (i.e. bead_id is an ancestor).
         if self.can_reach(depends_on_bead_id, bead_id) {
-            return Err(format!("would create a cycle: {bead_id} → {depends_on_bead_id}"));
+            return Err(format!("would create a cycle: {bead_id} â†’ {depends_on_bead_id}"));
         }
         Ok(())
     }
@@ -1276,29 +1276,29 @@ impl OrchestrationStore {
 
     // -- review metadata --
     pub fn put_review_metadata(&self, meta: &ReviewMetadata) {
-        self.put_json(&Self::key(&["gastown/reviewmeta", &meta.bead_id]), meta);
+        self.put_json(&Self::key(&["helldesk/reviewmeta", &meta.bead_id]), meta);
     }
     pub fn get_review_metadata(&self, bead_id: &str) -> Option<ReviewMetadata> {
-        self.get_json(&Self::key(&["gastown/reviewmeta", bead_id]))
+        self.get_json(&Self::key(&["helldesk/reviewmeta", bead_id]))
     }
     pub fn delete_review_metadata(&self, bead_id: &str) {
-        let _ = self.hot.delete(&Self::key(&["gastown/reviewmeta", bead_id]));
+        let _ = self.hot.delete(&Self::key(&["helldesk/reviewmeta", bead_id]));
     }
 
     // -- convoy metadata --
     pub fn put_convoy_metadata(&self, meta: &ConvoyMetadata) {
-        self.put_json(&Self::key(&["gastown/convoymeta", &meta.bead_id]), meta);
+        self.put_json(&Self::key(&["helldesk/batchmeta", &meta.bead_id]), meta);
     }
     pub fn get_convoy_metadata(&self, bead_id: &str) -> Option<ConvoyMetadata> {
-        self.get_json(&Self::key(&["gastown/convoymeta", bead_id]))
+        self.get_json(&Self::key(&["helldesk/batchmeta", bead_id]))
     }
 
     // -- escalation metadata --
     pub fn put_escalation(&self, esc: &Escalation) {
-        self.put_json(&Self::key(&["gastown/escalation", &esc.bead_id]), esc);
+        self.put_json(&Self::key(&["helldesk/escalation", &esc.bead_id]), esc);
     }
     pub fn get_escalation(&self, bead_id: &str) -> Option<Escalation> {
-        self.get_json(&Self::key(&["gastown/escalation", bead_id]))
+        self.get_json(&Self::key(&["helldesk/escalation", bead_id]))
     }
 
     // -- index helpers --
@@ -1371,26 +1371,26 @@ impl OrchestrationStore {
             created_at: now(),
             delivered_at: None,
         };
-        self.put_json(&Self::key(&["gastown/nudge", &n.nudge_id]), &n);
+        self.put_json(&Self::key(&["helldesk/nudge", &n.nudge_id]), &n);
         self.add_idx(&format!("nudge_agent/{agent_id}"), &n.nudge_id);
     }
     pub fn list_nudges_for(&self, agent_id: &str) -> Vec<Nudge> {
         self.list_idx(&format!("nudge_agent/{agent_id}"))
             .into_iter()
-            .filter_map(|id| self.get_json::<Nudge>(&Self::key(&["gastown/nudge", &id])))
+            .filter_map(|id| self.get_json::<Nudge>(&Self::key(&["helldesk/nudge", &id])))
             .collect()
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Durable event history / audit log (upstream `bead_events`)
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Append a durable orchestration event. Faithful to upstream `bead_events`
     /// (append-only, tagged by bead/agent/town/rig source). Every state change
     /// the reconciler or control API makes should funnel through here so the
     /// audit timeline is complete and re-runnable (WS1 parity gap).
     pub fn emit_event(&self, event: &BeadEvent) {
-        self.put_json(&Self::key(&["gastown/event", &event.event_id]), event);
+        self.put_json(&Self::key(&["helldesk/event", &event.event_id]), event);
         if let Some(bead) = event.bead_id.as_deref() {
             self.add_idx(&format!("event_bead/{bead}"), &event.event_id);
         }
@@ -1408,7 +1408,7 @@ impl OrchestrationStore {
     /// Emit a durable `bead.status_changed` transition event correlated to the
     /// bead (P0-E). This is the single source for the SSE stream's real
     /// engineering transitions (pollcat start/done/fail, retry, review). The
-    /// `proves` field carries a bounded, safe summary — never credentials or
+    /// `proves` field carries a bounded, safe summary â€” never credentials or
     /// complete model prompts.
     pub fn emit_bead_status(
         &self,
@@ -1458,15 +1458,15 @@ impl OrchestrationStore {
         let mut evs: Vec<BeadEvent> = self
             .list_idx(idx)
             .into_iter()
-            .filter_map(|id| self.get_json::<BeadEvent>(&Self::key(&["gastown/event", &id])))
+            .filter_map(|id| self.get_json::<BeadEvent>(&Self::key(&["helldesk/event", &id])))
             .collect();
         evs.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         evs
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Durable mailboxes (upstream `mail` / `agent_mail`)
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     pub fn send_mail(
         &self,
@@ -1487,18 +1487,18 @@ impl OrchestrationStore {
             created_at: now(),
             delivered_at: None,
         };
-        self.put_json(&Self::key(&["gastown/mail", &mail.mail_id]), &mail);
+        self.put_json(&Self::key(&["helldesk/mail", &mail.mail_id]), &mail);
         self.add_idx(&format!("mail_agent/{}", to_agent_id), &mail.mail_id);
         mail
     }
 
-    /// List undelivered mail for an agent (upstream `readAndDeliver` surface —
+    /// List undelivered mail for an agent (upstream `readAndDeliver` surface â€”
     /// caller decides whether to mark delivered).
     pub fn list_mail_for(&self, agent_id: &str) -> Vec<Mail> {
         let mut m: Vec<Mail> = self
             .list_idx(&format!("mail_agent/{agent_id}"))
             .into_iter()
-            .filter_map(|id| self.get_json::<Mail>(&Self::key(&["gastown/mail", &id])))
+            .filter_map(|id| self.get_json::<Mail>(&Self::key(&["helldesk/mail", &id])))
             .collect();
         m.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         m
@@ -1510,18 +1510,18 @@ impl OrchestrationStore {
             .collect()
     }
     pub fn mark_mail_delivered(&self, mail_id: &str) {
-        if let Some(mut m) = self.get_json::<Mail>(&Self::key(&["gastown/mail", mail_id])) {
+        if let Some(mut m) = self.get_json::<Mail>(&Self::key(&["helldesk/mail", mail_id])) {
             if !m.delivered {
                 m.delivered = true;
                 m.delivered_at = Some(now());
-                self.put_json(&Self::key(&["gastown/mail", mail_id]), &m);
+                self.put_json(&Self::key(&["helldesk/mail", mail_id]), &m);
             }
         }
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Triage requests (upstream `patrol.createTriageRequest`)
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Create a triage-request issue bead with dedupe + global cap, faithful to
     /// `patrol.ts`. Returns the bead id, or None when deduped/capped.
@@ -1606,9 +1606,9 @@ impl OrchestrationStore {
         beads
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Molecules (upstream `review-queue.ts` molecule section)
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Create a molecule: a parent `gt:molecule` bead + N sequential step beads
     /// chained by `blocks` (step i blocks step i+1). Returns the molecule bead
@@ -1704,10 +1704,10 @@ impl OrchestrationStore {
     }
 
     pub fn put_molecule_metadata(&self, meta: &MoleculeMetadata) {
-        self.put_json(&Self::key(&["gastown/molecule", &meta.bead_id]), meta);
+        self.put_json(&Self::key(&["helldesk/molecule", &meta.bead_id]), meta);
     }
     pub fn get_molecule_metadata(&self, molecule_id: &str) -> Option<MoleculeMetadata> {
-        self.get_json(&Self::key(&["gastown/molecule", molecule_id]))
+        self.get_json(&Self::key(&["helldesk/molecule", molecule_id]))
     }
 
     /// Compute the current step and status for a molecule (upstream
@@ -1747,7 +1747,7 @@ impl OrchestrationStore {
     }
     fn molecule_step_beads(&self, molecule_id: &str) -> Vec<Bead> {
         // Steps are the 'parent-child' dependents of the molecule (steps link to
-        // mol via depends_on in the first block edge) — collect via the
+        // mol via depends_on in the first block edge) â€” collect via the
         // 'gt:molecule-step' label + parent_bead_id for robustness.
         self.list_beads()
             .into_iter()
@@ -1810,9 +1810,9 @@ impl OrchestrationStore {
         Some(meta)
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Escalation severity ladder (upstream Town.do escalation section)
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Re-escalate stale unacknowledged escalations (upstream
     /// `reEscalateStaleEscalations`). Age threshold = (count+1)*4h.
@@ -1848,17 +1848,17 @@ impl OrchestrationStore {
         bumped
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Per-bead adversarial review passes (WS5)
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     pub fn put_review_pass(&self, pass: &ReviewPass) {
-        self.put_json(&Self::key(&["gastown/reviewpass", &pass.pass_id]), pass);
+        self.put_json(&Self::key(&["helldesk/reviewpass", &pass.pass_id]), pass);
         self.add_idx(&format!("reviewpass_source/{}", pass.source_bead_id), &pass.pass_id);
         self.add_idx(&format!("reviewpass_mr/{}", pass.mr_bead_id), &pass.pass_id);
     }
     pub fn get_review_pass(&self, pass_id: &str) -> Option<ReviewPass> {
-        self.get_json(&Self::key(&["gastown/reviewpass", pass_id]))
+        self.get_json(&Self::key(&["helldesk/reviewpass", pass_id]))
     }
     /// Review passes for a source bead, oldest first.
     pub fn review_passes_for_source(&self, source_bead_id: &str) -> Vec<ReviewPass> {
@@ -1945,10 +1945,10 @@ impl OrchestrationStore {
         let _ = self.hot.delete(&HotKey(key.into().into_bytes()));
     }
 
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // State-mutating helpers used by the orchestrator dispatcher (faithful to
     // upstream `beads.ts` / `agents.ts` / `review-queue.ts` / `actions.ts`).
-    // ────────────────────────────────────────────────
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Canonical bead status transition. Terminal states are immutable.
     pub fn update_bead_status(&self, bead_id: String, status: BeadStatus, actor: String, reason: Option<String>) {
@@ -2031,7 +2031,7 @@ impl OrchestrationStore {
                     }
                     let _ = fb;
                 }
-                // No feature branch / review-and-merge → auto-close.
+                // No feature branch / review-and-merge â†’ auto-close.
                 if let Some(mut cb) = self.get_bead(convoy_id) {
                     cb.status = BeadStatus::Closed;
                     cb.closed_at = Some(now());
@@ -2159,7 +2159,7 @@ impl OrchestrationStore {
     pub fn close_convoy(&self, convoy_id: String) -> Result<(), TransitionError> {
         // Close via the canonical boundary: a convoy may only close when verified
         // OR via an audited administrative decision. A bare close (unverified)
-        // now fails — the scheduler must drive a real landing.
+        // now fails â€” the scheduler must drive a real landing.
         self.transition_bead(
             &convoy_id,
             BeadStatus::Closed,
@@ -2433,7 +2433,7 @@ impl OrchestrationStore {
                 _ => {
                     // Enforce the VERIFIED gate for Issue beads (work that must pass
                     // review/landing). MergeRequest beads are exempt when they carry
-                    // independently verified merge_evidence — the merge IS the proof,
+                    // independently verified merge_evidence â€” the merge IS the proof,
                     // and source Issues get their own VERIFIED stamp. A Convoy is
                     // closed by the scheduler itself as the landing act.
                     let is_mr = b.bead_type == BeadType::MergeRequest;
@@ -2729,7 +2729,7 @@ pub struct EffectiveConfig {
     pub custom_refinery: Option<String>,
     pub max_concurrent_polecats: Option<u32>,
     pub max_dispatch_attempts: Option<u32>,
-    /// Bounded write→review→fix cycles per bead (default 3). Rig override wins.
+    /// Bounded writeâ†’reviewâ†’fix cycles per bead (default 3). Rig override wins.
     pub max_review_cycles: u32,
     /// Whether the per-bead adversarial review chain is enabled (default on).
     pub adversarial_review: bool,
@@ -2760,7 +2760,7 @@ pub enum ReviewRole {
 /// Reviewer A/B to a different model family (e.g. Codex via a configured
 /// provider), the adversarial pass to an independent strong model, and the
 /// adjudicator to an evidence-oriented model. Falls back to the default model
-/// when unset — never a hard error.
+/// when unset â€” never a hard error.
 pub fn resolve_review_model(cfg: &EffectiveConfig, role: ReviewRole) -> String {
     let m = match role {
         ReviewRole::ReviewerA => cfg.role_models.reviewer_a.clone(),
@@ -2835,7 +2835,7 @@ mod tests {
     #[test]
     fn review_role_model_registry_routes_per_role_with_fallback() {
         let mut cfg = resolve_rig_config(&town_default(), None);
-        // Unset → falls back to default model.
+        // Unset â†’ falls back to default model.
         assert_eq!(
             resolve_review_model(&cfg, ReviewRole::ReviewerA),
             "anthropic/claude-sonnet-4.6"
@@ -2900,7 +2900,7 @@ mod tests {
     fn dependency_topology_validates_dag_invariants() {
         use crate::orchestration::adversarial::test_store;
         let (_mem, s) = test_store();
-        // Three beads: A depends on nothing, B on A, C on A and B (a diamond) —
+        // Three beads: A depends on nothing, B on A, C on A and B (a diamond) â€”
         // this mirrors the "3 beads / 5 edges" graph the dashboard exposes.
         let mk = |id: &str| {
             let mut b = Bead::create(BeadType::Issue, id, None, None, vec![], serde_json::json!({}), Some("r1"), None, Some("mayor"));
@@ -2908,7 +2908,7 @@ mod tests {
             s.put_bead(&b);
         };
         mk("A"); mk("B"); mk("C");
-        // Build a valid DAG: A→B (B blocks on A), A→C, B→C.
+        // Build a valid DAG: Aâ†’B (B blocks on A), Aâ†’C, Bâ†’C.
         assert!(s.put_dependency_if_valid(&Dependency { bead_id: "B".into(), depends_on_bead_id: "A".into(), kind: DependencyKind::Blocks }).is_ok());
         assert!(s.put_dependency_if_valid(&Dependency { bead_id: "C".into(), depends_on_bead_id: "A".into(), kind: DependencyKind::Blocks }).is_ok());
         assert!(s.put_dependency_if_valid(&Dependency { bead_id: "C".into(), depends_on_bead_id: "B".into(), kind: DependencyKind::Blocks }).is_ok());
@@ -2925,7 +2925,7 @@ mod tests {
         assert!(s.try_validate_dependency("B", "A").is_err(), "duplicate edge rejected");
         assert!(s.try_validate_dependency("Z", "A").is_err(), "nonexistent source bead rejected");
         assert!(s.try_validate_dependency("C", "Q").is_err(), "nonexistent target bead rejected");
-        assert!(s.try_validate_dependency("A", "C").is_err(), "cycle-creating edge (A→C→B→A) rejected");
+        assert!(s.try_validate_dependency("A", "C").is_err(), "cycle-creating edge (Aâ†’Câ†’Bâ†’A) rejected");
         // Graph unchanged after all rejected inserts (still a clean, 3-edge DAG).
         assert_eq!(s.list_dependencies().len(), 3);
         assert!(s.validate_dependency_topology().valid);

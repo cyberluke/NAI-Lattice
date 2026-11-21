@@ -56,7 +56,7 @@ pub(crate) fn publish_endpoint_manifest(
     ep: &Endpoints,
     instance_id: &str,
 ) -> Result<(), String> {
-    let control_port = std::env::var("GASTOWN_CTRL_PORT")
+    let control_port = std::env::var("HELLDESK_CTRL_PORT")
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .filter(|p| *p != 0)

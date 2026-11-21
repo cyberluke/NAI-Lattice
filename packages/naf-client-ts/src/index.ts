@@ -1,4 +1,4 @@
-// NAI-Lattice shared TypeScript NAF/1 client (`@nai-lattice/client`).
+// NAI-Lattice shared TypeScript NAF/1 client (`@cyberluke/nai-lattice-client`).
 // Public export surface. Protocol source of truth: protos/naf/protocol.proto.
 export {
   NafClient, NafError,

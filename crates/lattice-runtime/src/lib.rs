@@ -71,6 +71,8 @@ const RUNTIME_SERVED_CAPABILITIES: &[&str] = &[
     "lease.release",
     "query.vector",
     "semantic.index",
+    "semantic.index_batch",
+    "semantic.delete",
     "query.search",
     "query.federated",
 ];
@@ -424,6 +426,8 @@ impl LatticeRuntime {
             "index.query" => Self::on_index_query(&self.multi_dim_index, &args),
             "query.vector" => Self::on_query_vector(&self.vector_store, &args),
             "semantic.index" => Self::on_semantic_index(&self.vector_store, &self.search_index, &args),
+            "semantic.index_batch" => Self::on_semantic_index_batch(&self.vector_store, &self.search_index, &args),
+            "semantic.delete" => Self::on_semantic_delete(&self.vector_store, &self.search_index, &args),
             "query.search" => Self::on_query_search(&self.search_index, &args),
             "query.federated" => Self::on_query_federated(&self.search_index, &self.vector_store, &args),
             // Collection projection surface (`collection.v1`), powering Mastra
@@ -472,6 +476,16 @@ impl LatticeRuntime {
         search: &lattice_search::DocumentIndex,
         args: &serde_json::Value,
     ) -> Result<Vec<u8>, RuntimeError> {
+        let id = Self::apply_semantic_index(store, search, args)?;
+        Ok(serde_json::to_vec(&serde_json::json!({ "id": id, "indexed": true })).unwrap())
+    }
+
+    /// Upserts one semantic point (vector + optional text); shared by single/batch.
+    fn apply_semantic_index(
+        store: &lattice_vector::SemanticStore,
+        search: &lattice_search::DocumentIndex,
+        args: &serde_json::Value,
+    ) -> Result<String, RuntimeError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -492,7 +506,62 @@ impl LatticeRuntime {
             let namespace = args.get("namespace").and_then(|v| v.as_str()).unwrap_or("default");
             search.put(&id, title, body, namespace)?;
         }
-        Ok(serde_json::to_vec(&serde_json::json!({ "id": id, "indexed": true })).unwrap())
+        Ok(id)
+    }
+
+    /// `semantic.index_batch { items: [{ id, vector, title?, body?, namespace? }] }`
+    fn on_semantic_index_batch(
+        store: &lattice_vector::SemanticStore,
+        search: &lattice_search::DocumentIndex,
+        args: &serde_json::Value,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        let items = args
+            .get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| RuntimeError::BadArgs {
+                method: "semantic.index_batch".into(),
+                detail: "missing items".into(),
+            })?;
+
+        let mut indexed = 0usize;
+        for item in items {
+            Self::apply_semantic_index(store, search, item)?;
+            indexed += 1;
+        }
+        Ok(serde_json::to_vec(&serde_json::json!({ "indexed": indexed })).unwrap())
+    }
+
+    /// `semantic.delete { id } | { ids: [...] }` — removes vectors and text docs.
+    fn on_semantic_delete(
+        store: &lattice_vector::SemanticStore,
+        search: &lattice_search::DocumentIndex,
+        args: &serde_json::Value,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        let ids: Vec<String> = if let Some(array) = args.get("ids").and_then(|v| v.as_array()) {
+            array
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        } else if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
+            vec![id.to_string()]
+        } else {
+            return Err(RuntimeError::BadArgs {
+                method: "semantic.delete".into(),
+                detail: "missing id or ids".into(),
+            });
+        };
+
+        let mut removed = 0usize;
+        for id in &ids {
+            if store.remove(id)? {
+                removed += 1;
+            }
+            let _ = search.delete(id);
+        }
+        Ok(serde_json::to_vec(
+            &serde_json::json!({ "removed": removed, "requested": ids.len() }),
+        )
+        .unwrap())
     }
 
     /// `query.search { query, limit, fuzzy? }` — fuzzy full-text search.

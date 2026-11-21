@@ -413,7 +413,7 @@ button{background:var(--accent);border:0;color:#041;border-radius:4px;padding:5p
 </h2><div id="traces"><div class="row" style="color:var(--muted)">Collecting request/response shapes (turn.submitted → tool.receipt → turn.terminal, keyed by request_id==trace_id)…</div></div></div>
 <script>
 const $=id=>document.getElementById(id);
-const fmtTs=ms=>{const d=new Date(Number(ms));return Number.isFinite(d.getTime())?d.toLocaleTimeString('en-GB',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0'):'--:--:--'};
+const fmtTs=ms=>{const d=new Date(Number(ms));if(!Number.isFinite(d.getTime()))return '--:--:--';const p=n=>String(n).padStart(2,'0');return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,'0')}`};
 const seen=new Set();
 const MAX_ROWS=1400;
 let paused=false;
@@ -588,7 +588,7 @@ async function refresh(){
   renderStats(json.stats||{});
  }catch(error){$('tail-meta').textContent='QUERY ERROR '+String(error);}
 }
-setInterval(()=>$('clock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false}),1000);
+setInterval(()=>{const d=new Date();const p=n=>String(n).padStart(2,'0');$('clock').textContent=`${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`},1000);
 function connect(){
  if(stream){stream.close();stream=null;}
  stream=new EventSource('/lattice/events');

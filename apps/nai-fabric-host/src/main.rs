@@ -30,6 +30,7 @@ use lattice_protocol::pb;
 use lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
 mod naf_server;
+mod naf_json_bridge;
 mod win_acl;
 mod endpoints;
 mod gastown_orto;
@@ -92,20 +93,20 @@ fn main() {
         run_review_worker_subcommand();
         return;
     }
-    // gastown-release: versioned production install / activation / rollback.
+    // helldesk-release: versioned production install / activation / rollback.
     // Manages `%LOCALAPPDATA%\NAI\Lattice\releases\<version>` + provenance and
     // atomically flips the `current.json` / `previous.json` activation pointer.
     // A release launcher resolves the current versioned exe and starts the
     // monitor -> --child singleton detached (no console, terminal-kill-safe).
-    if args.iter().any(|a| a == "gastown-release") {
+    if args.iter().any(|a| a == "helldesk-release") {
         release::release_main(std::env::args().skip(1).collect());
         return;
     }
-    // gastown-agent: a supervised real-model Gas Town agent worker (polecat,
+    // helldesk-agent: a supervised real-model Helldesk agent worker (polecat,
     // refinery, or mayor). Reads a worker request JSON, runs the real model once,
     // applies file changes to its isolated worktree, commits/pushes, prints the
     // structured decision, exits. The host supervises it (Job Object + timeout).
-    if args.iter().any(|a| a == "gastown-agent") {
+    if args.iter().any(|a| a == "helldesk-agent") {
         gastown_orto::run_gastown_agent_subcommand();
         return;
     }
@@ -134,7 +135,7 @@ fn main() {
 /// is torn down cooperatively and the monitor immediately respawns the worker
 /// from the newest artifact. No reboot and no manual relaunch required — the
 /// host continuously follows the release ladder (`current.json` is the single
-/// authority, written atomically by `gastown-release install`).
+/// authority, written atomically by `helldesk-release install`).
 fn run_monitor_main() {
     use lattice_supervisor::{ExitStatus, ProcessSpec, WorkerLimits};
     use std::collections::BTreeMap;
@@ -305,6 +306,9 @@ fn run_worker_main() {
     gastown_orto::start_scheduler_thread();
     gastown_orto::start_control_server();
 
+    // Loopback JSON capability bridge for non-NAF runtimes (C#/Files). Opt-in.
+    naf_json_bridge::start(Arc::clone(&rt));
+
     tracing::info!(pid = %std::process::id(), "host serving endpoints");
     let names = endpoints.names();
     naf_server::serve(rt, gastown, &names);
@@ -460,18 +464,18 @@ fn dispatch_gastown(
         Err(_) => return (500, Vec::new(), "gastown lock poisoned".into()),
     };
     let out = match method {
-        "gastown.orto.health"
-        | "gastown.orto.ensure_town"
-        | "gastown.orto.add_rig"
-        | "gastown.orto.create_bead"
-        | "gastown.orto.create_convoy"
-        | "gastown.orto.start_convoy"
-        | "gastown.orto.set_bead_status"
-        | "gastown.orto.mayor_request"
-        | "gastown.orto.dashboard"
-        | "gastown.orto.rig_effective"
-        | "gastown.orto.reconcile_tick"
-        | "gastown.orto.persist_manifests" => {
+        "helldesk.orto.health"
+        | "helldesk.orto.ensure_department"
+        | "helldesk.orto.add_workstation"
+        | "helldesk.orto.create_ticket"
+        | "helldesk.orto.create_batch"
+        | "helldesk.orto.start_batch"
+        | "helldesk.orto.set_ticket_status"
+        | "helldesk.orto.operator_request"
+        | "helldesk.orto.dashboard"
+        | "helldesk.orto.workstations_effective"
+        | "helldesk.orto.reconcile"
+        | "helldesk.orto.persist_manifests" => {
             let out = gastown_orto::dispatch_orto(method, &args, rt);
             serde_json::to_vec(&out).unwrap_or_default()
         }

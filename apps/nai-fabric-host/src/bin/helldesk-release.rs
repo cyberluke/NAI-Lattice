@@ -1,4 +1,4 @@
-//! `gastown-release` — console maintenance CLI for versioned Gas Town release
+//! `helldesk-release` — console maintenance CLI for versioned Helldesk release
 //! install / activation / rollback / launch / status.
 //!
 //! A CONSOLE-subsystem binary on purpose: the operator-facing packaging tool

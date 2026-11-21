@@ -1,4 +1,4 @@
-//! NAI Inquisitor — the AAF **delta** that turns Gas Town into a convergent
+//! NAI Inquisitor â€” the AAF **delta** that turns Gas Town into a convergent
 //! 10/10 engineering loop.
 //!
 //! AAF rule applied: every capability here already exists somewhere in reach
@@ -12,7 +12,7 @@
 //! The Inquisitor brain is the adversarial CTO: it never trusts an executor's
 //! DONE, it distinguishes VERIFIED / INFERRED / FALSIFIED / UNKNOWN, and it
 //! produces one structured verdict. The Quality Oracle independently maps the
-//! project's configured gates to PASS / FAIL / UNVERIFIED — a subjective model
+//! project's configured gates to PASS / FAIL / UNVERIFIED â€” a subjective model
 //! confidence can never override deterministic test evidence.
 
 use lattice_gastown::orchestration::state::OrchestrationStore;
@@ -40,7 +40,7 @@ impl InquisitorHook {
     }
 }
 
-/// A hook event carrying full identity + evidence provenance (P0-B §gate).
+/// A hook event carrying full identity + evidence provenance (P0-B Â§gate).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HookEvent {
     pub hook: InquisitorHook,
@@ -91,8 +91,8 @@ pub mod governor {
     use super::*;
     use lattice_gastown::orchestration::state::{BeadEvent};
 
-    const WM: &str = "gastown/inquisitor/watermark";
-    const DECISION_KEYS: &str = "gastown/inquisitor/dispatched_events";
+    const WM: &str = "helldesk/inquisitor/watermark";
+    const DECISION_KEYS: &str = "helldesk/inquisitor/dispatched_events";
 
     /// Drain NEW events from the durable event log (events_for_town), map each
     /// to a hook, and run an Inquisitor pass. Idempotent: only events newer than
@@ -114,7 +114,7 @@ pub mod governor {
         let events: Vec<BeadEvent> = store.events_for_town(town_id);
 
         // Skip if the event log has not advanced since the last processed pass:
-        // this is the recursion + duplicate guard (no new evidence → no new pass).
+        // this is the recursion + duplicate guard (no new evidence â†’ no new pass).
         if events.len() <= watermark {
             return Vec::new();
         }
@@ -131,7 +131,7 @@ pub mod governor {
             // P0-2: resolve the OWNER (project primary) of the completing/failing
             // bead, walking parent links up to the primary issue in a project
             // convoy. A corrective/verification child must review AGAINST its
-            // primary and stamp THE PRIMARY — never orphan the work or score it
+            // primary and stamp THE PRIMARY â€” never orphan the work or score it
             // against infra self-tests. Falls back to the event bead alone when
             // the event is not (transitively) a child of a project primary.
             let owner = resolve_owner_primary(store, ev.bead_id.as_deref());
@@ -164,7 +164,7 @@ pub mod governor {
             }
             // Per-task control (UI toggle): if this project primary has the NAI
             // Inquisitor explicitly DISABLED (hive_controls.inquisitor=false), do
-            // not converge it — the task opts out of governance on the fly while
+            // not converge it â€” the task opts out of governance on the fly while
             // the watermark still advances so other tasks stay live.
             if let Some(owner_b) = owner.as_ref() {
                 if owner_b.metadata.get("hive_controls").and_then(|c| c.get("inquisitor")).and_then(|v| v.as_bool()) == Some(false) {
@@ -204,7 +204,7 @@ pub mod governor {
             }
             let decision = run_inquisitor(store, &input, brain);
             // Apply the dispatch decision (P0-C: corrective/verification bead,
-            // harsh-blocked, or unsafe) — never recurse on its own event.
+            // harsh-blocked, or unsafe) â€” never recurse on its own event.
             apply_decision(store, &decision, &hook, ev, brain);
             // P3: atomic checkpoint per applied event so a crash mid-loop resumes
             // from this exact point and never double-applies a finished event.
@@ -228,7 +228,7 @@ pub mod governor {
     /// `parent_bead_id` chain up to the project PRIMARY issue bead (the Issue
     /// whose immediate parent is its convoy bead). This keeps corrective/
     /// verification children threaded under the original primary so a verified
-    /// child advances B1 — never orphaning work onto a detached child.
+    /// child advances B1 â€” never orphaning work onto a detached child.
     pub(crate) fn resolve_owner_primary(store: &OrchestrationStore, bead_id: Option<&str>) -> Option<lattice_gastown::orchestration::state::Bead> {
         use lattice_gastown::orchestration::state::BeadType;
         let mut cur = bead_id.and_then(|id| store.get_bead(id));
@@ -265,13 +265,13 @@ pub mod governor {
 
     /// Apply a decision's action (P0-C routing). Federates Mayor's create_bead
     /// for corrective/verification; durable-blocked for BLOCKED; unsafe_halt for
-    /// UNSAFE (incl. the GPU ban). Never converts UNVERIFIED→PASS.
+    /// UNSAFE (incl. the GPU ban). Never converts UNVERIFIEDâ†’PASS.
     pub(crate) fn apply_decision(store: &OrchestrationStore, d: &GovernanceDecision, hook: &InquisitorHook, ev: &BeadEvent, brain: &str) {
         let rig = store.list_rigs().first().map(|r| r.rig_id.clone())
             .or_else(|| store.list_towns().first().map(|t| format!("rig-{}", t.town_id.chars().take(8).collect::<String>())))
             .unwrap_or_else(|| "rig-a".to_string());
         // P0-2: when the event owns a project primary, corrective/verification
-        // dispatches MUST thread under that primary on ITS rig with ITS gates —
+        // dispatches MUST thread under that primary on ITS rig with ITS gates â€”
         // never become orphan beads or inherit a generic rig.
         let owner = resolve_owner_primary(store, ev.bead_id.as_deref());
         let owner_id = owner.as_ref().map(|b| b.bead_id.clone());
@@ -287,7 +287,7 @@ pub mod governor {
                 // corrective child, reuse that intent (the reconciler will run it)
                 // instead of creating yet another identical child. Also bound the
                 // total corrective iterations so a non-converging primary cannot
-                // produce unlimited orphans — a real changed-hypothesis loop must
+                // produce unlimited orphans â€” a real changed-hypothesis loop must
                 // actually advance gates, not just re-dispatch the same task.
                 let corrective_ok = match owner_id.as_deref() {
                     Some(owner_id_s) => {
@@ -299,7 +299,7 @@ pub mod governor {
                             || b.status == lattice_gastown::orchestration::state::BeadStatus::InReview);
                         const MAX_CORRECTIVES_PER_PRIMARY: usize = 4;
                         if has_pending || children.len() >= MAX_CORRECTIVES_PER_PRIMARY {
-                            let _ = store.hot_put("gastown/inquisitor/corrective_cooldown",
+                            let _ = store.hot_put("helldesk/inquisitor/corrective_cooldown",
                                 &serde_json::json!({"primary": owner_id_s, "open_children": children.len(), "policy":"coalesce-or-cap"}).to_string());
                             false
                         } else { true }
@@ -331,27 +331,27 @@ pub mod governor {
                 }
             }
             "durable_wait_blocked" => {
-                let _ = store.hot_put("gastown/inquisitor/blocked",
+                let _ = store.hot_put("helldesk/inquisitor/blocked",
                     &serde_json::json!({"verdict":"BLOCKED","reason":d.roadmap_hint(),"recovery":"new evidence/event","hook":hook.as_str()}).to_string());
             }
             "unsafe_halt" => {
-                let _ = store.hot_put("gastown/inquisitor/unsafe",
+                let _ = store.hot_put("helldesk/inquisitor/unsafe",
                     &serde_json::json!({"verdict":"UNSAFE","policy": if brain=="codex"{"openai gpt-6-luna"}else{"deepseek"},"gpu":"prohibited"}).to_string());
             }
             "close_verified_10_10" => {
                 // Close only when the oracle truly has all gates PASS. (Would
-                // also set the convoy landed by the Governor — not fabricated.)
-                let _ = store.hot_put("gastown/inquisitor/closed", &serde_json::json!({"verdict":"COMPLETE"}).to_string());
+                // also set the convoy landed by the Governor â€” not fabricated.)
+                let _ = store.hot_put("helldesk/inquisitor/closed", &serde_json::json!({"verdict":"COMPLETE"}).to_string());
                 // P0-A + P0-2: durably stamp the OWNER PRIMARY with a
                 // VERIFIED_10_10 record bound to the current source revision.
                 // downstream `blocks` edges release only via this stamp (and only
-                // while the revision still matches) — never from a bare manual
+                // while the revision still matches) â€” never from a bare manual
                 // close, and never from a detached child. A corrective child that
                 // verifies ADVANCES ITS PRIMARY, not a new orphan.
                 if d.all_gates_passed {
                     let stamp = owner_id.as_deref().or_else(|| ev.bead_id.as_deref());
                     if let Some(bid) = stamp.filter(|b| !b.is_empty()) {
-                        let revision = store.hot_get("gastown/portability/epoch").unwrap_or_default();
+                        let revision = store.hot_get("helldesk/portability/epoch").unwrap_or_default();
                         store.mark_bead_verified(bid, &revision, "COMPLETE", d.quality_passed as u64, d.quality_total as u64);
                         // The verified primary must be TERMINAL for the serial
                         // gate + downstream `blocks` to release B2. A primary that
@@ -402,8 +402,8 @@ pub mod governor {
     /// hashes are sourced from the existing ledger/CAS when available.
     pub fn collect_gate_evidence(store: &OrchestrationStore, convoy_id: String, brain: &str) -> Vec<EvidenceGate> {
         let convoy = if convoy_id.is_empty() { "<scratch>".to_string() } else { convoy_id.clone() };
-        let revision = store.hot_get("gastown/portability/epoch").unwrap_or_else(|| "unknown".into());
-        let artifacts = vec![store.hot_get("gastown/portability/epoch").unwrap_or_default()];
+        let revision = store.hot_get("helldesk/portability/epoch").unwrap_or_else(|| "unknown".into());
+        let artifacts = vec![store.hot_get("helldesk/portability/epoch").unwrap_or_default()];
         let gates = [
             EvidenceGate::new("orchestration_tests", &convoy, "cargo test -p lattice-gastown --lib"),
             EvidenceGate::new("host_tests", &convoy, "cargo test -p nai-fabric-host"),
@@ -432,7 +432,7 @@ impl GovernanceDecision {
     }
 }
 
-/// Evidence classification (AAF / Inquisitor §2).
+/// Evidence classification (AAF / Inquisitor Â§2).
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum EvidenceKind {
     Verified,
@@ -504,11 +504,11 @@ pub struct GovernanceDecision {
 }
 
 // --- Durable registry keys (hot store) ---
-const K_VERDICT: &str = "gastown/inquisitor/verdict";
-const K_FACTS: &str = "gastown/inquisitor/verified_facts";
-const K_REJECTED: &str = "gastown/inquisitor/rejected_claims";
-const K_GATES: &str = "gastown/inquisitor/quality_gates";
-const K_HISTORY: &str = "gastown/inquisitor/history";
+const K_VERDICT: &str = "helldesk/inquisitor/verdict";
+const K_FACTS: &str = "helldesk/inquisitor/verified_facts";
+const K_REJECTED: &str = "helldesk/inquisitor/rejected_claims";
+const K_GATES: &str = "helldesk/inquisitor/quality_gates";
+const K_HISTORY: &str = "helldesk/inquisitor/history";
 
 /// Federate the existing Codex/`gpt-6-luna` OpenAI brain (or the DeepSeek
 /// gateway) as the Inquisitor model. Returns the raw model text output.
@@ -553,7 +553,7 @@ fn inquisitor_brain_raw(provider: &str, system: &str, user: &str) -> Result<Stri
     }
 }
 
-/// The Inquisitor system prompt (adversarial CTO; §2 structured verdict).
+/// The Inquisitor system prompt (adversarial CTO; Â§2 structured verdict).
 pub fn inquisitor_system_prompt() -> String {
     concat!(
         "You are NAI Inquisitor, an autonomous adversarial CTO and convergence governor above Gas Town Mayor, ",
@@ -573,7 +573,7 @@ pub fn inquisitor_system_prompt() -> String {
 /// Deterministic Quality Oracle: independent of the model's self-assessment.
 pub fn quality_oracle(input: &InquisitorInput) -> (Vec<QualityGate>, usize, usize, bool) {
     // P0-D: the Quality Oracle's ACCEPTANCE gates are TASK-SPECIFIC (per primary
-    // bead, from the accepted objective) — never the infra self-tests alone. When
+    // bead, from the accepted objective) â€” never the infra self-tests alone. When
     // a project/bead provides task_gates (persisted with the bead), those decide
     // 10/10; the infra set is only a preflight/health record surfaced separately.
     let mut health: Vec<QualityGate> = vec![
@@ -585,7 +585,7 @@ pub fn quality_oracle(input: &InquisitorInput) -> (Vec<QualityGate>, usize, usiz
         .map(|arr| arr.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect())
         .unwrap_or_default();
     if gates.is_empty() {
-        // No task gates were attached → fall back to the infra self-tests. This is
+        // No task gates were attached â†’ fall back to the infra self-tests. This is
         // a transparent signal that acceptance is UNSPECIFIED, not a substitution.
         gates = vec![
             QualityGate { id: "orchestration_tests".into(), status: "UNVERIFIED".into(), evidence: "lattice-gastown --lib".into() },
@@ -649,12 +649,12 @@ pub fn run_inquisitor(
     // 2. Ask the Inquisitor brain. The brain sees its PERSISTED scientific
     // memory (verified facts, rejected hypotheses, recent verdicts, session
     // identity + digest) so it continues the same reasoning across days/restarts
-    // instead of re-learning (§6 / long-running autonomy).
+    // instead of re-learning (Â§6 / long-running autonomy).
     let sys = inquisitor_system_prompt();
     let memory = memory::memory_context(store);
     // P1: relevant PERMANENT finding recall (scoped to the convoy/project and
     // the current objective probe), so the brain sees prior falsifications /
-    // verified facts / decisions BEFORE it decides — it must not re-investigate
+    // verified facts / decisions BEFORE it decides â€” it must not re-investigate
     // something it already falsified. Provenance is preserved (evidence refs).
     let probe = format!("{} {} {} {}", input.objective, input.hook,
         input.task.as_str().map(str::to_string).unwrap_or_default(),
@@ -687,7 +687,7 @@ pub fn run_inquisitor(
     let request_hash = blake3::hash(user.as_bytes()).to_hex().to_string();
     let ctx_hash = blake3::hash(serde_json::to_string(&project_ctx).unwrap_or_default().as_bytes()).to_hex().to_string();
     let mut provenance: serde_json::Value =
-        store.hot_get("gastown/inquisitor/request_provenance").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::json!([]));
+        store.hot_get("helldesk/inquisitor/request_provenance").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::json!([]));
     let had_ctx = !(project_ctx.is_null() || project_ctx.as_array().map(|a| a.is_empty()).unwrap_or(false));
     if let Some(arr) = provenance.as_array_mut() {
         arr.insert(0, serde_json::json!({
@@ -700,7 +700,7 @@ pub fn run_inquisitor(
         }));
         if arr.len() > 64 { arr.truncate(64); }
     }
-    let _ = store.hot_put("gastown/inquisitor/request_provenance", &serde_json::to_string(&provenance).unwrap_or_default());
+    let _ = store.hot_put("helldesk/inquisitor/request_provenance", &serde_json::to_string(&provenance).unwrap_or_default());
 
     let raw = inquisitor_brain_raw(provider, &sys, &user);
     let parsed: Option<InquisitorVerdict> = raw.ok()
@@ -730,12 +730,12 @@ pub fn run_inquisitor(
             } else if vd.verdict.eq_ignore_ascii_case("BLOCKED") {
                 (vd.verdict.clone(), false, "durable_wait_blocked".to_string())
             } else {
-                // REVISE / REPLAN / PASS (not complete) → dispatch next task.
+                // REVISE / REPLAN / PASS (not complete) â†’ dispatch next task.
                 (vd.verdict.clone(), false, "dispatch_next_task".to_string())
             }
         }
         None => {
-            // Inquisitor brain unusable → conservative BLOCKED (never close).
+            // Inquisitor brain unusable â†’ conservative BLOCKED (never close).
             ("BLOCKED".to_string(), false, "durable_wait_blocked".to_string())
         }
     };
@@ -752,7 +752,7 @@ pub fn run_inquisitor(
     // governor path (convoy_id = the completing bead) and the raw /inquisitor/run
     // endpoint (task.bead / convoy_id).
     if action == "close_verified_10_10" && all_gates_passed {
-        let rev = store.hot_get("gastown/portability/epoch").unwrap_or_default();
+        let rev = store.hot_get("helldesk/portability/epoch").unwrap_or_default();
         // The bead to stamp: convoy_id (event path) or the task's "bead"/"bead_id".
         let stamp_target = if !conv.is_empty() { Some(conv.as_str()) }
             else { input.task.get("bead").or(input.task.get("bead_id")).and_then(|b| b.as_str()) };
@@ -765,7 +765,7 @@ pub fn run_inquisitor(
     // scientific ledger (existing NAI-Lattice facility `memory::persist_finding`).
     // Only facts/rejections accompanied by at least one real evidence reference are
     // persisted; a bare claim with no evidence is NOT promoted (no fabricated facts).
-    let revision = store.hot_get("gastown/portability/epoch").unwrap_or_default();
+    let revision = store.hot_get("helldesk/portability/epoch").unwrap_or_default();
     // P0-C scope: the REAL project id from the injected bootstrap (or "gastown").
     let proj_scope = input.project_context.as_ref()
         .and_then(|pc| pc.get("project").and_then(|p| p.get("id")).and_then(|i| i.as_str()))
@@ -828,16 +828,16 @@ pub fn inquisitor_state(store: &OrchestrationStore) -> serde_json::Value {
         "rejected_claims": store.hot_get(K_REJECTED).and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).unwrap_or_default(),
         "quality_gates": store.hot_get(K_GATES).and_then(|s| serde_json::from_str::<Vec<QualityGate>>(&s).ok()).unwrap_or_default(),
         "history": store.hot_get(K_HISTORY).unwrap_or_default(),
-        "request_provenance": store.hot_get("gastown/inquisitor/request_provenance").and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).unwrap_or(serde_json::json!([])),
+        "request_provenance": store.hot_get("helldesk/inquisitor/request_provenance").and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).unwrap_or(serde_json::json!([])),
         "scientific_findings": findings,
         "memory": memory::memory_snapshot(store),
     })
 }
 
 // ===========================================================================
-// Persistent scientific memory (§6 of the NAI Inquisitor spec). The Inquisitor
+// Persistent scientific memory (Â§6 of the NAI Inquisitor spec). The Inquisitor
 // runs for days/weeks autonomously and MUST NOT lose its history/context or
-// re-learn after restart. This federates the existing durable hot store — no
+// re-learn after restart. This federates the existing durable hot store â€” no
 // second database.
 //
 // Design (bounded, cross-restart, full evidence trail):
@@ -849,7 +849,7 @@ pub fn inquisitor_state(store: &OrchestrationStore) -> serde_json::Value {
 //                     empty context.
 //   * facts/hypotheses: ring (newest-first, cap FACT_RING / HYP_RING) survive
 //                     restarts; oldest are forgotten to bound growth.
-//   * per-convoy gates: `gastown/inquisitor/gates/<convoy_id>` stores the FULL
+//   * per-convoy gates: `helldesk/inquisitor/gates/<batch_id>` stores the FULL
 //                     EvidenceGate[] for that convoy (revision + artifact hashes)
 //                     so old gates for prior revisions never incorrectly satisfy
 //                     a new candidate (P0-B revalidation). One record per convoy,
@@ -860,11 +860,11 @@ pub mod memory {
     use super::*;
     use std::collections::{BTreeMap, VecDeque};
 
-    const K_SESSION: &str = "gastown/inquisitor/session";
-    const K_FACTS_RING: &str = "gastown/inquisitor/facts_ring";
-    const K_HYP_RING: &str = "gastown/inquisitor/hyp_ring";
-    const K_HIST_RING: &str = "gastown/inquisitor/hist_ring";
-    const K_GATES_PREFIX: &str = "gastown/inquisitor/gates/";
+    const K_SESSION: &str = "helldesk/inquisitor/session";
+    const K_FACTS_RING: &str = "helldesk/inquisitor/facts_ring";
+    const K_HYP_RING: &str = "helldesk/inquisitor/hyp_ring";
+    const K_HIST_RING: &str = "helldesk/inquisitor/hist_ring";
+    const K_GATES_PREFIX: &str = "helldesk/inquisitor/gates/";
     const FACT_RING: usize = 512;
     const HYP_RING: usize = 256;
     const HIST_RING: usize = 512;
@@ -900,7 +900,7 @@ pub mod memory {
     }
 
     /// Load or (first launch) create the durable session identity. Returns
-    /// `true` on fresh birth (memory_digest empty → should bootstrap with a
+    /// `true` on fresh birth (memory_digest empty â†’ should bootstrap with a
     /// context-recovery note) and `false` when an existing brain is being
     /// resumed (same identity, preserved registries).
     pub fn load_or_create_session(store: &OrchestrationStore) -> (SessionIdentity, bool) {
@@ -931,12 +931,12 @@ pub mod memory {
     // PERMANENT FINDING LEDGER (P0)
     // The authoritative scientific history. The rings above are a CACHE and may
     // be evicted; eviction NEVER deletes a permanent finding. Every finding is
-    // stored under `gastown/inquisitor/finding/<id>` + an index for recall.
+    // stored under `helldesk/inquisitor/finding/<id>` + an index for recall.
     // Federates the existing hot store (no second database).
     // -------------------------------------------------------------------------
-    pub const FINDING_PREFIX: &str = "gastown/inquisitor/finding/";
-    pub const FINDING_INDEX: &str = "gastown/inquisitor/finding_index";
-    pub const FINDING_SEQ: &str = "gastown/inquisitor/finding_seq";
+    pub const FINDING_PREFIX: &str = "helldesk/inquisitor/finding/";
+    pub const FINDING_INDEX: &str = "helldesk/inquisitor/finding_index";
+    pub const FINDING_SEQ: &str = "helldesk/inquisitor/finding_seq";
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct ScientificFinding {
@@ -964,7 +964,7 @@ pub mod memory {
     }
 
     /// Allocate a stable semantic id from a claim + scope (deterministic across
-    /// restarts / re-proposals — the same claim yields the same id).
+    /// restarts / re-proposals â€” the same claim yields the same id).
     fn stable_finding_id(kind: &FindingKind, project: &str, claim: &str, revision: &str) -> String {
         let key = format!("{:?}|{project}|{claim}|{revision}", kind);
         format!("fd-{}", digest(&[key.as_str()])[..16].to_string())
@@ -972,7 +972,7 @@ pub mod memory {
 
     /// Atomically persist a permanent scientific finding (P0) AND append to the
     /// scope index (P1). Idempotent: the stable id means a duplicate write of the
-    /// same claim+revision is a no-op (does not duplicate decisions — P4).
+    /// same claim+revision is a no-op (does not duplicate decisions â€” P4).
     pub fn persist_finding(
         store: &OrchestrationStore,
         kind: FindingKind,
@@ -1044,7 +1044,7 @@ pub mod memory {
         pub kind: FindingKind,
     }
 
-    /// Append a finding id to the scope index (set-add → idempotent).
+    /// Append a finding id to the scope index (set-add â†’ idempotent).
     fn index_add(store: &OrchestrationStore, id: &str, project: &str, convoy_id: &str, claim: &str, kind: &FindingKind) -> Vec<FindingIndexEntry> {
         let mut idx: Vec<FindingIndexEntry> = store.hot_get(FINDING_INDEX)
             .and_then(|s| serde_json::from_str::<Vec<FindingIndexEntry>>(&s).ok()).unwrap_or_default();
@@ -1098,7 +1098,7 @@ pub mod memory {
 
     /// P0-C: list permanent findings across ALL projects (for the registry
     /// snapshot / evidence surface). Empty project/convoy/probe intentionally
-    /// means "show every finding" — used only for diagnostics/UI, never for
+    /// means "show every finding" â€” used only for diagnostics/UI, never for
     /// convoys' recall (which stays scope-filtered via recall_findings).
     pub fn recall_findings_all(store: &OrchestrationStore, max_count: usize) -> Vec<ScientificFinding> {
         let idx: Vec<FindingIndexEntry> = store.hot_get(FINDING_INDEX)
@@ -1115,25 +1115,25 @@ pub mod memory {
         let findings: Vec<serde_json::Value> = found.into_iter().map(|f| serde_json::to_value(&f).unwrap_or(serde_json::json!({}))).collect();
         serde_json::json!({
             "permanent_findings": findings,
-            "provenance": "gastown/inquisitor/finding/<id> (fetchable via recall evidence refs)",
+            "provenance": "helldesk/inquisitor/finding/<id> (fetchable via recall evidence refs)",
             "note": "approximate similarity is a candidate, never a proven identity; only exact id+provenance proves equivalence (P2)",
         })
     }
 
     /// P3: crash-safe checkpoint + replay. A monotonic checkpoint stores the last
     /// fully-applied event watermark so a crash replay resumes idempotently and
-    /// never re-applies a finished event (duplicate → no duplicate decision).
+    /// never re-applies a finished event (duplicate â†’ no duplicate decision).
     pub fn checkpoint_event(store: &OrchestrationStore, event_id: &str) {
-        let _ = store.hot_put("gastown/inquisitor/checkpoint", event_id);
+        let _ = store.hot_put("helldesk/inquisitor/checkpoint", event_id);
     }
 
     /// P3: idempotent replay watermark (the durable event watermark for the
-    /// governor) — atomic read so restarts resume without double-processing.
+    /// governor) â€” atomic read so restarts resume without double-processing.
     pub fn replay_watermark(store: &OrchestrationStore) -> usize {
-        store.hot_get("gastown/inquisitor/event_watermark").and_then(|s| s.parse::<usize>().ok()).unwrap_or(0)
+        store.hot_get("helldesk/inquisitor/event_watermark").and_then(|s| s.parse::<usize>().ok()).unwrap_or(0)
     }
     pub fn advance_replay_watermark(store: &OrchestrationStore, n: usize) {
-        let _ = store.hot_put("gastown/inquisitor/event_watermark", &n.to_string());
+        let _ = store.hot_put("helldesk/inquisitor/event_watermark", &n.to_string());
     }
 
     /// Persist one Inquisitor pass into permanent + working memory.
@@ -1148,7 +1148,7 @@ pub mod memory {
         // PERMANENT (P0): every verified fact / falsified hypothesis / technical
         // decision is written to the permanent ledger BEFORE any cache update.
         // Eviction from rings can never delete these.
-        let revision = store.hot_get("gastown/portability/epoch").unwrap_or_else(|| "unknown".into());
+        let revision = store.hot_get("helldesk/portability/epoch").unwrap_or_else(|| "unknown".into());
         let project = "gastown".to_string();
         for f in facts {
             let _ = persist_finding(store, FindingKind::VerifiedFact, &project, convoy_id, f, &revision, vec![], vec![format!("ring-fact:{f}")], vec![], "verified");
@@ -1199,7 +1199,7 @@ pub mod memory {
         let parts: Vec<&str> = digest_in.iter().map(|s| s.as_str()).collect();
         sid.memory_digest = digest(&parts);
         let _ = store.hot_put(K_SESSION, &serde_json::to_string(&sid).unwrap_or_default());
-        let _ = store.hot_put("gastown/inquisitor/memory_fresh", &is_new.to_string());
+        let _ = store.hot_put("helldesk/inquisitor/memory_fresh", &is_new.to_string());
         sid
     }
 
@@ -1233,7 +1233,7 @@ pub mod memory {
             "fresh_brain_birth": fresh,
             "permanent_findings": permanent_findings,
             "permanent_namespace": FINDING_PREFIX,
-            "checkpoint": store.hot_get("gastown/inquisitor/checkpoint"),
+            "checkpoint": store.hot_get("helldesk/inquisitor/checkpoint"),
             "replay_watermark": replay_watermark(store),
             "verified_facts_count": store.hot_get(K_FACTS_RING).and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0),
             "rejected_hypotheses_count": store.hot_get(K_HYP_RING).and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0),
@@ -1275,7 +1275,7 @@ mod tests {
         // rejection -> corrective bead dispatched (Mayor issue path). Uses NEW
         // events only; the watermark must prevent duplicate/recursive passes.
         // The reviewed bead is a PROJECT primary (the governor only acts on
-        // project-owned work — scratch/demo convoys are drained, not corrected).
+        // project-owned work â€” scratch/demo convoys are drained, not corrected).
         let s = test_store();
         use lattice_gastown::orchestration::state::{Bead, BeadType};
         let repo = std::env::temp_dir().join("p0-e-gov-cycle").join("repo");
@@ -1287,14 +1287,14 @@ mod tests {
         s.put_bead(&convoy);
         let mut pr = crate::project::load_project(&s, &p.project_id).unwrap();
         pr.convoy_ids.push(cid.clone());
-        let _ = s.hot_put(&format!("gastown/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
+        let _ = s.hot_put(&format!("helldesk/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
         let primary = Bead::create(BeadType::Issue, "primary", Some("task"),
             None, vec!["gt:primary".into()],
             serde_json::json!({"bt_gates": [{"id":"g1","status":"UNVERIFIED","evidence":"none"}]}),
             Some("rig-1"), Some(&cid), Some("mayor"));
         let pid_b = primary.bead_id.clone();
         s.put_bead(&primary);
-        // 1. A polecat completes the primary → onTaskCompleted event.
+        // 1. A polecat completes the primary â†’ onTaskCompleted event.
         s.emit_event(&BeadEvent::new("bead.status_changed", Some(pid_b.clone()), None, Some("town-t".into()), Some("rig-1".into()),
             serde_json::json!({"to":"closed","actor":"polecat","proves":[]})));
         // First governor pass (stub brain): REVISE -> dispatch_next_task -> corrective bead.
@@ -1305,7 +1305,7 @@ mod tests {
         // A corrective/verification bead must now exist (Mayor federated path).
         let corrective_beads = s.list_beads().iter().filter(|b| b.labels.iter().any(|l| l == "gt:corrective")).count();
         assert_eq!(corrective_beads, 1, "Inquisitor must create one corrective bead via Mayor");
-        // 2. Duplicate call with NO new events → no new pass (idempotent, no duplicate work).
+        // 2. Duplicate call with NO new events â†’ no new pass (idempotent, no duplicate work).
         let d2 = governor::process_hook_events(&s, "town-t", "stub");
         assert!(d2.is_empty(), "no new events must not re-trigger the Inquisitor (recursion guard)");
         assert_eq!(s.list_beads().iter().filter(|b| b.labels.iter().any(|l| l == "gt:corrective")).count(), 1, "no duplicate corrective bead");
@@ -1333,7 +1333,7 @@ mod tests {
         // Register the convoy against the project's convoy list.
         let mut pr = crate::project::load_project(&s, &p.project_id).unwrap();
         pr.convoy_ids.push(cid.clone());
-        let _ = s.hot_put(&format!("gastown/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
+        let _ = s.hot_put(&format!("helldesk/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
         // Primary B1 under the convoy, with its FIVE task-specific gates.
         let b1 = Bead::create(BeadType::Issue, "B1 original NNR semantics", Some("primary"),
             None, vec!["gt:project-primary".into()],
@@ -1354,15 +1354,15 @@ mod tests {
             Some("rig-1"), Some(&b1_id), Some("inquisitor"));
         let child_id = child.bead_id.clone();
         s.put_bead(&child);
-        // Child "completes" → a status_changed event for the child.
+        // Child "completes" â†’ a status_changed event for the child.
         let ev = BeadEvent::new("bead.status_changed", Some(child_id.clone()), None,
             Some("town-t".into()), Some("rig-1".into()), serde_json::json!({"to":"closed","actor":"polecat"}));
         s.emit_event(&ev);
-        // Owner resolution walks child → primary (B1), never the orphan child.
+        // Owner resolution walks child â†’ primary (B1), never the orphan child.
         let owner = governor::resolve_owner_primary(&s, Some(&child_id));
         assert_eq!(owner.as_ref().map(|b| b.bead_id.clone()), Some(b1_id.clone()),
             "corrective child must resolve to its PRIMARY owner (B1), not itself");
-        // Exhaustive verify close: all gates pass → stamp + terminalize the PRIMARY.
+        // Exhaustive verify close: all gates pass â†’ stamp + terminalize the PRIMARY.
         let d = GovernanceDecision {
             verdict: "COMPLETE".into(), stop_condition_met: true, quality_passed: 5, quality_total: 5,
             all_gates_passed: true, action: "close_verified_10_10".into(), next_task: None,
@@ -1389,7 +1389,7 @@ mod tests {
     fn missing_evidence_triggers_verification_not_deadlock_and_unsafe_gpu_forbidden() {
         // P0-C/P0-E: a FAILED/UNVERIFIED gate on completion must yield either a
         // corrective (dispatch) or a durable blocked-with-recovery, never a fake
-        // PASS and never a permanent deadlock. Forbidden (GPU) → unsafe_halt.
+        // PASS and never a permanent deadlock. Forbidden (GPU) â†’ unsafe_halt.
         // Reviewed bead is a PROJECT primary (governor acts on project work only).
         let s = test_store();
         use lattice_gastown::orchestration::state::{Bead, BeadType};
@@ -1402,7 +1402,7 @@ mod tests {
         s.put_bead(&convoy);
         let mut pr = crate::project::load_project(&s, &p.project_id).unwrap();
         pr.convoy_ids.push(cid.clone());
-        let _ = s.hot_put(&format!("gastown/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
+        let _ = s.hot_put(&format!("helldesk/project/{}", p.project_id), &serde_json::to_string(&pr).unwrap_or_default());
         let primary = Bead::create(BeadType::Issue, "primary-g", Some("task"),
             None, vec!["gt:primary".into()],
             serde_json::json!({"bt_gates": [{"id":"gate-g","status":"UNVERIFIED","evidence":"none"}]}),
@@ -1413,16 +1413,16 @@ mod tests {
             serde_json::json!({"to":"failed","actor":"polecat","reason":"gate UNVERIFIED"})));
         let d = governor::process_hook_events(&s, "town-t", "stub");
         assert!(!d.is_empty());
-        // With UNVERIFIED gates the Oracle is not all-pass; REVISE → dispatch (verification).
+        // With UNVERIFIED gates the Oracle is not all-pass; REVISE â†’ dispatch (verification).
         assert!(d.iter().any(|x| x.action == "dispatch_next_task"),
             "UNVERIFIED must route to dispatch (verification), got actions {:?}", d.iter().map(|x| x.action.as_str()).collect::<Vec<_>>());
         assert!(d.iter().all(|x| !x.stop_condition_met && !x.all_gates_passed),
             "UNVERIFIED must never set stop_condition_met nor all_gates_passed");
-        // Forbidden GPU operation → unsafe_halt (apply_decision stores durable unsafe).
+        // Forbidden GPU operation â†’ unsafe_halt (apply_decision stores durable unsafe).
         let u = GovernanceDecision { verdict: "UNSAFE".into(), stop_condition_met: false, quality_passed: 0, quality_total: 8, all_gates_passed: false, action: "unsafe_halt".into(), next_task: None };
         let ev = BeadEvent::new("review.reject", Some("b".into()), None, Some("town-t".into()), Some("r".into()), serde_json::json!({}));
         governor::apply_decision(&s, &u, &InquisitorHook::OnTaskFailed, &ev, "stub");
-        assert!(s.hot_get("gastown/inquisitor/unsafe").is_some(), "forbidden GPU must persist unsafe_halt");
+        assert!(s.hot_get("helldesk/inquisitor/unsafe").is_some(), "forbidden GPU must persist unsafe_halt");
     }
 
     #[test]
@@ -1435,7 +1435,7 @@ mod tests {
             evidence: vec![], verified_facts: vec![], falsified_hypotheses: vec![],
             executor_quality_gates: vec![], policy: serde_json::json!({"provider":"stub"}), convoy_id: None, project_context: None,
         }, "stub");
-        // The stub brain says REVISE and gates are UNVERIFIED → BLOCKED/dispatch, never close.
+        // The stub brain says REVISE and gates are UNVERIFIED â†’ BLOCKED/dispatch, never close.
         assert!(!d.stop_condition_met, "cannot stop when any mandatory gate is UNVERIFIED");
         assert!(!d.all_gates_passed, "oracle must report not-all-pass");
         assert_ne!(d.action, "close_verified_10_10");
@@ -1459,8 +1459,8 @@ mod tests {
             memory::remember_pass(&s, &format!("convoy-{}", i % 4), &fact, &hyp, &gates, if i%2==0 {"REVISE"} else {"BLOCKED"});
         }
         // Bounded: facts ring capped; not 600 entries.
-        let facts_n: usize = s.hot_get("gastown/inquisitor/facts_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0);
-        let hist_n: usize = s.hot_get("gastown/inquisitor/hist_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0);
+        let facts_n: usize = s.hot_get("helldesk/inquisitor/facts_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0);
+        let hist_n: usize = s.hot_get("helldesk/inquisitor/hist_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0);
         assert!(facts_n <= 512, "facts ring must be bounded (got {facts_n})");
         assert!(hist_n <= 512, "history ring must be bounded");
         assert!(facts_n > 0 && hist_n > 0, "memory persists across the flooded run");
@@ -1476,7 +1476,7 @@ mod tests {
 
         // Per-convoy gate records: scoped, durable, and never a single blob.
         for c in ["convoy-0","convoy-1","convoy-2","convoy-3"] {
-            let k = format!("gastown/inquisitor/gates/{c}");
+            let k = format!("helldesk/inquisitor/gates/{c}");
             let rec = s.hot_get(&k).and_then(|s| serde_json::from_str::<Vec<QualityGate>>(&s).ok()).unwrap_or_default();
             assert!(!rec.is_empty(), "convoy {c} has a durable gate record");
         }
@@ -1496,7 +1496,7 @@ mod tests {
             memory::remember_pass(&s, &format!("convoy-A"), &[format!("other-fact-{i}")], &[format!("other-hy-{i}")], &[], "BLOCKED");
         }
         // Ring is evicted (bounded), but permanent recall still finds it.
-        let facts_n: usize = s.hot_get("gastown/inquisitor/hyp_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0);
+        let facts_n: usize = s.hot_get("helldesk/inquisitor/hyp_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.len()).unwrap_or(0);
         assert!(facts_n <= 256, "ring bounded");
         // The permanent finding survives (semantic recall by scope+probe).
         let rec = memory::recall_findings(&s, "gastown", "convoy-A", "retry with backoff subtract", 8);
@@ -1512,15 +1512,15 @@ mod tests {
         let fact = "unittest gate equals run_epoch".to_string();
         memory::remember_pass(&s, "c1", &[fact.clone()], &[], &[QualityGate { id:"g".into(), status:"UNVERIFIED".into(), evidence:"e".into()}], "REVISE");
         // Ring + permanent both have it now.
-        let ring_before = s.hot_get("gastown/inquisitor/facts_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.contains(&fact)).unwrap_or(false);
+        let ring_before = s.hot_get("helldesk/inquisitor/facts_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.contains(&fact)).unwrap_or(false);
         let perm = memory::recall_findings(&s, "gastown", "c1", "unittest gate run epoch", 8);
         assert!(ring_before, "ring cached it");
         assert!(perm.iter().any(|f| f.claim.contains("unittest")), "permanent ledger has it");
         // Flood the ring so the fact is evicted from WORKING memory.
         for i in 0..600 { memory::remember_pass(&s, "c1", &[format!("overwrite-{i}")], &[], &[], "BLOCKED"); }
-        let ring_after = s.hot_get("gastown/inquisitor/facts_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.contains(&fact)).unwrap_or(false);
+        let ring_after = s.hot_get("helldesk/inquisitor/facts_ring").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.contains(&fact)).unwrap_or(false);
         assert!(!ring_after, "working memory evicted it (bounded cache)");
-        // Permanent finding is still there → authoritative history preserved.
+        // Permanent finding is still there â†’ authoritative history preserved.
         let perm_after = memory::recall_findings(&s, "gastown", "c1", "unittest gate run epoch", 8);
         assert!(perm_after.iter().any(|f| f.claim.contains("unittest")), "eviction must NOT delete permanent findings");
     }
@@ -1542,14 +1542,14 @@ mod tests {
     #[test]
     fn duplicate_events_do_not_duplicate_decisions_and_old_evidence_cannot_validate_new_candidate() {
         // P4: persist_finding is idempotent by stable semantic id (duplicate
-        // write → same finding, no duplicate). Old-revision evidence cannot be
+        // write â†’ same finding, no duplicate). Old-revision evidence cannot be
         // promoted to PASS for a NEW revision (revision is part of the id).
         let s = test_store();
         let rev1 = memory::persist_finding(&s, memory::FindingKind::FalsifiedHypothesis, "gastown", "c3", "alpha", "rev1", vec![], vec![], vec![], "falsified");
         let rev1_dup = memory::persist_finding(&s, memory::FindingKind::FalsifiedHypothesis, "gastown", "c3", "alpha", "rev1", vec![], vec![], vec![], "verified"); // same id, ignored
         assert_eq!(rev1.id, rev1_dup.id, "idempotent by stable semantic id");
         assert_eq!(rev1.verification_status, "falsified", "duplicate write must not overwrite the original");
-        // New revision of the same claim → a DIFFERENT finding (scoped to rev2),
+        // New revision of the same claim â†’ a DIFFERENT finding (scoped to rev2),
         // so old evidence (rev1) cannot validate the new candidate.
         let rev2 = memory::persist_finding(&s, memory::FindingKind::FalsifiedHypothesis, "gastown", "c3", "alpha", "rev2", vec![], vec![], vec![], "falsified");
         assert_ne!(rev1.id, rev2.id, "revision-scoped id prevents stale evidence reuse");
@@ -1603,14 +1603,14 @@ mod tests {
         // Rejection without re-investigation: the Inquisitor's pass is skipped by
         // the watermark (no new event), and the durable finding is already there.
         let d_after = governor::process_hook_events(&s, "town-P5", "stub");
-        // No new events → no new brain call → the falsified finding is reused.
+        // No new events â†’ no new brain call â†’ the falsified finding is reused.
         assert!(d_after.is_empty(), "no re-investigation when no new event exists");
     }
 
     #[test]
     fn quality_oracle_never_passes_unverified_gates() {
         // Even an executor claiming a gate is `PASS` with NO evidence must not
-        // flip an UNVERIFIED gate deterministically — the oracle is independent.
+        // flip an UNVERIFIED gate deterministically â€” the oracle is independent.
         let input = InquisitorInput {
             objective: "test".into(),
             hook: "onQualityGate".into(),
@@ -1646,7 +1646,7 @@ mod tests {
             evidence: vec![], verified_facts: vec![], falsified_hypotheses: vec![],
             executor_quality_gates: vec![], policy: serde_json::json!({}), convoy_id: None, project_context: None,
         };
-        // No brain available in unit context → conservative BLOCKED, never close.
+        // No brain available in unit context â†’ conservative BLOCKED, never close.
         // (We test the ROUTING logic directly by constructing a decision.)
         let decision = GovernanceDecision {
             verdict: "COMPLETE".into(),
@@ -1666,7 +1666,7 @@ mod tests {
     #[test]
     fn p0c_evidence_supported_finding_persists_all_properties() {
         let s = test_store();
-        s.hot_put("gastown/portability/epoch", "rev-A");
+        s.hot_put("helldesk/portability/epoch", "rev-A");
         let input = InquisitorInput {
             objective: "verify the VERIFIED_10_10 scheduling gate".into(),
             hook: "onQualityGate".into(),
@@ -1706,7 +1706,7 @@ mod tests {
         let after_evict = memory::recall_findings(&s, "b7b9395866a77809d7f87f28", "proj-b7b93958", "VERIFIED_10_10", 16);
         assert!(after_evict.iter().any(|x| x.id == f.id), "eviction must not delete permanent finding (property 7)");
         // 8: duplicate review events do not create duplicate findings
-        let d2 = run_inquisitor(&s, &input, "stub-facts"); // same evidence + claim → same id
+        let d2 = run_inquisitor(&s, &input, "stub-facts"); // same evidence + claim â†’ same id
         let all = memory::recall_findings(&s, "b7b9395866a77809d7f87f28", "proj-b7b93958", "VERIFIED_10_10 scheduling gate", 32);
         let same_id_count = all.iter().filter(|x| x.id == f.id).count();
         assert_eq!(same_id_count, 1, "duplicate review must not duplicate findings (property 8)");

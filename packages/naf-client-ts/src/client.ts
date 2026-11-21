@@ -267,7 +267,7 @@ export class NafClient {
             response: env,
           });
         }
-      } else if (env.kindType === KindType.Event || (env.kindType === null && env.payload_type === 'gastown.event')) {
+      } else if (env.kindType === KindType.Event || (env.kindType === null && env.payload_type === 'helldesk.event')) {
         if (this.opts.onEvent) this.opts.onEvent(env);
       }
     }

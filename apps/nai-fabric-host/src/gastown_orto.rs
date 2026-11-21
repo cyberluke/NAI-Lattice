@@ -2,9 +2,9 @@
 //!
 //! Wires the `lattice_gastown::orchestration` engine into the running
 //! `nai-fabric-host` singleton: builds the durable orchestrator + control API
-//! over the shared runtime hot-store, exposes `gastown.orto.*` NAF methods, runs
+//! over the shared runtime hot-store, exposes `helldesk.orto.*` NAF methods, runs
 //! a background durable-scheduler thread, and supervises REAL model agent
-//! workers (`gastown-agent` subcommand, Job Object + timeout) exactly like the
+//! workers (`helldesk-agent` subcommand, Job Object + timeout) exactly like the
 //! existing review workers. NAI-Lattice remains the single data fabric.
 
 use std::path::PathBuf;
@@ -63,14 +63,14 @@ pub(crate) fn run_gastown_agent_subcommand() {
     let run = match role {
         "polecat" => run_polecat_worker(&cfg, &req, &worktree_root, &target_branch, &merge_strategy, &branch, custom.as_deref()),
         "refinery" => run_refinery_worker(&cfg, &req, &worktree_root, &target_branch, &merge_strategy, &branch, custom.as_deref()),
-        _ => Err(format!("gastown-agent worker does not run role '{role}' directly (mayor is host-side)")),
+        _ => Err(format!("helldesk-agent worker does not run role '{role}' directly (mayor is host-side)")),
     };
     match run {
         Ok(decision) => {
             println!("{}", serde_json::json!({"ok": true, "decision": decision, "worker_pid": std::process::id()}));
         }
         Err(e) => {
-            eprintln!("gastown-agent failed: {e}");
+            eprintln!("helldesk-agent failed: {e}");
             println!("{}", serde_json::json!({"ok":false,"error":e,"worker_pid":std::process::id()}));
             std::process::exit(1);
         }
@@ -235,7 +235,7 @@ fn git_merge_source_into_target(repo: &std::path::Path, target_branch: &str, sou
         // markers and concatenate the `ours` and `theirs` hunks (additive), stage
         // and commit, then push. If a conflicted file has mutually exclusive
         // hunks (non-additive), we FATAL on the merge and surface the conflict to
-        // the refinery (done:false → rework) rather than pick one side over the
+        // the refinery (done:false â†’ rework) rather than pick one side over the
         // other silently.
         let _ = run_git(repo, &["merge", "--abort"]);
         match resolve_conflicts_preserve_both(repo, target_branch, source_branch) {
@@ -256,7 +256,7 @@ struct GitOut { ok: bool, err: String, out: String }
 /// Resolve a textual merge conflict by PRESERVING BOTH SIDES where the conflict
 /// is additive (the `ours` and `theirs` hunks occupy disjoint line ranges / both
 /// append). Files whose hunks are mutually exclusive (non-additive) are NOT auto
-/// resolved — the conflict is surfaced so a model/humst retains the choice. This
+/// resolved â€” the conflict is surfaced so a model/humst retains the choice. This
 /// guarantees no existing work is silently discarded.
 fn resolve_conflicts_preserve_both(repo: &std::path::Path, target_branch: &str, source_branch: &str) -> Result<(), String> {
     // Re-run the merge to recreate the conflict in the index/worktree.
@@ -300,7 +300,7 @@ fn resolve_conflicts_preserve_both(repo: &std::path::Path, target_branch: &str, 
         }
     }
     let _ = run_git(repo, &["add", "-A"]);
-    let c = run_git(repo, &["-c", "user.name=Gastown Refinery", "-c", "user.email=gastown.refinery@local", "commit", "-m", &format!("Resolve landing conflict {source_branch}->{target_branch} preserving both sides"), "--no-verify"]);
+    let c = run_git(repo, &["-c", "user.name=Helldesk Refinery", "-c", "user.email=helldesk.refinery@local", "commit", "-m", &format!("Resolve landing conflict {source_branch}->{target_branch} preserving both sides"), "--no-verify"]);
     if !c.ok {
         return Err(format!("conflict-resolution commit failed: {}", c.err));
     }
@@ -328,7 +328,7 @@ fn split_conflict_hunks(data: &str) -> Option<(String, String)> {
     // Only one conflict block: no second OURS marker after the first.
     let after_theirs = &data[theirs_end_rel + THEIRS.len()..];
     if after_theirs.contains(OURS) || after_theirs.contains(THEIRS) {
-        return None; // multiple conflict regions → non-additive
+        return None; // multiple conflict regions â†’ non-additive
     }
     // Textbook before the conflict (shared base) is preserved verbatim.
     let before = &data[..ours_start];
@@ -358,7 +358,7 @@ mod conflict_tests {
 
     #[test]
     fn non_additive_multi_conflict_is_not_auto_resolved() {
-        // Two conflict regions → the resolver must refuse (surface for rework),
+        // Two conflict regions â†’ the resolver must refuse (surface for rework),
         // never silently pick one side.
         let conflicted = "<<<<<<< HEAD\nA1\n=======\nB1\n>>>>>>> b\n<<<<<<< HEAD\nA2\n=======\nB2\n>>>>>>> b\n";
         assert!(split_conflict_hunks(conflicted).is_none());
@@ -458,9 +458,9 @@ fn serde_json_to_value(b: impl serde::Serialize) -> serde_json::Value {
 }
 
 /// Run the definitive WHOLE-SYSTEM live end-to-end validation:
-/// real runtime (SurrealKV durable store) + real Mayor decomposition →
-/// dependency DAG convoy → real Polecat/Refinery agents in isolated git
-/// worktrees → refinery review → landing MR → convoy closed → then a REAL
+/// real runtime (SurrealKV durable store) + real Mayor decomposition â†’
+/// dependency DAG convoy â†’ real Polecat/Refinery agents in isolated git
+/// worktrees â†’ refinery review â†’ landing MR â†’ convoy closed â†’ then a REAL
 /// process-style restart (drop the runtime, re-open the same root) proves the
 /// landed convoy and all state survive restart. No VS Code, no editor bound.
 ///
@@ -474,7 +474,7 @@ pub(crate) fn run_live_e2e_subcommand() {
     use lattice_gastown::orchestration::state::{AgentRole, MergeMode};
     use lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
-    let work_root = std::env::var_os("GASTOWN_E2E_ROOT")
+    let work_root = std::env::var_os("HELLDESK_E2E_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::env::temp_dir().join("gastown-e2e").join(format!("run-{}", std::process::id()))
@@ -549,7 +549,7 @@ pub(crate) fn run_live_e2e_subcommand() {
     let _ = convoy_id;
 
     // 4. Drive the real orchestration: ticks run REAL polecat/refinery agents
-    //    (supervised `gastown-agent` workers) in isolated worktrees until the
+    //    (supervised `helldesk-agent` workers) in isolated worktrees until the
     //    convoy lands (all beads closed + landing MR merged + convoy closed).
     let runner = HostAgentRunner;
     let mut ticks = 0;
@@ -698,7 +698,7 @@ pub(crate) fn init_from_runtime(rt: &Arc<LatticeRuntime>) {
     tracing::info!("Gas Town orchestration ready (durable scheduler + control API)");
 }
 
-/// The `gastown.orto.*` NAF dispatch surface.
+/// The `helldesk.orto.*` NAF dispatch surface.
 pub(crate) fn dispatch_orto(
     method: &str,
     args: &serde_json::Value,
@@ -719,19 +719,19 @@ pub(crate) fn dispatch_orto(
 
     let town_id = args["town_id"].as_str().unwrap_or("town-default").to_string();
     match method {
-        "gastown.orto.health" => serde_json::json!({
+        "helldesk.orto.health" => serde_json::json!({
             "ok": true,
             "orchestrator": true,
             "towns": store.list_towns().len(),
             "town_id": orch.primary_town_id(),
             "scheduler_tick": orch.last_tick(),
         }),
-        "gastown.orto.ensure_town" => {
+        "helldesk.orto.ensure_department" => {
             let t = ctrl.ensure_town(&town_id);
             orch.set_town(t.clone());
             serde_json::json!({"town_id": t.town_id, "ok": true})
         }
-        "gastown.orto.add_rig" => {
+        "helldesk.orto.add_workstation" => {
             let name = args["name"].as_str().unwrap_or("").to_string();
             let git_url = args["git_url"].as_str().unwrap_or("").to_string();
             let default_branch = args["default_branch"].as_str().unwrap_or("main").to_string();
@@ -740,7 +740,7 @@ pub(crate) fn dispatch_orto(
             let rig = ctrl.add_rig(&town_id, &name, &git_url, &default_branch, config);
             serde_json::json!({"rig_id": rig.rig_id, "name": rig.name, "git_url": rig.git_url, "ok": true})
         }
-        "gastown.orto.create_bead" => {
+        "helldesk.orto.create_ticket" => {
             let rig_id = args["rig_id"].as_str().unwrap_or("");
             let title = args["title"].as_str().unwrap_or("").to_string();
             let body = args["body"].as_str().map(str::to_string);
@@ -757,7 +757,7 @@ pub(crate) fn dispatch_orto(
             let id = ctrl.create_bead(&town_id, rig_id, &title, body.as_deref(), priority, labels, deps);
             serde_json::json!({"bead_id": id, "ok": true})
         }
-        "gastown.orto.create_convoy" => {
+        "helldesk.orto.create_batch" => {
             let rig_id = args["rig_id"].as_str().unwrap_or("");
             let title = args["title"].as_str().unwrap_or("").to_string();
             let project_id = args["project_id"].as_str().map(str::to_string);
@@ -803,17 +803,17 @@ pub(crate) fn dispatch_orto(
                 if let Some(mut p) = crate::project::load_project(store.as_ref(), pid) {
                     if !p.convoy_ids.contains(&id) { p.convoy_ids.push(id.clone()); }
                     p.updated_unix_ms = crate::now_unix_ms();
-                    let _ = store.hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
+                    let _ = store.hot_put(&format!("helldesk/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
                 }
             }
             serde_json::json!({"convoy_id": id, "ok": true, "feature_branch": feature_branch, "project_id": project_id, "serial_gate": if project_id.is_some() { "1-active-primary-chain" } else { "none" }})
         }
-        "gastown.orto.start_convoy" => {
+        "helldesk.orto.start_batch" => {
             let convoy_id = args["convoy_id"].as_str().unwrap_or("");
             ctrl.start_convoy(convoy_id);
             serde_json::json!({"convoy_id": convoy_id, "started": true, "ok": true})
         }
-        "gastown.orto.set_bead_status" => {
+        "helldesk.orto.set_ticket_status" => {
             let bead_id = args["bead_id"].as_str().unwrap_or("");
             let status = match args["status"].as_str() {
                 Some("closed") => BeadStatus::Closed,
@@ -828,7 +828,7 @@ pub(crate) fn dispatch_orto(
                 Err(e) => serde_json::json!({"bead_id": bead_id, "ok": false, "error": format!("{e:?}")}),
             }
         }
-        "gastown.orto.mayor_request" => {
+        "helldesk.orto.operator_request" => {
             // Run the real Mayor to decompose a user request into a convoy/beads.
             let user_request = args["request"].as_str().unwrap_or("").to_string();
             let rig_id = args["rig_id"].as_str().unwrap_or("");
@@ -848,20 +848,20 @@ pub(crate) fn dispatch_orto(
             let tick = orch.tick(&HostAgentRunner);
             serde_json::json!({"mayor": decision, "decomposed": result, "first_tick": tick.to_jsonish()})
         }
-        "gastown.orto.dashboard" => {
+        "helldesk.orto.dashboard" => {
             let d = ctrl.dashboard(&town_id);
             serde_json::to_value(d).unwrap_or(serde_json::json!({"error": "serialize"}))
         }
-        "gastown.orto.rig_effective" => {
+        "helldesk.orto.workstations_effective" => {
             let rig_id = args["rig_id"].as_str().unwrap_or("");
             let town = orch.town().unwrap_or_else(|| ctrl.ensure_town(&town_id));
             ctrl.rig_effective(&town, rig_id)
         }
-        "gastown.orto.reconcile_tick" => {
+        "helldesk.orto.reconcile" => {
             let rep = orch.tick(&HostAgentRunner);
             serde_json::to_value(rep).unwrap_or(serde_json::json!({"error": "tick serialize"}))
         }
-        "gastown.orto.persist_manifests" => {
+        "helldesk.orto.persist_manifests" => {
             // Persist durable tick + a snapshot manifest so restart/recovery can
             // rehydrate (crash recovery evidence).
             let watermarks = orch.store_watermark();
@@ -985,7 +985,7 @@ pub(crate) fn dispatch_orto(
             if !p.convoy_ids.contains(&convoy_id) { p.convoy_ids.push(convoy_id.clone()); }
             if p.active_bead_id.is_none() { if let Some(nb) = &new_bead { p.active_bead_id = Some(nb.clone()); } }
             p.updated_unix_ms = crate::now_unix_ms();
-            let _ = store.hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
+            let _ = store.hot_put(&format!("helldesk/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
             serde_json::json!({"ok": true, "bead_id": new_bead.unwrap_or_default(), "convoy_id": convoy_id})
         }
         "gt.project.dispatch_corrective" => {
@@ -1048,8 +1048,8 @@ pub(crate) fn dispatch_orto(
             let cid = cb.bead_id.clone();
             store.as_ref().put_bead(&cb);
             p.updated_unix_ms = crate::now_unix_ms();
-            let _ = store.as_ref().hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
-            // Dispatch immediately through the reconciler (Mayor → DeepSeek/Codex).
+            let _ = store.as_ref().hot_put(&format!("helldesk/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
+            // Dispatch immediately through the reconciler (Mayor â†’ DeepSeek/Codex).
             if let Some(o) = ORCH.get() {
                 let _ = o.tick(&HostAgentRunner);
             }
@@ -1119,7 +1119,7 @@ pub(crate) fn dispatch_orto(
                 for r in &roots { if !merged.contains(r) { merged.push(r.clone()); } }
                 p.resource_roots = merged.clone();
                 p.updated_unix_ms = crate::now_unix_ms();
-                let _ = store.as_ref().hot_put(&format!("gastown/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
+                let _ = store.as_ref().hot_put(&format!("helldesk/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
                 serde_json::json!({"ok": true, "project_id": id, "resource_roots": merged})
             } else {
                 serde_json::json!({"ok": false, "error": "project not found"})
@@ -1154,7 +1154,7 @@ pub(crate) fn dispatch_orto(
                 }
                 p.active_bead_id = Some(bead.to_string());
                 p.updated_unix_ms = crate::now_unix_ms();
-                let _ = store.hot_put(&format!("gastown/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
+                let _ = store.hot_put(&format!("helldesk/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
                 serde_json::json!({"ok": true, "active_bead_id": bead, "project_id": id, "serial_gate": "1-active-primary"})
             } else {
                 serde_json::json!({"ok": false, "error": "project not found"})
@@ -1173,7 +1173,7 @@ pub(crate) fn dispatch_orto(
                     .unwrap_or_default();
                 p.session_links = links.clone();
                 p.updated_unix_ms = crate::now_unix_ms();
-                let _ = store.as_ref().hot_put(&format!("gastown/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
+                let _ = store.as_ref().hot_put(&format!("helldesk/project/{id}"), &serde_json::to_string(&p).unwrap_or_default());
                 serde_json::json!({"ok": true, "project_id": id, "session_links": links})
             } else {
                 serde_json::json!({"ok": false, "error": "project not found"})
@@ -1182,7 +1182,7 @@ pub(crate) fn dispatch_orto(
         "gt.project.append_context" => {
             // Import an on-topic evidence/context message into the project's
             // durable transcript (source `file:<name>`), so the Inquisitor sees
-            // REAL executed evidence for the active bead — not polluted session
+            // REAL executed evidence for the active bead â€” not polluted session
             // chats. `text` is the message body; `name` a short id (e.g. the file).
             let id = args["project_id"].as_str().unwrap_or("");
             let name = args["name"].as_str().unwrap_or("context");
@@ -1202,7 +1202,7 @@ pub(crate) fn dispatch_orto(
         "gt.project.bootstrap_context" => {
             // Assemble the FULL project context (imported raw messages + linked
             // Kilo sessions + repo + active bead) for a fresh Codex Inquisitor
-            // first call — reconstructable from durable records after any restart.
+            // first call â€” reconstructable from durable records after any restart.
             let id = args["project_id"].as_str().unwrap_or("");
             match crate::project::load_project(store.as_ref(), id) {
                 Some(p) => {
@@ -1320,7 +1320,7 @@ fn rt_root_as_string() -> Option<String> {
 /// fabricated evidence. Prints a JSON envelope with the real rejection verdicts.
 ///
 /// Usage (subcommand `gastown-adv-demo`): reads `NAI_LLM_BASE_URL` (default
-/// http://127.0.0.1:4000/v1) — the LiteLLM/sseproxy edge used by the live
+/// http://127.0.0.1:4000/v1) â€” the LiteLLM/sseproxy edge used by the live
 /// workers. Returns exit 0 only when the REAL model produced at least one
 /// machine-valid (non-hallucinated) rejection finding, and then an approval
 /// after repair.
@@ -1335,7 +1335,7 @@ pub(crate) fn run_live_adversarial_demo() {
     };
     // 1. Create a real temp repo with an INTENTIONALLY BROKEN Rust function: it
     //    uses the length after emptying a vec (classic logic bug) and writes
-    //    outside the slice bounds — a real defect the model should find.
+    //    outside the slice bounds â€” a real defect the model should find.
     let dir = std::env::temp_dir().join(format!("gastown-adv-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -1386,12 +1386,12 @@ pub(crate) fn run_live_adversarial_demo() {
     let machine_confirmed = findings.iter().any(|f| verify_finding(&snapshot, f, &[]) == EvidenceVerdict::Verified);
     let machine_concern = findings.iter().any(|f| verify_finding(&snapshot, f, &[]) != EvidenceVerdict::Hallucinated);
     // Every finding's evidence is machine-checked for nonexistent file / bad range /
-    // truncated JSON (a truncated or unparseable reply yields no findings → not confirmed).
+    // truncated JSON (a truncated or unparseable reply yields no findings â†’ not confirmed).
 
     // 4. Apply a repair: fix the bug (don't clear the vec, drop the [0] panic).
     let fixed = "pub fn total_stock(rust: &[u32]) -> u32 { rust.iter().sum() }\npub fn main() { let v = vec![1u32,2,3]; let t = total_stock(&v); println!(\"t={t}\"); }\n";
     std::fs::write(dir.join("src").join("stock.rs"), fixed).unwrap();
-    // 5. Reviewer A re-reviews the FIXED file (still real model) → must approve.
+    // 5. Reviewer A re-reviews the FIXED file (still real model) â†’ must approve.
     let snapshot2 = build_snapshot(&dir);
     let src_fixed = std::fs::read_to_string(dir.join("src").join("stock.rs")).unwrap();
     let user2 = format!(
@@ -1404,7 +1404,7 @@ pub(crate) fn run_live_adversarial_demo() {
     // The policy is correct when: the model DID flag the real broken file, and the
     // conservative evidence gate did NOT auto-rewrite on UNVERIFIED evidence
     // (NeedsCorroboration), and after repair the model approved. If the model's
-    // finding was machine-CONFIRMED (Verified), an auto-rewrite WOULD be allowed —
+    // finding was machine-CONFIRMED (Verified), an auto-rewrite WOULD be allowed â€”
     // but with a slightly-off model range it stays a conservative block. Either
     // way `no_fake_pass` = the unverified concern was never treated as a defect.
     println!("{}", serde_json::json!({
@@ -1428,7 +1428,7 @@ pub(crate) fn run_live_adversarial_demo() {
 
 // Reviewer A system prompt (independent code reviewer; adversarial stance).
 pub(crate) const REVIEWER_A_SYSTEM_PROMPT: &str = "You are Reviewer A: an independent, adversarial code reviewer. \
-Hunt for real defects in the provided code — logic errors, memory misuse, panics, incorrect control flow. \
+Hunt for real defects in the provided code â€” logic errors, memory misuse, panics, incorrect control flow. \
 Be precise and concrete. Anchor every finding to a REAL file, line range, and an exact snippet that exists in the file. \
 Do NOT invent files, lines, or strings. False positives are worse than missing a minor nit. If the code is correct, approve: do not manufacture a defect.";
 
@@ -1448,7 +1448,7 @@ pub(crate) fn run_live_4role_demo() {
     let dir = std::env::temp_dir().join(format!("gastown-4role-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    // fee underflows when rate_percent > 100 (amount - fee) → a real defect.
+    // fee underflows when rate_percent > 100 (amount - fee) â†’ a real defect.
     let broken = concat!(
         "pub fn fee_after_apply(amount: u32, rate_percent: u32) -> u32 {\n",
         "    let fee = amount * rate_percent / 100;\n",
@@ -1525,7 +1525,7 @@ fn parse_review_json(raw: &str) -> serde_json::Value {
     serde_json::from_str(&t[start..end]).unwrap_or_else(|_| serde_json::json!({}))
 }
 
-/// The host's real-model agent runner: supervises a `gastown-agent` worker for
+/// The host's real-model agent runner: supervises a `helldesk-agent` worker for
 /// each dispatched bead in its isolated git worktree.
 pub(crate) struct HostAgentRunner;
 impl HostAgentRunner {
@@ -1651,7 +1651,7 @@ impl AgentRunner for HostAgentRunner {
             // At the ACTUAL dispatch boundary we honor the resolved per-role
             // model identity: if it names a Codex-backed family (e.g.
             // "gpt-6-luna", "openai/codex"), invoke the authorized Codex CLI
-            // (`codex exec -m gpt-6-luna`) — the ChatGPT-OAuth path — with the
+            // (`codex exec -m gpt-6-luna`) â€” the ChatGPT-OAuth path â€” with the
             // same review prompt; otherwise use the gateway provider. This is
             // how the per-role registry reaches a genuinely different model
             // family at runtime (Codex gate, gpt-6-luna default).
@@ -1682,13 +1682,13 @@ impl AgentRunner for HostAgentRunner {
         //    before.
         let rig = ctx.store.get_rig(&ctx.rig_id);
         let is_attached = rig.as_ref().map(|r| r.is_attached()).unwrap_or(false);
-        let base = std::env::var_os("GASTOWN_WORK_ROOT")
+        let base = std::env::var_os("HELLDESK_WORK_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 std::env::var_os("LOCALAPPDATA")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| PathBuf::from("."))
-                    .join("NAI").join("Gastown").join("repos")
+                    .join("NAI").join("Helldesk").join("repos")
             });
         let truth_root: PathBuf = if is_attached {
             // Attach mode: reuse the existing checkout. No clone, no fetch of a
@@ -1775,7 +1775,7 @@ impl AgentRunner for HostAgentRunner {
         let limits = WorkerLimits { timeout: std::time::Duration::from_secs(600), idle_timeout: None, ..Default::default() };
         let spec = ProcessSpec {
             program,
-            args: vec!["gastown-agent".to_string(), tmp.to_string_lossy().into_owned()],
+            args: vec!["helldesk-agent".to_string(), tmp.to_string_lossy().into_owned()],
             cwd: Some(truth_root.clone()),
             env: std::collections::BTreeMap::new(),
             no_console: true,
@@ -1784,10 +1784,10 @@ impl AgentRunner for HostAgentRunner {
         let outcome = lattice_supervisor::child::run(&spec, &limits).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);
         if matches!(outcome.exit_status, lattice_supervisor::ExitStatus::TimedOut) {
-            return Err(format!("gastown-agent {role} worker timed out ({:?}ms)", outcome.wall_ms));
+            return Err(format!("helldesk-agent {role} worker timed out ({:?}ms)", outcome.wall_ms));
         }
         if !matches!(outcome.exit_status, lattice_supervisor::ExitStatus::Success) {
-            return Err(format!("gastown-agent {role} worker failed: {:?}: {}", outcome.exit_status, outcome.stderr));
+            return Err(format!("helldesk-agent {role} worker failed: {:?}: {}", outcome.exit_status, outcome.stderr));
         }
         let envelope: serde_json::Value =
             serde_json::from_str(outcome.stdout.trim()).map_err(|e| format!("bad worker output: {e}"))?;
@@ -1821,7 +1821,7 @@ pub(crate) fn start_scheduler_thread() {
             // NAI Inquisitor governor (AAF delta): drain NEW runtime events into
             // the 5 hooks so the adversarial CTO issues corrective/verification /
             // durable-blocked / unsafe decisions on the durable loop. Gated by
-            // the event watermark → the Inquisitor never recursively re-triggers
+            // the event watermark â†’ the Inquisitor never recursively re-triggers
             // without NEW events (idempotency + no self-retrigger). The brain is
             // the OpenAI `gpt-6-luna` Codex path (federated).
             if std::env::var("NAI_INQUISITOR_ENABLED").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(true) {
@@ -1856,13 +1856,13 @@ impl Drop for HttpLease {
     }
 }
 
-/// Minimal HTTP control server (127.0.0.1:8787) — the usable interface
+/// Minimal HTTP control server (127.0.0.1:8787) â€” the usable interface
 /// independent of VS Code (town/rig conveyor/bead/agent dashboard).
 pub(crate) fn start_control_server() {
     // Ensure the control token exists (persisted, user-scoped) BEFORE the server
     // starts so the operator has a stable secret across restarts and reads.
     let _ = control_auth_token();
-    let port = std::env::var("GASTOWN_CTRL_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);
+    let port = std::env::var("HELLDESK_CTRL_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);
     std::thread::Builder::new()
         .name("gastown-ctrl-http".into())
         .spawn(move || {
@@ -1894,7 +1894,7 @@ pub(crate) fn start_control_server() {
                     let town_id = "town-default";
                     let mut body = String::new();
                     // Extract the Authorization header (Bearer token) so mutating
-                    // endpoints require a control token — loopback binding alone is
+                    // endpoints require a control token â€” loopback binding alone is
                     // NOT authorization (a local process must not silently mutate).
                     let mut auth_header: Option<String> = None;
                     let mut host_header: Option<String> = None;
@@ -1914,7 +1914,7 @@ pub(crate) fn start_control_server() {
                     }
                     // SECURITY (P0): never put the control token in a URL. Any
                     // request carrying a `?token=` (or `&token=`) query is refused,
-                    // not processed — a regression guard plus defense-in-depth.
+                    // not processed â€” a regression guard plus defense-in-depth.
                     if path.contains("?token=") || path.contains("&token=") { /* blocked below */ }
                     // Host / Origin validation (DNS rebinding + unauthorized
                     // browser-origin protection): a browser from a foreign origin
@@ -1924,7 +1924,7 @@ pub(crate) fn start_control_server() {
                     // Origin) proceed. CLI/curl typically send no Origin.
                     let host_ok = host_loopback(host_header.as_deref());
                     let origin_ok = match origin_header.as_deref() {
-                        None => true, // no browser → allowed (curl/tests)
+                        None => true, // no browser â†’ allowed (curl/tests)
                         Some(origin) => loopback_origin(origin),
                     };
                     if (!host_ok || !origin_ok) && path != "/health" {
@@ -1935,7 +1935,7 @@ pub(crate) fn start_control_server() {
                         }
                     }
                     if path.contains("?token=") || path.contains("&token=") {
-                        tracing::warn!("control-plane request carried a token in the URL — rejected");
+                        tracing::warn!("control-plane request carried a token in the URL â€” rejected");
                         return write_resp_status(&mut stream, 400, &serde_json::json!({"error":"bad_request", "reason":"token must never appear in a URL; use the Authorization header"}));
                     }
                     // Town-scoped wiring for convenience (uses the durable store).
@@ -1957,7 +1957,7 @@ pub(crate) fn start_control_server() {
                         return;
                     } else if path == "/events" {
                         // Real-time SSE stream of the durable audit event log (deltas).
-                        // SECURITY: auth is the Authorization header ONLY — never a
+                        // SECURITY: auth is the Authorization header ONLY â€” never a
                         // URL query token (which could leak into logs/history).
                         // The UI streams via `fetch("/events", {headers:{Authorization}})`.
                         if !control_token_ok(auth_header.as_deref()) {
@@ -2034,7 +2034,7 @@ pub(crate) fn start_control_server() {
                         if !control_token_ok(auth_header.as_deref()) {
                             return write_resp_status(&mut stream, 401, &serde_json::json!({"error":"unauthorized: /recall requires Bearer token (session transcript read)"}));
                         }
-                        let repo_like = std::env::var("GASTOWN_RECALL_REPO").unwrap_or_else(|_| "gastown".to_string());
+                        let repo_like = std::env::var("HELLDESK_RECALL_REPO").unwrap_or_else(|_| "helldesk".to_string());
                         if path == "/recall" || path == "/recall/" {
                             let limit = 12u64;
                             let out = match crate::recall::list_sessions(&repo_like, limit) {
@@ -2044,7 +2044,7 @@ pub(crate) fn start_control_server() {
                             write_resp(&mut stream, &out);
                             return;
                         }
-                        // /recall/<session_id> → the context transcript
+                        // /recall/<session_id> â†’ the context transcript
                         let sid = path.trim_start_matches("/recall/").to_string();
                         if sid.is_empty() { return write_resp_status(&mut stream, 400, &serde_json::json!({"error":"missing session id"})); }
                         let out = match crate::recall::session_context(&sid, 60) {
@@ -2104,7 +2104,7 @@ pub(crate) fn start_control_server() {
                                 let pid = parse_body(&body).and_then(|b| b["project_id"].as_str().map(str::to_string));
                                 if let (Some(p), Some(store_ref)) = (pid.as_ref().and_then(|x| crate::project::load_project(&store, x)), Some(&store)) {
                                     // Prefer the explicit task.bead id, else the project's
-                                    // active primary — so a REVISE on a specific primary
+                                    // active primary â€” so a REVISE on a specific primary
                                     // uses ITS task-specific gates even when no active pointer.
                                     let explicit = t.get("bead").or(t.get("bead_id")).and_then(|b| b.as_str()).map(str::to_string);
                                     let bid = explicit.or_else(|| p.active_bead_id.clone());
@@ -2143,7 +2143,7 @@ pub(crate) fn start_control_server() {
                         };
                         let provider = parse_body(&body).and_then(|b| b["provider"].as_str().map(str::to_string)).unwrap_or_else(|| "codex".into());
                         let decision = crate::inquisitor::run_inquisitor(&store, &input, &provider);
-                        // P0-B: a REVISE verdict is NOT the end — it must automatically
+                        // P0-B: a REVISE verdict is NOT the end â€” it must automatically
                         // continue the SAME primary bead with a CHANGED corrective plan,
                         // dispatched back through the existing Mayor/reconciler/DeepSeek
                         // gateway. No human approval, no manual report transfer.
@@ -2187,7 +2187,7 @@ pub(crate) fn start_control_server() {
 let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
                                     else { store.list_rigs().first().map(|r| r.rig_id.clone()).unwrap_or_default() };
                                     // Corrective must use a REAL rig so the reconciler can
-                                    // dispatch it to a Polecat — a fictitious rig never runs.
+                                    // dispatch it to a Polecat â€” a fictitious rig never runs.
                                     let mut cb_meta = serde_json::json!({"corrective_plan": plan, "inquisitor_first_pass": true});
                                     if !owner_gates.is_empty() { cb_meta["bt_gates"] = serde_json::Value::Array(owner_gates.clone()); }
                                     let cb = lattice_gastown::orchestration::state::Bead::create(
@@ -2212,8 +2212,8 @@ let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
                                     let _ = primary;
                                     // Record the correction so the project view surfaces it.
                                     p.updated_unix_ms = crate::now_unix_ms();
-                                    let _ = store.hot_put(&format!("gastown/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
-                                    // Dispatch it through the reconciler (Mayor → DeepSeek).
+                                    let _ = store.hot_put(&format!("helldesk/project/{pid}"), &serde_json::to_string(&p).unwrap_or_default());
+                                    // Dispatch it through the reconciler (Mayor â†’ DeepSeek).
                                     if let Some(o) = ORCH.get() {
                                         let _ = o.tick(&HostAgentRunner);
                                     }
@@ -2232,19 +2232,19 @@ let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
                         // MUTATION endpoints MUST present a valid control token.
                         if !control_token_ok(auth_header.as_deref()) {
                             return write_resp_status(&mut stream, 401, &serde_json::json!({
-                                "error": "unauthorized: set GASTOWN_CTRL_TOKEN and send Authorization: Bearer <token> for mutating control endpoints",
+                                "error": "unauthorized: set HELLDESK_CTRL_TOKEN and send Authorization: Bearer <token> for mutating control endpoints",
                                 "path": path,
                             }));
                         }
                         // POSTable mutating control API surface.
                         let method = match path.trim_matches('/') {
-                            "mayor" => "gastown.orto.mayor_request",
-                            "convoy" => "gastown.orto.create_convoy",
-                            "bead" => "gastown.orto.create_bead",
-                            "tick" => "gastown.orto.reconcile_tick",
-                            "start_convoy" => "gastown.orto.start_convoy",
-                            "set_bead_status" => "gastown.orto.set_bead_status",
-                            "rig" => "gastown.orto.add_rig",
+                            "operator" => "helldesk.orto.operator_request",
+                            "batch" => "helldesk.orto.create_batch",
+                            "ticket" => "helldesk.orto.create_ticket",
+                            "reconcile" => "helldesk.orto.reconcile",
+                            "start_batch" => "helldesk.orto.start_batch",
+                            "set_ticket_status" => "helldesk.orto.set_ticket_status",
+                            "workstation" => "helldesk.orto.add_workstation",
                             "project" => {
                                 // Project-scoped onboarding / context bootstrap.
                                 // Body is JSON-RPC {method, args} for gt.project.*.
@@ -2259,7 +2259,7 @@ let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
                             other => {
                                 return write_resp(&mut stream, &serde_json::json!({
                                     "error": "unknown mutation endpoint", "path": other,
-                                    "available": ["/mayor","/convoy","/bead","/tick","/start_convoy","/set_bead_status","/rig","/project"],
+                                    "available": ["/operator","/batch","/ticket","/reconcile","/start_batch","/set_ticket_status","/workstation","/project"],
                                 }));
                             }
                         };
@@ -2273,13 +2273,13 @@ let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
                     } else {
                         // Read-only POST endpoints (health, rig_effective) need no token.
                         let method = match path.trim_matches('/') {
-                            "health" => "gastown.orto.health",
-                            "rig_effective" => "gastown.orto.rig_effective",
+                            "health" => "helldesk.orto.health",
+                            "workstations_effective" => "helldesk.orto.workstations_effective",
                             other => {
                                 let _ = ensure_ctrl();
                                 return write_resp(&mut stream, &serde_json::json!({
                                     "error": "unknown endpoint", "path": other,
-                                    "available": ["/dashboard","/health","/rig_effective","/mayor","/convoy","/bead","/tick","/start_convoy","/set_bead_status","/rig"],
+                                    "available": ["/dashboard","/health","/workstations_effective","/operator","/batch","/ticket","/reconcile","/start_batch","/set_ticket_status","/workstation"],
                                 }));
                             }
                         };
@@ -2316,7 +2316,7 @@ fn write_html<W: std::io::Write>(w: &mut W, html: &str) {
 /// It reuses the DURABLE event stream as the source of truth (never fabricates a
 /// transition) and enriches each raw event with project ownership resolved from
 /// the store, so the frontend can place the activity on the right primary (B1).
-/// Sensitive model prompts / credentials are never copied into the stream — only
+/// Sensitive model prompts / credentials are never copied into the stream â€” only
 /// a bounded human-readable summary plus evidence ids.
 #[allow(clippy::too_many_arguments)]
 fn derive_transition(
@@ -2353,7 +2353,7 @@ fn derive_transition(
         else if to.eq_ignore_ascii_case("open") { "retry" }
         else if e.contains("blocked") { "blocked" }
         else { "pending" };
-    // Typed transition derived from the durable event — never fabricated.
+    // Typed transition derived from the durable event â€” never fabricated.
     let kind = if e.contains("dispatch") || e.contains("mayor") { "MAYOR_DISPATCHED" }
         else if e.contains("inquisitor") || e.contains("review") && (actor.eq_ignore_ascii_case("inquisitor") || e.contains("verdict")) { "INQUISITOR_REVIEWED" }
         else if e.contains("corrective") || actor.eq_ignore_ascii_case("inquisitor") { "CORRECTION_CREATED" }
@@ -2397,7 +2397,7 @@ fn derive_transition(
 
 /// Build the liveness envelope: which beads are currently NON-TERMINAL (open /
 /// in_progress / in_review), how long they have been in that state, and the
-/// most recent event seen — so the frontend can tell "work is advancing" from
+/// most recent event seen â€” so the frontend can tell "work is advancing" from
 /// "it has stalled". Also the current wall-clock so the client can age items.
 fn sse_liveness(store: &OrchestrationStore, now_ms: i64) -> serde_json::Value {
     use lattice_gastown::orchestration::state::BeadStatus;
@@ -2433,7 +2433,7 @@ fn parse_iso_or_now(s: &str, now_ms: i64) -> i64 {
 
 /// Real-time Server-Sent-Events stream of the durable audit event log. The
 /// connection is kept open and deltas (new BeadEvents since the client's `since`
-/// count) are pushed as they appear. Real persisted state streaming — not a
+/// count) are pushed as they appear. Real persisted state streaming â€” not a
 /// polling simulation. The client reads the event log cursor from the first
 /// `id:` line and the server pushes subsequent events live.
 fn notify_sse<W: std::io::Write>(w: &mut W, town_id: &str, last_event_id: &str) {
@@ -2457,7 +2457,7 @@ fn notify_sse<W: std::io::Write>(w: &mut W, town_id: &str, last_event_id: &str) 
             &lattice_gastown::orchestration::state::now()).unwrap_or(0));
         let _ = w.write_all(format!("id: {seen}\r\nevent: liveness\ndata: {}\r\n\r\n", serde_json::to_string(&liveness).unwrap_or_default()).as_bytes());
         if from < evs.len() {
-            // Replay the missed window as typed transition events (P0-E) — each
+            // Replay the missed window as typed transition events (P0-E) â€” each
             // carries project/convoy/primary/execution correlation so the UI can
             // place it on the correct primary (B1) and dedupe on reconnect.
             for ev in &evs[from..] {
@@ -2535,13 +2535,13 @@ fn write_resp_status<W: std::io::Write>(w: &mut W, status: u16, value: &serde_js
 /// therefore require a control token. Loopback binding alone is NOT authorization.
 fn path_mutates(path: &str) -> bool {
     match path.trim_matches('/') {
-        "mayor" | "convoy" | "bead" | "tick" | "start_convoy" | "set_bead_status" | "rig" | "project" => true,
+        "operator" | "batch" | "ticket" | "reconcile" | "start_batch" | "set_ticket_status" | "workstation" | "project" => true,
         _ => false,
     }
 }
 
-/// The control token. Source of truth is `GASTOWN_CTRL_TOKEN`, else a
-/// persisted, user-scoped secret at `%LOCALAPPDATA%\NAI\Gastown\control.token`
+/// The control token. Source of truth is `HELLDESK_CTRL_TOKEN`, else a
+/// persisted, user-scoped secret at `%LOCALAPPDATA%\NAI\Helldesk\control.token`
 /// (or `NAI_LATTICE_ROOT` when set). First run generates + writes it with a
 /// deny-other-read ACL (the current user only), so authentication is stable
 /// across process restarts and never requires re-provisioning. The secret is
@@ -2550,13 +2550,13 @@ fn control_auth_token() -> String {
     use std::sync::OnceLock;
     static TOKEN: OnceLock<String> = OnceLock::new();
     TOKEN.get_or_init(|| {
-        if let Ok(t) = std::env::var("GASTOWN_CTRL_TOKEN") {
+        if let Ok(t) = std::env::var("HELLDESK_CTRL_TOKEN") {
             if !t.trim().is_empty() { return t; }
         }
         // Locate the user-scoped secret store (survives restarts).
         let root = std::env::var_os("NAI_LATTICE_ROOT")
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(&l).join("NAI").join("Gastown")))
+            .or_else(|| std::env::var_os("LOCALAPPDATA").map(|l| std::path::PathBuf::from(&l).join("NAI").join("Helldesk")))
             .unwrap_or_else(|| std::path::PathBuf::from(".gastown"));
         let secret_path = root.join("control.token");
         let _ = std::fs::create_dir_all(&root);
@@ -2576,8 +2576,8 @@ fn control_auth_token() -> String {
             // peer process cannot read the secret from disk.
             let _ = restrict_file_acl(&secret_path);
         }
-        tracing::info!(path = %secret_path.display(), "Gas Town control token persisted (user-scoped)");
-        eprintln!("NAI Gas Town control token written to: {}", secret_path.display());
+        tracing::info!(path = %secret_path.display(), "Helldesk control token persisted (user-scoped)");
+        eprintln!("NAI Helldesk control token written to: {}", secret_path.display());
         entropy
     }).clone()
 }
@@ -2620,7 +2620,7 @@ fn control_token_ok(auth_header: Option<&str>) -> bool {
 
 /// DNS-rebinding guard: only loopback Hosts may reach the control plane.
 fn host_loopback(host: Option<&str>) -> bool {
-    let Some(h) = host else { return true }; // HTTP/1.0 or unusual — allow (loopback-bound anyway)
+    let Some(h) = host else { return true }; // HTTP/1.0 or unusual â€” allow (loopback-bound anyway)
     let h = h.trim().to_lowercase();
     let h = h.split(':').next().unwrap_or("").trim(); // strip port
     h == "127.0.0.1" || h == "localhost" || h == "::1" || h.starts_with("127.")
@@ -2658,12 +2658,12 @@ pub(crate) fn rehydrate_recovered_town() {
     }
 }
 
-/// Auto-continue (restart recovery) — FAITHFUL to P0-C: a host/worker restart
+/// Auto-continue (restart recovery) â€” FAITHFUL to P0-C: a host/worker restart
 /// is NOT a retry-budget reset. We DO NOT re-open failed primary beads and DO NOT
 /// reset `dispatch_attempts`/`rework_count`; exhausted executions stay exhausted
 /// (their failure history is preserved). A restart only resumes work that was
 /// INTERRUPTED mid-flight (in_progress with an expired lease, or staged work that
-/// never got its completion ingested) — never a failed execution, and never by
+/// never got its completion ingested) â€” never a failed execution, and never by
 /// erasing attempt history.
 ///
 /// Corrective continuation after a real failure is owned by the Inquisitor/Mayor:
@@ -2674,7 +2674,7 @@ pub(crate) fn recover_interrupted_primary_on_startup() {
     let store = orch.store();
     if store.list_towns().is_empty() { return; }
     let now_ms = crate::now_unix_ms();
-    let lease_ms = store.hot_get("gastown/lease_ms").and_then(|s| s.parse::<i64>().ok()).unwrap_or(120_000);
+    let lease_ms = store.hot_get("helldesk/lease_ms").and_then(|s| s.parse::<i64>().ok()).unwrap_or(120_000);
     // 1) Resume INTERRUPTED (not failed) in-flight primary work: in_progress whose
     //    lease expired on the dead process. Attempt history is preserved.
     let mut resumed = 0usize;
@@ -2695,7 +2695,7 @@ pub(crate) fn recover_interrupted_primary_on_startup() {
             }
         }
     }
-    // 2) Do NOT touch Failed primaries here — exhaustion stays visible; the
+    // 2) Do NOT touch Failed primaries here â€” exhaustion stays visible; the
     //    Inquisitor/Mayor must produce a changed corrective plan (new iteration)
     //    to continue. This keeps failure-history intact and avoids repeating an
     //    identical (possibly non-idempotent) operation after a reboot.
@@ -2703,7 +2703,7 @@ pub(crate) fn recover_interrupted_primary_on_startup() {
         tracing::info!(resumed = %resumed, "auto-continue: resumed lease-expired in-flight work (failed primaries untouched, retry budget preserved)");
     }
     // 3) Arm one reconciliation round so resumed work actually dispatches. This is
-    //    NOT a retry-budget reset — it only lets a genuinely interrupted execution
+    //    NOT a retry-budget reset â€” it only lets a genuinely interrupted execution
     //    pick back up (with its real attempt history intact).
     let _ = orch.tick(&HostAgentRunner);
     tracing::info!(pre_dispatch = %store.list_beads().iter().filter(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Open).count(), "auto-continue: reconciliation armed after startup");
@@ -2715,23 +2715,23 @@ mod auth_tests {
 
     #[test]
     fn mutating_paths_require_auth() {
-        assert!(path_mutates("/mayor"));
-        assert!(path_mutates("/convoy"));
-        assert!(path_mutates("/bead"));
-        assert!(path_mutates("/tick"));
-        assert!(path_mutates("/start_convoy"));
-        assert!(path_mutates("/set_bead_status"));
-        assert!(path_mutates("/rig"));
+        assert!(path_mutates("/operator"));
+        assert!(path_mutates("/batch"));
+        assert!(path_mutates("/ticket"));
+        assert!(path_mutates("/reconcile"));
+        assert!(path_mutates("/start_batch"));
+        assert!(path_mutates("/set_ticket_status"));
+        assert!(path_mutates("/workstation"));
         assert!(!path_mutates("/dashboard"));
         assert!(!path_mutates("/health"));
-        assert!(!path_mutates("/rig_effective"));
+        assert!(!path_mutates("/workstations_effective"));
         assert!(!path_mutates("/"));
     }
 
     #[test]
     fn token_ok_requires_bearer_and_matching_token() {
         // Set a known token for the test process.
-        std::env::set_var("GASTOWN_CTRL_TOKEN", "test-super-secret");
+        std::env::set_var("HELLDESK_CTRL_TOKEN", "test-super-secret");
         let want = control_auth_token();
         assert_eq!(want, "test-super-secret");
         // Correct bearer passes.
@@ -2741,7 +2741,7 @@ mod auth_tests {
         // Missing header / malformed fails.
         assert!(!control_token_ok(None));
         assert!(!control_token_ok(Some("test-super-secret"))); // no "Bearer " prefix
-        std::env::remove_var("GASTOWN_CTRL_TOKEN");
+        std::env::remove_var("HELLDESK_CTRL_TOKEN");
     }
 
     #[test]

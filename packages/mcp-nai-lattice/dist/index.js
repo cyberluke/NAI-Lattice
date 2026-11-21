@@ -35,7 +35,7 @@ import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextp
 import { z } from "zod";
 import { fetchLogs, fetchStats } from "./fabric.js";
 import { readCompanyPolicy } from './company-policy.js';
-import { readTodos, updateTask, newTask, doneCheck, persistTask, todoPath, } from "./todo.js";
+import { readTodos, updateTask, newTask, doneCheck, persistTask, todoPath, owningGateOk, gateKey, } from "./todo.js";
 import { acknowledgeFeed, followPath, followTask, makeFeed, readFeed, readFollowing, watchTodoChanges } from "./todo-feed.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LM_BASE = process.env.LM_STUDIO_URL ?? "http://127.0.0.1:1234/v1";
@@ -56,9 +56,11 @@ const QDRANT_KEY = process.env.QDRANT_API_KEY;
 const TEAM_CONTRACT = {
     ownership: "Everyone owns all projects. Do not refuse work on a repo with 'not my scope', 'pre-existing bug', or 'not mine' — every NAI project is shared team property.",
     preexistingBugs: "Pre-existing bugs are in scope: fix and deliver, do not defer back to 'it was already broken'. The repo is a living organism, not a set of fiefdoms.",
-    aafRule: "AAF means Ambient Asset Federation: before build/buy/download/provision/copy/train/store, discover and fingerprint equivalent capabilities already within reach, assess access, compatibility, risk and economics, federate them, then implement the missing delta. It is broader than code reuse. FIRST call get_company_policy for the full canonical doctrine at <workspace>/NAI-OS/docs/AAF.md (or Foundry foundry_company_policy). Never infer the doctrine from this summary or a repository name. Preserve the complete user scope.",
+    aafRule: "AAF means Ambient Asset Federation: before build/buy/download/provision/copy/train/store, discover and fingerprint equivalent capabilities already within reach, assess access, compatibility, risk and economics, federate them, then implement the missing delta. CRITICAL: the delta is DEFENSIVE, PRODUCTION-GRADE work, not a shortcut. 'Delta' NEVER means a manual workaround, an ad-hoc patch, a stub, a mock, a hardcoded special-case, or a hand-made copy of an existing mechanism. The correct delta is to PROPERTY IMPLEMENT, CREATE, EXTEND or FEDERATE the missing capability: a real code change, a real integration, a real pipeline/endpoint/MCP-tool enhancement, or a real federated reuse — as well-built and tested as the code it joins. 'Don't rewrite a working chunk' means don't regenerate or re-derive something that already works; it does NOT license a cheap workaround. If the right delta is missing MCP/foundry/registry support, the delta is to ADD that support, not to route around it. FIRST call get_company_policy for the full canonical doctrine at <workspace>/NAI-OS/docs/AAF.md (or Foundry foundry_company_policy). Never infer the doctrine from this summary or a repository name. Preserve the complete user scope.",
+    registryFirst: "Cross-product rule: BEFORE stopping to ask the human who owns a target or how to reach a project, FIRST resolve the originator/target via list_indexed_projects (registry-scoped, includes dependsOn + workspacePath). If the target project is registered, do NOT stop and ask — route through the shared cross-product MCP channel automatically: todo_add a task scoped to that workspace + todo_follow it + consume the feed hook. A registered dependency (dependsOn) is the authority; never treat a registered producer/consumer as 'not my scope' or as needing a human-owner handshake. Only ask a human when the target is NOT in the registry and cannot be responsibly inferred.",
     crossRepo: "To change a project, first cross_project_semantic_query across it AND its dependsOn partners so the call-site in the consumer and the handler in the producer are both recovered in ONE retrieval — no md handoff, no pasting between windows.",
     firstDoor: "For company doctrine such as AAF, call get_company_policy directly; code search is not the authority for policy. For code discovery use semantic_query / cross_project_semantic_query first, then inspect actual source. Empty, stale, unavailable or failed indexes permit local exploration; they do not establish that a capability or document is absent.",
+    blueprintCapability: "NAI BLUEPRINT (nai-foundry MCP, tool nai_blueprint) is the team framework for packaging a REUSABLE, product-agnostic capability — a component, method, workflow/process or runnable recipe — as a discoverable, immutable, versioned AAF shareable-delta asset in the shared catalog, consumed/copy-vendored by other NAI products. USE IT when you built something reusable other agents/products should be able to re-federate instead of re-implementing. Fast path: nai_blueprint search → foundry_task_register + foundry_aaf_discover + foundry_aaf_decide (prove it is a real AAF delta) → plan (typed manifest + managed root) → build product-agnostic source + optional Storybook + per-component BrowserOS screen captures → capture → package (with the manifest, including references.storybook/references.screenshots to ship visual evidence) → verify → publish. Registered-but-unindexed products (points:0) are still real team projects — including nai-foundry itself — route via the registry name and fall back to source inspection when a collection has no vector index.",
     evidence: "Every change lands with proof against the real runtime; retain and surface raw failures. Reuse cached expensive generation (TTS/embedding) by content hash; do not regenerate unchanged work.",
 };
 /** Human-readable contract for a registry dump. */
@@ -466,7 +468,7 @@ const server = new McpServer({ name: "mcp-nai-lattice", version: "0.1.0" }, { ca
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 server.registerTool('get_company_policy', {
     title: 'Read canonical AAF company doctrine',
-    description: 'Start here for AAF / Ambient Asset Federation. Read the full canonical company document and its SHA-256 directly, without Qdrant, embeddings or repo searches. AAF covers existing assets/capabilities across company, customer, partner and market environments; build-the-delta is only its shorthand. No path argument; host-enrolled document only.',
+    description: 'Start here for AAF / Ambient Asset Federation. Read the full canonical company document and its SHA-256 directly, without Qdrant, embeddings or repo searches. AAF covers existing assets/capabilities across company, customer, partner and market environments; its build-the-delta step means PROPERLY IMPLEMENT, CREATE, EXTEND or FEDERATE the missing capability as production-grade work — NOT a manual workaround, ad-hoc patch, stub, mock, or hand-made copy of an existing mechanism. No path argument; host-enrolled document only.',
     inputSchema: {}, annotations: READ_ONLY,
 }, async () => { try {
     return { content: [{ type: 'text', text: JSON.stringify(readCompanyPolicy()) }] };
@@ -476,7 +478,7 @@ catch (error) {
 } });
 server.registerTool("list_indexed_projects", {
     title: "List projects + team operating contract",
-    description: "Discover which projects have a Kilo Qdrant code index, PLUS the shared NAI team operating contract. Returns every indexed Qdrant collection (live from Qdrant) fused with the human project registry (name, description, workspacePath, techStack, buildCommand, runCommand, deployTarget, dependsOn). Read the returned 'contract' before doing any cross-project work: it is the binding rule that EVERY NAI repo is owned by EVERYONE (no 'not my scope' / 'pre-existing bug' refusals), that you integrate & develop ONLY delta changes (AAF), and that for code questions you reach for semantic_query / cross_project_semantic_query as the FIRST door instead of a repo-wide grep / file-mask search. Use this first to learn a project's workspacePath (or its registry name) and its build/dependsOn wiring before calling semantic_query / cross_project_semantic_query.",
+    description: "Discover which projects have a Kilo Qdrant code index, PLUS the shared NAI team operating contract. Returns every indexed Qdrant collection (live from Qdrant) fused with the human project registry (name, description, workspacePath, techStack, buildCommand, runCommand, deployTarget, dependsOn). Read the returned 'contract' before doing any cross-project work: it is the binding rule that EVERY NAI repo is owned by EVERYONE (no 'not my scope' / 'pre-existing bug' refusals), that AAF delta means PROPERLY IMPLEMENT, CREATE, EXTEND or FEDERATE the missing capability (NOT a workaround / ad-hoc patch / stub / mock or a copied mechanism), and that for code questions you reach for semantic_query / cross_project_semantic_query as the FIRST door instead of a repo-wide grep / file-mask search. Use this first to learn a project's workspacePath (or its registry name) and its build/dependsOn wiring before calling semantic_query / cross_project_semantic_query. Cross-product rule: if the target/originator project is registered here, NEVER stop and ask the human who owns it — route through the shared MCP channel (todo_add scoped to that workspace + todo_follow + feed) automatically; registry-first, no handshake. Ask a human only for a target NOT in the registry.",
     inputSchema: {},
     outputSchema: {
         contract: z.string().describe("The shared operating contract (ownership + pre-existing bugs + AAF delta rule + cross-repo + evidence). Read this before any cross-project change."),
@@ -503,6 +505,7 @@ server.registerTool("list_indexed_projects", {
     const byHash = new Map();
     for (const p of registry)
         byHash.set(workspaceCollection(p.workspacePath), p);
+    const indexed = new Set(online.map((c) => c.collection));
     const projects = online
         .map((c) => {
         const reg = byHash.get(c.collection);
@@ -522,6 +525,32 @@ server.registerTool("list_indexed_projects", {
         };
     })
         .sort((a, b) => b.points - a.points);
+    // P0 (findable registered products): registry entries WITHOUT a Qdrant index
+    // (e.g. nai-foundry / the BLUEPRINT manufacturing capability) are ALSO part of
+    // the NAI team surface. Include them with points:0 so `list_indexed_projects`
+    // — the first door for discovering what NAI has — never hides a registered
+    // product just because its code was never vector-indexed. Agents read them as
+    // real projects and route via the registry name (semantic queries fall back to
+    // source/local exploration for unindexed roots).
+    for (const reg of registry) {
+        if (indexed.has(workspaceCollection(reg.workspacePath)))
+            continue;
+        projects.push({
+            project: reg.name,
+            description: reg.description,
+            techStack: reg.techStack ?? [],
+            workspacePath: reg.workspacePath,
+            collection: workspaceCollection(reg.workspacePath),
+            points: 0,
+            dimension: 0,
+            registered: true,
+            buildCommand: reg.buildCommand ?? undefined,
+            runCommand: reg.runCommand ?? undefined,
+            deployTarget: reg.deployTarget ?? undefined,
+            dependsOn: reg.dependsOn ?? [],
+        });
+    }
+    projects.sort((a, b) => b.points - a.points);
     const unregistered = projects.filter((p) => !p.registered).map((p) => p.collection);
     const contract = contractText(TEAM_CONTRACT);
     const text = JSON.stringify({ contract, projects, unregistered });
@@ -762,7 +791,11 @@ function taskPreview(t, full = false) {
     return {
         ...task, revision: t.revision ?? 0, title: full ? t.title : t.title.slice(0, 300),
         parent: t.parent ?? null, doneAt: t.doneAt ?? null,
-        ...(full ? {} : { gates: t.gates && Object.fromEntries(Object.entries(t.gates).map(([key, gate]) => [key, { ok: gate.ok, doneAt: gate.doneAt }])) }),
+        ...(full ? {} : { gates: t.gates && Object.fromEntries(Object.entries(t.gates).reduce((acc, [key, gate]) => {
+                if (gate)
+                    acc.push([key, { ok: gate.ok, doneAt: gate.doneAt }]);
+                return acc;
+            }, [])) }),
     };
 }
 function todoReply(result) {
@@ -779,18 +812,23 @@ function todoReply(result) {
 }
 server.registerTool("todo_add", {
     title: "Add a shared workspace task or mind-map node",
-    description: "Record a task, decision, fact, lamp, state or blocker in the shared Lattice mind map. Pass the owning product or workspace and an actor label. A child without a workspace inherits its parent’s scope.",
+    description: "Record a task, decision, fact, lamp, state or blocker in the shared Lattice mind map. Pass the owning product or workspace and an actor label. A child without a workspace inherits its parent’s scope. Use `description` for the full handoff body (DoD / crash log / approach) so the title stays a short index, and `attachments` for content-addressed repro artifacts (video/audio/image/text with sha256).",
     inputSchema: {
         title: z.string().trim().min(1).max(1500), kind: nodeKind.optional(), parent: z.string().optional(),
         workspace: z.string().max(1024).optional().describe("Owning Lattice product name or exact absolute workspace path."),
         actor: actorInput, needsBuild: z.boolean().optional(), needsDeploy: z.boolean().optional(),
+        description: z.string().max(12000).optional().describe("Full handoff body: DoD/acceptance, crash log, startup/approach ordering. Kept out of title so the title stays a short index."),
+        attachments: z.array(z.object({
+            kind: z.enum(["video", "audio", "image", "text"]), name: z.string().min(1), uri: z.string().optional(),
+            sha256: z.string().optional(), size: z.number().int().nonnegative().optional(), note: z.string().optional(),
+        })).max(12).optional().describe("Content-addressed repro/evidence artifacts (video/audio/image/text); sha256 fingerprints the bytes so the recipient can verify."),
     },
     outputSchema: { ok: z.boolean(), task: z.any().optional(), error: z.string().optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-}, async ({ title, kind, parent, workspace, actor, needsBuild, needsDeploy }) => {
+}, async ({ title, kind, parent, workspace, actor, needsBuild, needsDeploy, description, attachments }) => {
     const scope = workspace ? todoWorkspace(workspace) : {};
     return todoReply(await persistTask(newTask(title, {
-        ...scope, parent, kind, createdBy: actor,
+        ...scope, parent, kind, createdBy: actor, description, attachments,
         gated: needsBuild || needsDeploy ? { needsBuild, needsDeploy } : undefined,
     })));
 });
@@ -805,7 +843,11 @@ server.registerTool("todo_list", {
     outputSchema: { tasks: z.array(z.any()), doneCheck: z.any(), total: z.number(), nextOffset: z.number().nullable() },
     annotations: READ_ONLY,
 }, async ({ workspace, id, status, kind, offset = 0, limit = 15 }) => {
-    const workspaceId = workspace && (/^ws-[0-9a-f]{16}$/.test(workspace) ? workspace : todoWorkspace(workspace).workspaceId);
+    // An explicit `id` is authoritative and unambiguous — it wins over any
+    // `workspace` scope so a peer querying by the exact task id ALWAYS finds the
+    // task even if the workspace string they pass resolves differently. Only when
+    // no `id` is given does `workspace` reduce the candidate set.
+    const workspaceId = workspace && !id && (/^ws-[0-9a-f]{16}$/.test(workspace) ? workspace : todoWorkspace(workspace).workspaceId);
     const scoped = readTodos().filter(task => !workspaceId || task.workspaceId === workspaceId);
     const filtered = scoped.filter(task => (!id || task.id === id) &&
         (!status || status === task.status) && (!kind || kind === (task.kind ?? "task")));
@@ -828,28 +870,37 @@ server.registerTool("todo_list", {
 });
 server.registerTool("todo_update", {
     title: "Claim, update or complete a shared task",
-    description: "Transition open → in_progress → done, or mark blocked/reopen. Pass your actor label and the revision returned by todo_list to avoid overwriting a peer. Build/deploy evidence remains required for gated tasks.",
+    description: "Transition open → in_progress → done, or mark blocked/reopen. Pass your actor label and the revision returned by todo_list to avoid overwriting a peer. Build/deploy evidence remains required for gated tasks. Use `description` to replace the full handoff body (DoD / crash log / approach) and `attachments` to set the content-addressed repro artifacts.",
     inputSchema: {
         id: z.string(), status: taskStatus.optional(), parent: z.string().nullable().optional(),
         title: z.string().trim().min(1).max(1500).optional(), workspace: z.string().max(1024).optional(),
         actor: actorInput, expectedRevision: revisionInput,
+        description: z.string().max(12000).nullable().optional(),
+        attachments: z.array(z.object({
+            kind: z.enum(["video", "audio", "image", "text"]), name: z.string().min(1), uri: z.string().optional(),
+            sha256: z.string().optional(), size: z.number().int().nonnegative().optional(), note: z.string().optional(),
+        })).max(12).nullable().optional(),
     },
     outputSchema: { ok: z.boolean(), task: z.any().optional(), error: z.string().optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-}, async ({ id, status, parent, title, workspace, actor, expectedRevision }) => {
+}, async ({ id, status, parent, title, workspace, actor, expectedRevision, description, attachments }) => {
     const scope = workspace ? todoWorkspace(workspace) : {};
     return todoReply(await updateTask(id, expectedRevision, current => {
         const next = { ...current, ...scope, updatedBy: actor ?? current.updatedBy ?? "agent" };
         if (title !== undefined)
             next.title = title;
+        if (description !== undefined)
+            next.description = description ?? undefined;
+        if (attachments !== undefined)
+            next.attachments = attachments ?? undefined;
         if (parent !== undefined)
             next.parent = parent;
         if (status === undefined)
             return next;
         if (status === "done") {
-            if ((next.gated?.needsBuild && next.gates?.build?.ok !== true) ||
-                (next.gated?.needsDeploy && next.gates?.deploy?.ok !== true)) {
-                return "task is quality-gated; record the required build/deploy evidence via todo_gate";
+            if ((next.gated?.needsBuild && !owningGateOk(next, "build")) ||
+                (next.gated?.needsDeploy && !owningGateOk(next, "deploy"))) {
+                return "task is quality-gated; record the required build/deploy evidence via todo_gate (gate is scoped to the task's owning product)";
             }
             next.doneAt = current.doneAt ?? new Date().toISOString();
         }
@@ -871,19 +922,30 @@ server.registerTool("todo_update", {
 });
 server.registerTool("todo_gate", {
     title: "Record build or deploy evidence",
-    description: "Record an observed build/deploy result for a task that requires it. Pass the command, evidence, actor and current revision when available.",
+    description: "Record an observed build/deploy result for a task that requires it. The gate is stored per-ATTESTING product (owningGateKey) so a producer-native build and a consumer deploy never overwrite each other, and it never masquerades as another product's build. Pass the command, evidence, actor, the attesting product and current revision when available.",
     inputSchema: {
         id: z.string(), kind: z.enum(["build", "deploy"]), ok: z.boolean(), cmd: z.string().max(1500).optional(),
-        evidence: z.string().max(1500).optional(), actor: actorInput, expectedRevision: revisionInput,
+        evidence: z.string().max(1500).optional(), actor: actorInput,
+        // Which product actually ran the build/deploy (defaults to the task's owning
+        // product). Stored under gates["build:<product>"] / gates["deploy:<product>"].
+        product: z.string().max(256).optional(),
+        expectedRevision: revisionInput,
     },
     outputSchema: { ok: z.boolean(), task: z.any().optional(), error: z.string().optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-}, async ({ id, kind, ok, cmd, evidence, actor, expectedRevision }) => todoReply(await updateTask(id, expectedRevision, current => {
+}, async ({ id, kind, ok, cmd, evidence, actor, product, expectedRevision }) => todoReply(await updateTask(id, expectedRevision, current => {
     if (!(kind === "build" ? current.gated?.needsBuild : current.gated?.needsDeploy)) {
         return "task does not require the " + kind + " gate";
     }
+    const attestor = (product && product.trim()) || current.product;
+    const key = gateKey(attestor, kind);
+    const gate = {
+        kind, ok, cmd, evidence, actor: actor ?? current.updatedBy ?? "agent",
+        product: attestor, workspaceId: current.workspaceId,
+        doneAt: new Date().toISOString(), exit: ok ? undefined : 1,
+    };
     const next = { ...current, updatedBy: actor ?? current.updatedBy ?? "agent",
-        gates: { ...current.gates, [kind]: { kind, ok, cmd, evidence, doneAt: new Date().toISOString() } } };
+        gates: { ...current.gates, [key]: gate } };
     if (!ok && next.status === "done") {
         next.status = "blocked";
         delete next.doneAt;
@@ -929,9 +991,33 @@ server.registerTool("todo_done_check", {
 });
 const fanSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,140}$/).describe("The fan ID shown by Satin for your chat or a stable ID for your client.");
 const feedURI = (fan) => "nai-lattice://task-feed/" + encodeURIComponent(fan);
+/**
+ * Registered concrete task-feed resources per fan (so a follow registers the URI
+ * exactly once and later follows are idempotent). A concrete resource appears in
+ * `resources/list` and is `resources/subscribe`-able, which arms the async
+ * fs.watch -> sendResourceUpdated push that delivers the automated task-change
+ * ping. Fully async: no polling, no timers.
+ */
+const registeredFeedResources = new Set();
+function ensureFanFeedResource(fan) {
+    const uri = feedURI(fan);
+    if (registeredFeedResources.has(uri))
+        return uri;
+    try {
+        server.registerResource("Task drop feed", uri, { mimeType: "application/json", description: "Unread state changes for the subscribed fan ID (same as nai-lattice://task-feed/{fan} template, materialized per follow so it is discoverable + subscribable)." }, () => {
+            const { latest: _latest, ...data } = readFeed(fan);
+            return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(data) }] };
+        });
+        registeredFeedResources.add(uri);
+    }
+    catch {
+        // Already registered / transient: the template handler + subscribe arm still cover it.
+    }
+    return uri;
+}
 server.registerTool("todo_follow", {
     title: "Follow this arc ✨",
-    description: "Follow or unfollow a task by ID, or list your follows. Done is the default drop. Set on to catch other statuses. Use the fan ID in your Satin prompt.",
+    description: "Follow or unfollow a task by ID, or list your follows. Done is the default drop. Set on to catch other statuses. Use the fan ID in your Satin prompt. Following ALSO registers the fan's `task-feed` as a concrete subscribable MCP resource (nai-lattice://task-feed/<fan>) so the server pushes a notifications/updated ping the instant a followed task drops — no polling, no timers.",
     inputSchema: { fan: fanSchema, id: z.string().min(1).max(120).optional(), action: z.enum(["follow", "unfollow", "list"]).default("follow"),
         on: z.array(taskStatus).min(1).max(4).optional() },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -942,8 +1028,15 @@ server.registerTool("todo_follow", {
     if (!id)
         throw Error("Pick a task ID to follow or unfollow.");
     const result = await followTask(fan, id, action === "follow" ? on ?? ["done"] : undefined);
+    // Register the fan feed as a concrete, subscribable MCP resource so the linked
+    // client can resources/subscribe it — AND arm the server-side fs.watch push so
+    // the server emits notifications/updated the instant a followed task drops,
+    // with no polling and no client timer. This is the fully-automated ping.
+    ensureFanFeedResource(fan);
+    if (action === "follow")
+        armFeedPush(fan);
     const data = { message: action === "follow" ? "Following this arc ✨" : "Unfollowed", id, following: result.following.length,
-        feed: feedURI(fan), next: "Use todo_feed for new drops or subscribe to the resource in an MCP client." };
+        feed: feedURI(fan), next: "Use todo_feed for new drops; the server now pushes notifications/updated for this fan's task-feed automatically on task change (fully async)." };
     return { content: [{ type: "text", text: JSON.stringify(data) }] };
 });
 server.registerTool("todo_feed", {
@@ -970,32 +1063,64 @@ function subscribeFan(uri) {
         throw Error("Unknown task feed resource");
     return fanSchema.parse(decodeURIComponent(matched[1]));
 }
-server.server.setRequestHandler(SubscribeRequestSchema, ({ params }) => {
-    const fan = subscribeFan(params.uri);
-    if (resourceFollowers.has(params.uri) && stopResourceWatch)
-        return {};
-    if (!resourceFollowers.has(params.uri) && resourceFollowers.size >= 32)
-        throw Error("Resource subscription limit reached");
+/**
+ * Server-driven async feed push.
+ *
+ * The generation here is independent of the MCP `resources/subscribe` handshake:
+ * whenever ANY fan has a follow whose task revision advanced past the last
+ * pushed revision, we watch the ledger (fs.watch) and emit `notifications/updated`
+ * for that fan's concrete task-feed URI. MCP delivers it to whichever client is
+ * subscribed (client opt-in); generation never depends on a client having
+ * subscribed first — so the automated ping works even if the subscribe handler
+ * is shadowed by the SDK's own resource manager.
+ */
+const pushFans = new Set();
+/** last-pushed revision per fan+tid (patoked at arm time) to avoid re-ping. */
+const pushedRev = new Map();
+let stopResourcePush;
+/** Record the current latest revisions for a fan (the "already pushed" baseline). */
+function seedPushedCursor(fan) {
+    const m = pushedRev.get(fan) ?? new Map();
+    try {
+        const latest = makeFeed(readFollowing(fan), readTodos(false)).latest;
+        for (const [id, rev] of Object.entries(latest))
+            m.set(id, rev);
+    }
+    catch { }
+    pushedRev.set(fan, m);
+}
+/** Seed the ledger watch when a fan first follows (or subscribes). */
+function armFeedPush(fan) {
+    pushFans.add(fan);
+    seedPushedCursor(fan);
     const ledger = todoPath();
-    stopResourceWatch ??= watchTodoChanges(ledger, file => {
+    stopResourcePush ??= watchTodoChanges(ledger, file => {
         let snapshot;
-        for (const [uri, sub] of resourceFollowers) {
-            if (file && file !== basename(ledger) && file !== basename(followPath(sub.fan, ledger)))
+        for (const cf of pushFans) {
+            if (file && file !== basename(ledger) && file !== basename(followPath(cf, ledger)))
                 continue;
+            const uri = feedURI(cf);
             try {
-                const following = readFollowing(sub.fan, ledger);
+                const following = readFollowing(cf, ledger);
                 if (!following.length)
                     continue;
                 const current = makeFeed(following, snapshot ??= readTodos(false, ledger)).latest;
-                const newer = Object.entries(current).some(([id, rev]) => rev > (sub.latest[id] ?? 0));
-                Object.assign(sub.latest, current);
-                if (newer)
-                    void server.server.sendResourceUpdated({ uri }).catch(() => { });
+                const prior = pushedRev.get(cf) ?? new Map();
+                const anyNewer = Object.entries(current).some(([id, rev]) => rev > (prior.get(id) ?? 0));
+                if (!anyNewer)
+                    continue;
+                for (const [id, rev] of Object.entries(current))
+                    prior.set(id, rev);
+                void server.server.sendResourceUpdated({ uri }).catch(() => { });
             }
             catch { /* durable feed remains available on the next read */ }
         }
-    }, () => { stopResourceWatch = undefined; });
+    }, () => { stopResourcePush = undefined; });
+}
+server.server.setRequestHandler(SubscribeRequestSchema, ({ params }) => {
+    const fan = subscribeFan(params.uri);
     resourceFollowers.set(params.uri, { fan, latest: readFeed(fan).latest });
+    armFeedPush(fan);
     return {};
 });
 server.server.setRequestHandler(UnsubscribeRequestSchema, ({ params }) => {
@@ -1007,9 +1132,14 @@ server.server.setRequestHandler(UnsubscribeRequestSchema, ({ params }) => {
     return {};
 });
 server.server.onclose = () => {
+    stopResourcePush?.();
+    stopResourcePush = undefined;
     stopResourceWatch?.();
     stopResourceWatch = undefined;
+    pushFans.clear();
     resourceFollowers.clear();
+    registeredFeedResources.clear();
+    pushedRev.clear();
 };
 async function main() {
     const transport = new StdioServerTransport();

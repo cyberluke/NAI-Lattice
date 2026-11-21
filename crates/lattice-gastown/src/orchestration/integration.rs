@@ -1,13 +1,13 @@
-//! Gas Town orchestration integration test (`orchestration::integration`).
+﻿//! Gas Town orchestration integration test (`orchestration::integration`).
 //!
 //! Drives the REAL Orchestrator + reconciler + apply state machine end-to-end
 //! against an in-memory hot-store with a SCRIPTED agent runner (deterministic,
-//! no network), proving the full Mayor → Convoy → Polecat → Refinery → Landing
+//! no network), proving the full Mayor â†’ Convoy â†’ Polecat â†’ Refinery â†’ Landing
 //! flow INCLUDING dependency DAG scheduling and crash recovery (simulated by
 //! re-opening the store from a reactivated in-memory/disk snapshot).
 //!
 //! The scripted runner stands in for the supervised real-model worker; the
-//! run-of-record `nai-fabric-host gastown-agent` path is separately exercised
+//! run-of-record `nai-fabric-host helldesk-agent` path is separately exercised
 //! against the real LiteLLM edge in the live `e2e` harness.
 
 use std::collections::BTreeMap;
@@ -58,6 +58,9 @@ impl AgentRunner for FakeRunner {
         // Simulate the worker by writing a marker into the worktree root.
         std::fs::create_dir_all(&ctx.worktree_root).ok();
         let marker = ctx.worktree_root.join("gastown-agent-marker.txt");
+        // ^ filename retained intentionally: it is a historical integration-trace
+        // artifact shared by the pre-rename harness; the rename is the agent
+        // identity, not this persisted marker.
         std::fs::write(
             &marker,
             format!("role={:?} bead={} branch={} done=true", ctx.agent.role, ctx.bead.bead_id, ctx.branch),
@@ -142,7 +145,7 @@ fn full_convoy_flow_dependency_scheduling_and_landing() {
     );
 
     // Tick exactly once: independent A and C get dispatched (FakeRunner marks them
-// done → MRs created), while B must STILL be blocked by its `blocks` edge on A.
+// done â†’ MRs created), while B must STILL be blocked by its `blocks` edge on A.
     let runner = FakeRunner::default();
     let _ = orch.tick(&runner);
     let a = orch
@@ -194,13 +197,13 @@ fn full_convoy_flow_dependency_scheduling_and_landing() {
     loop {
         let rep = orch.tick(&runner);
         ticks += 1;
-        // P0-A: represent the real Inquisitor — once a source issue bead is
+        // P0-A: represent the real Inquisitor â€” once a source issue bead is
         // Closed after its MR merged (a genuinely landed, gate-passing closure),
         // stamp it VERIFIED_10_10 against the current epoch. A bead that is merely
         // manually Closed or whose MR never merged is never stamped, so it never
         // unlocks the downstream `blocks` edge. (In production the host Inquisitor
         // applies this stamp from COMPLETE + gates PASS.)
-        orch.store().hot_put("gastown/portability/epoch", "e2e-rev-1");
+        orch.store().hot_put("helldesk/portability/epoch", "e2e-rev-1");
         for src in orch.store().list_beads().into_iter().filter(|b| b.bead_type == crate::orchestration::state::BeadType::Issue) {
             if src.status == BeadStatus::Closed && !orch.store().is_bead_verified_current(&src.bead_id) {
                 let merged = orch.store().dependents_on(&src.bead_id).into_iter()
@@ -292,8 +295,8 @@ fn crash_recovery_reconciles_from_durable_state() {
     // Recovery re-attaches the town from durable state.
     let recovered = orch_b.town().expect("town persisted and recovered");
     assert_eq!(recovered.town_id, "town-recovery");
-    // Any in-progress work (working polecat, open bead) must progress to MR →
-    // refinery → merged → convoy close across the fresh scheduler.
+    // Any in-progress work (working polecat, open bead) must progress to MR â†’
+    // refinery â†’ merged â†’ convoy close across the fresh scheduler.
     let runner_b = FakeRunner::default();
     let mut ticks = 0;
     loop {
@@ -361,10 +364,10 @@ fn configurable_models_and_gates_are_respected() {
     assert!(rep.dispatched > 0 || rep.applied > 0, "tick should generate work");
 }
 
-// ────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // WS1 parity-domain unit tests: event history/audit, mailboxes,
 // molecules, triage requests, escalation ladder.
-// ────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 use crate::orchestration::state::{
     BeadEvent, BeadType, Dependency, DependencyKind, Escalation,
@@ -639,7 +642,7 @@ fn escalation_ladder_re_escalates_stale_open_escalations() {
     let esc = store.get_escalation(&esc_id).unwrap();
     assert_eq!(esc.severity, "medium", "low -> medium");
     assert_eq!(esc.re_escalation_count, 1);
-    // Now aged again by 2*4h from a low origin — but already re-escalated once,
+    // Now aged again by 2*4h from a low origin â€” but already re-escalated once,
     // threshold becomes 2*4h; we re-age and bump medium->high.
     let past_ms2 = now_unix_ms() - 9 * 60 * 60 * 1000;
     if let Some(mut b) = store.get_bead(&esc_id) {
@@ -667,10 +670,10 @@ fn format_iso_from_ms(ms: i64) -> String {
     format!("{y:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
-// ────────────────────────────────────────────────────────────────────────
-// WS5 integrated e2e: scripted reviewer proves the reject→repair→accept loop
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// WS5 integrated e2e: scripted reviewer proves the rejectâ†’repairâ†’accept loop
 // running through the real scheduler (not just the policy unit tests).
-// ────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 use crate::orchestration::scheduler::ReviewerOutcome;
 use crate::orchestration::state::{Finding, ReviewDecision};
@@ -681,9 +684,9 @@ use crate::orchestration::state::{Finding, ReviewDecision};
 /// - Review dispatch: Reviewer A/B/Adversarial reject on the FIRST review of a
 ///   source (cycles_used == 0), then approve once the polecat has reworked it
 ///   (cycles_used >= 1). Adjudicator always approves. The rejection cites a
-///   machine-classified symbol (Unverified → treated as a real finding, not
-///   hallucinated) so the policy produces corrective instructions — exactly the
-///   adversarial reject → rework → accept loop.
+///   machine-classified symbol (Unverified â†’ treated as a real finding, not
+///   hallucinated) so the policy produces corrective instructions â€” exactly the
+///   adversarial reject â†’ rework â†’ accept loop.
 #[derive(Default)]
 struct ScriptedAdversarialRunner {
     /// Findings to return when a reviewer rejects.
@@ -765,7 +768,7 @@ fn adversarial_reject_then_repair_then_accept_through_scheduler() {
     let _ = convoy_id;
 
     // The reviewer rejects only when a finding is present; set one to force the
-    // first review to reject on a symbol-ref (Unverified ⇒ valid real finding).
+    // first review to reject on a symbol-ref (Unverified â‡’ valid real finding).
     let finding = Finding {
         finding_id: crate::orchestration::state::gen_id(),
         severity: "major".into(),
@@ -792,7 +795,7 @@ fn adversarial_reject_then_repair_then_accept_through_scheduler() {
             panic!("adversarial convoy did not close within 200 ticks (rep={_rep:?})");
         }
     }
-    // The source bead had a genuine reject→rework cycle and ended satisfied.
+    // The source bead had a genuine rejectâ†’rework cycle and ended satisfied.
     let issue = orch.store().list_beads().into_iter().find(|b| b.bead_type == crate::orchestration::state::BeadType::Issue).unwrap();
     assert_eq!(issue.status, BeadStatus::Closed, "source closed after accepted review");
     let cyc = orch.store().review_cycle_state(&issue.bead_id);
@@ -804,7 +807,7 @@ fn adversarial_reject_then_repair_then_accept_through_scheduler() {
 }
 
 /// A scripted reviewer that ALWAYS rejects with a REAL (file+line+snippet) finding.
-/// Used to prove the unfixable-bead path: cycles exhaust → durable escalation,
+/// Used to prove the unfixable-bead path: cycles exhaust â†’ durable escalation,
 /// and landing stays BLOCKED (convoy never closes on an unapproved bead).
 #[derive(Default)]
 struct AlwaysRejectRunner { finding: Option<Finding> }
@@ -812,7 +815,7 @@ impl AgentRunner for AlwaysRejectRunner {
     fn run_agent(&self, ctx: &DispatchCtx) -> Result<DispatchResult, String> {
         if ctx.review_role.is_some() {
             // Ensure the reviewed file exists in THIS worktree (the snapshot root)
-            // with the finding's snippet on the cited line — the reviewer is
+            // with the finding's snippet on the cited line â€” the reviewer is
             // reviewing the change that is present here, so its evidence must
             // resolve. This decouples the test from DFT branch-path math.
             let f = self.finding.clone().unwrap_or_else(|| Finding {
@@ -855,7 +858,7 @@ fn unfixable_bead_exhausts_cycles_escalates_and_landing_stays_blocked() {
     let mut town = ctrl.ensure_town("town-infix");
     town.config.refinery.code_review = true;
     orch.set_town(town.clone());
-    // max_review_cycles = 1 → a single confirmed rejection exhausts the budget.
+    // max_review_cycles = 1 â†’ a single confirmed rejection exhausts the budget.
     let rig = ctrl.add_rig("town-infix", "infix-rig", "https://github.com/o/u.git", "main",
         serde_json::json!({"adversarial_review": true, "max_review_cycles": 1}));
     let rig_id = rig.rig_id.clone();
@@ -877,7 +880,7 @@ fn unfixable_bead_exhausts_cycles_escalates_and_landing_stays_blocked() {
         }),
     }) };
 
-    // Drive ticks; the review rejects once, exhausts the 1-cycle budget → the
+    // Drive ticks; the review rejects once, exhausts the 1-cycle budget â†’ the
     // source FAILS, a durable escalation is created, and the convoy never closes.
     let mut exhausted_event = false;
     let mut source_failed = false;
@@ -916,7 +919,7 @@ fn unfixable_bead_exhausts_cycles_escalates_and_landing_stays_blocked() {
 }
 
 /// A scripted runner that writes the polecat change ONLY into its isolated
-/// worktree (never the attach primary tree) — simulating the filesystem-first
+/// worktree (never the attach primary tree) â€” simulating the filesystem-first
 /// worker. Proves concurrent multi-rig polecats leave each attached active tree
 /// untouched while their own worktrees get the changes.
 #[derive(Default)]
@@ -1003,7 +1006,7 @@ fn git_init_commit(repo: &std::path::Path) {
 }
 
 // ============================================================================
-// P0 — STATE INTEGRITY REGRESSION TESTS (rule 10)
+// P0 â€” STATE INTEGRITY REGRESSION TESTS (rule 10)
 // Validate the canonical transition boundary introduced by transition_bead:
 // no control/UI path closes an issue/MR without domain validation; MR completion
 // requires independently verified merge evidence; VERIFIED is never manufactured
@@ -1076,7 +1079,7 @@ fn forged_mr_merge_rejected() {
     let (_mem, store) = integrity_store();
     let issue = mk_issue(&store);
     let mr = mk_mr(&store, &issue);
-    // No merge evidence was recorded → complete_review must fail.
+    // No merge evidence was recorded â†’ complete_review must fail.
     let r = store.complete_review(mr.clone(), Some("https://github.com/o/r/pull/1".into()));
     assert!(matches!(
         r,
@@ -1102,7 +1105,7 @@ fn mr_merge_evidence_enables_close_but_not_source_auto_verify() {
 }
 
 /// Rule 3: a bare unverified close that somehow reached terminal must NOT be a
-/// VERIFIED load — is_bead_verified_current stays false without the stamp.
+/// VERIFIED load â€” is_bead_verified_current stays false without the stamp.
 #[test]
 fn bare_close_never_counts_as_verified() {
     let (_mem, store) = integrity_store();
@@ -1118,7 +1121,7 @@ fn bare_close_never_counts_as_verified() {
     assert!(!store.has_verified_stamp_current(&id));
 }
 
-/// Rule 4: put_bead_cas rejects a stale expected token (Ok(false) → StaleEntity
+/// Rule 4: put_bead_cas rejects a stale expected token (Ok(false) â†’ StaleEntity
 /// surfaced by the caller pattern), leaving the persisted value intact.
 #[test]
 fn expectation_cas_rejects_stale_write() {
@@ -1173,7 +1176,7 @@ fn terminal_recovery_requires_audited_recovery_not_admin() {
     );
 }
 
-/// Rule 8 + 9: a Control/UI path must go through the boundary — the raw
+/// Rule 8 + 9: a Control/UI path must go through the boundary â€” the raw
 /// `update_bead_status` is still present for trusted Scheduler/Recovery paths but
 /// the ControlApi surface now routes through transition_bead.
 #[test]

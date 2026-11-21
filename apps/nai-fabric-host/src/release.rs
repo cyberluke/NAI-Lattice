@@ -1,4 +1,4 @@
-//! Versioned production release management for the Gas Town host.
+//! Versioned production release management for the Helldesk host.
 //!
 //! Layout (under `%LOCALAPPDATA%\NAI\Lattice\releases`):
 //!   releases/
@@ -100,7 +100,7 @@ fn cmd_install(args: &[String]) -> ! {
     let exe = args.get(1).cloned().unwrap_or_default();
     let min_schema: i64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     if version.is_empty() || exe.is_empty() {
-        println!("{}", serde_json::json!({"ok":false,"error":"gastown-release install <version> <abs-exe-path> [min_schema]"}));
+        println!("{}", serde_json::json!({"ok":false,"error":"helldesk-release install <version> <abs-exe-path> [min_schema]"}));
         std::process::exit(2);
     }
     let exe_path = PathBuf::from(&exe);
@@ -299,7 +299,7 @@ fn cmd_launch() -> ! {
     let cur = match read_json::<Activation>(&root, CURRENT) {
         Some(c) => c,
         None => {
-            println!("{}", serde_json::json!({"ok":false,"error":"no current release; run gastown-release install <version> <exe>"}));
+            println!("{}", serde_json::json!({"ok":false,"error":"no current release; run helldesk-release install <version> <exe>"}));
             std::process::exit(2);
         }
     };
@@ -386,10 +386,10 @@ pub fn current_version() -> Option<String> {
 }
 
 pub fn release_main(args: Vec<String>) {
-    // The host binary passes the full argv (starting with "gastown-release");
-    // the console `gastown-release` bin passes argv[0] already = the subcommand.
+    // The host binary passes the full argv (starting with "helldesk-release");
+    // the console `helldesk-release` bin passes argv[0] already = the subcommand.
     // Find the subcommand position after the marker (if present).
-    let idx = args.iter().position(|a| a == "gastown-release").map(|i| i + 1).unwrap_or(0);
+    let idx = args.iter().position(|a| a == "helldesk-release").map(|i| i + 1).unwrap_or(0);
     let rest: Vec<String> = args.iter().skip(idx).cloned().collect();
     match rest.first().map(|s| s.as_str()).unwrap_or("status") {
         "install" => cmd_install(&rest[1..]),
@@ -409,14 +409,14 @@ pub fn release_main(args: Vec<String>) {
 /// Register / unregister Windows Task-Scheduler auto-start for the Gas Town host
 /// so the Inquisitor singleton autostarts at logon and (via
 /// `recover_interrupted_primary_on_startup`) CONTINUES its active primary beads
-/// after a PC reboot. `gastown-release autostart [on|off]` (default `on`).
+/// after a PC reboot. `helldesk-release autostart [on|off]` (default `on`).
 fn cmd_autostart(args: &[String]) -> ! {
     let on = args.first().map(|s| s.as_str()) != Some("off");
     let task = "NAIInquisitorHost";
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gastown-release.exe"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("helldesk-release.exe"));
     if on {
         // AtLogon, run as current interactive user (no admin), hidden window.
-        let qexe = exe.to_str().unwrap_or("gastown-release.exe");
+        let qexe = exe.to_str().unwrap_or("helldesk-release.exe");
         let status = std::process::Command::new("schtasks")
             .args(["/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR"])
             .arg(format!("\"{qexe}\" launch"))

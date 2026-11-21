@@ -56,6 +56,49 @@ export interface GateRecord {
     cmd?: string;
     evidence?: string;
     doneAt?: string;
+    /** Who verified this gate (the agent / actor label that ran the build/deploy). */
+    actor?: string;
+    /** The product whose build/deploy this gate attests (the record's owner). */
+    product?: string;
+    workspaceId?: string;
+    /** Non-zero exit captured by the runner when `ok` was false, if available. */
+    exit?: number;
+}
+/**
+ * A gate's storage key is per-ATTESTOR so a producer-native build and a
+ * consumer deploy never overwrite each other: "${kind}:${attestorProduct}".
+ * The task's OWNING product is the product whose gate must be ok for `done`,
+ * so `owningGateKey` (attestor = owner) is what the done-check consults.
+ */
+export type GateKey = `${GateKind}:${string}` | GateKind;
+/** The key a gate is stored under, scoped by the PRODUCT THAT RAN the build/deploy. */
+export declare function gateKey(attestorProduct: string | undefined, kind: GateKind): GateKey;
+/** The key the task's OWNING product's gate lives under (attestor == task owner). */
+export declare function owningGateKey(task: Pick<Task, "product">, kind: GateKind): GateKey;
+/** True when the gate for `kind` owned by `task.product` is recorded ok.
+ *  Backward-compatible: an OLD bare `build`/`deploy` record counts only when its
+ *  stamped `product` (if present) matches the task owner, so a pre-per-product
+ *  gate recorded by the right owner still unblocks a gated task. */
+export declare function owningGateOk(task: Task, kind: GateKind): boolean;
+/**
+ * A content-addressed artifact attached to a task. Used for repro media that
+ * cannot live in a title/description (e.g. a crash repro video, an audio clip,
+ * a failing image, a capture log). `sha256` fingerprints the bytes so the
+ * recipient can verify what they received (AAF fingerprint discipline). The
+ * bytes themselves are NOT copied into the ledger — only the reference/URI
+ * (or the caller arranges out-of-band storage for `uri` payloads).
+ */
+export interface TaskAttachment {
+    kind: "video" | "audio" | "image" | "text";
+    name: string;
+    /** Where the actual bytes are reachable (local path, blob/snapshot uri, etc.). */
+    uri?: string;
+    /** SHA-256 of the artifact bytes; required for immutable fingerprinting. */
+    sha256?: string;
+    /** Size in bytes (uncompressed where relevant). */
+    size?: number;
+    /** Free-form note (what this repro shows, camera/source, timestamps...). */
+    note?: string;
 }
 export interface Task {
     id: string;
@@ -69,6 +112,14 @@ export interface Task {
     updatedBy?: string;
     parent?: string | null;
     title: string;
+    /**
+     * Full handoff body — the DoD / acceptance criteria, the crash log, the
+     * startup/approach ordering, and the "why". Kept OUT of `title` so a title
+     * stays a short index and the detail lives here (or in `attachments`).
+     */
+    description?: string;
+    /** Content-addressed repro/evidence artifacts (video/audio/image/text). */
+    attachments?: TaskAttachment[];
     /** Node kind in the mind map: "task" (default) | "decision" | "fact" | "lamp" | "state" | "blocker". */
     kind?: string;
     status: TaskStatus;
@@ -80,7 +131,7 @@ export interface Task {
         needsBuild?: boolean;
         needsDeploy?: boolean;
     };
-    gates?: Partial<Record<GateKind, GateRecord & {
+    gates?: Partial<Record<GateKey, GateRecord & {
         doneAt: string;
     }>>;
 }

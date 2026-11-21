@@ -1,16 +1,16 @@
-//! Durable Gas Town scheduler + action dispatcher (`orchestration::scheduler`).
+﻿//! Durable Gas Town scheduler + action dispatcher (`orchestration::scheduler`).
 //!
 //! Runs the reconciler on the durable orchestration state and applies the
 //! resulting actions. A background loop (owned by the host) ticks the scheduler
 //! with generation fencing (reusing `GastownService::scheduler_generation`) so
 //! a restarted host never double-applies: each tick reads the current durable
 //! state, reconciles, applies actions (each idempotent), and advances a durable
-//! tick watermark. Crash recovery is inherent — after any crash, the next tick
+//! tick watermark. Crash recovery is inherent â€” after any crash, the next tick
 //! reconciles from durable state and re-applies whatever is still needed.
 //!
 //! The real-model agent spawn (polecat/refinery/mayor) is a host-provided
 //! callback so the crate stays substrate-agnostic; the host supervises the real
-//! `gastown-agent` worker subprocesses (Job Object + timeout), like the
+//! `helldesk-agent` worker subprocesses (Job Object + timeout), like the
 //! existing review workers.
 
 use std::sync::Arc;
@@ -149,7 +149,7 @@ impl Orchestrator {
     /// Advance the durable tick counter.
     fn next_tick(&self) -> u64 {
         let t = self.tick.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        if let Err(e) = self.store.hot_put(format!("gastown/scheduler/tick"), &t.to_string()) {
+        if let Err(e) = self.store.hot_put(format!("helldesk/scheduler/tick"), &t.to_string()) {
             tracing::warn!(%e, "failed to persist scheduler tick");
         }
         t
@@ -159,7 +159,7 @@ impl Orchestrator {
     pub fn last_tick(&self) -> u64 {
         let persisted = self
             .store
-            .hot_get(format!("gastown/scheduler/tick"))
+            .hot_get(format!("helldesk/scheduler/tick"))
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
         persisted.max(self.tick.load(std::sync::atomic::Ordering::SeqCst))
@@ -358,7 +358,7 @@ impl Orchestrator {
                                 adversarial::record_pass_result(&self.store, &pass_id, decision, review.findings);
                                 *dispatched += 1;
                             } else {
-                                // Worker didn't return a review outcome — fail it.
+                                // Worker didn't return a review outcome â€” fail it.
                                 adversarial::record_pass_result(&self.store, &pass_id, "changes_requested", vec![
                                     state::Finding {
                                         finding_id: state::gen_id(),
@@ -393,7 +393,7 @@ impl Orchestrator {
                         if !src.status.is_terminal() {
                             // Genuine VERIFIED_10_10: stamp verification FIRST (the
                             // stamp is the proof), then close via the boundary.
-                            let epoch = self.store.hot_get("gastown/portability/epoch").unwrap_or_default();
+                            let epoch = self.store.hot_get("helldesk/portability/epoch").unwrap_or_default();
                             self.store.mark_bead_verified(source_bead_id.as_str(), &epoch, "COMPLETE", 8, 8);
                             let _ = self.store.transition_bead(
                                 &source_bead_id,
@@ -417,7 +417,7 @@ impl Orchestrator {
                         src.status = BeadStatus::Open;
                         src.assignee_agent_bead_id = None;
                         // A valid rejection is a deliberate repair instruction, not a
-                        // dispatch failure — reset the cooldown so the repair is prompt.
+                        // dispatch failure â€” reset the cooldown so the repair is prompt.
                         src.dispatch_attempts = 0;
                         src.last_dispatch_attempt_at = None;
                         src.updated_at = state::now();
@@ -555,13 +555,13 @@ impl Orchestrator {
                     // A reconciler ORDERED closure (e.g. "MR merged (reconciler
                     // safety net)") is a genuine verified closure as long as the MR
                     // actually merged. Stamp a durable VERIFIED_10_10 so downstream
-                    // `blocks` edges open — but nothing else (manual set_status and
+                    // `blocks` edges open â€” but nothing else (manual set_status and
                     // Failed/Open transitions never reach here).
                     if becomes_closed {
                         if self.store.is_bead_verified_current(bead_id) {
-                            // already verified → leave intact
+                            // already verified â†’ leave intact
                         } else {
-                            let epoch = self.store.hot_get("gastown/portability/epoch").unwrap_or_default();
+                            let epoch = self.store.hot_get("helldesk/portability/epoch").unwrap_or_default();
                             self.store.mark_bead_verified(bead_id, &epoch, "COMPLETE", 8, 8);
                         }
                     }
@@ -740,7 +740,7 @@ impl Orchestrator {
         }
     }
 
-    /// Dispatch an agent to a bead → run the real model worker.
+    /// Dispatch an agent to a bead â†’ run the real model worker.
     fn dispatch(
         &self,
         ctx: &ReconcileCtx,
@@ -778,7 +778,7 @@ impl Orchestrator {
             let btitle = b.title.clone();
             let bid = b.bead_id.clone();
             self.store.put_bead(&b);
-            // P0-E: durable transition — Mayor dispatched a Polecat onto the bead.
+            // P0-E: durable transition â€” Mayor dispatched a Polecat onto the bead.
             self.store.emit_bead_status(
                 &bid, "mayor", "in_progress",
                 Some("dispatched to polecat"), Some(&btitle),
@@ -833,8 +833,8 @@ impl Orchestrator {
         match runner.run_agent(&dc) {
             Ok(res) => {
                 if res.done {
-                    // Polecat done → submit to review queue (source bead in_review).
-                    // Refinery done → complete the review.
+                    // Polecat done â†’ submit to review queue (source bead in_review).
+                    // Refinery done â†’ complete the review.
                     if role == AgentRole::Polecat {
                         self.polecat_done(&agent, &bead, &dc, res);
                     } else {
@@ -861,7 +861,7 @@ impl Orchestrator {
     /// Rewind a bead that was dispatched but not completed: set it back to Open,
     /// clear its assignee, and free the (now-idle) agent. Bounded re-dispatch is
     /// governed by the reconciler's dispatch-attempt cooldown, so a hot-spinning
-    /// model that never finishes cannot burn the CPU — attempts still accrue.
+    /// model that never finishes cannot burn the CPU â€” attempts still accrue.
     fn reopen_for_retry(&self, bead_id: &str, agent_id: &str) {
         self.store.unhook_agent(agent_id);
         self.store.update_agent_status(agent_id.to_string(), AgentStatus::Idle, None);
@@ -881,18 +881,18 @@ impl Orchestrator {
                 let bid = b.bead_id.clone();
                 let btitle = b.title.clone();
                 self.store.put_bead(&b);
-                // P0-E: durable transition — execution did not complete; reopened
+                // P0-E: durable transition â€” execution did not complete; reopened
                 // for bounded retry (bounded by reconciler cooldown).
                 self.store.emit_bead_status(
                     &bid, "polecat", "open",
-                    Some("execution incomplete — reopened for retry"), Some(&btitle),
+                    Some("execution incomplete â€” reopened for retry"), Some(&btitle),
                     None,
                 );
             }
         }
     }
 
-    /// Polecat finished a bead → submit an MR to the review queue, source → in_review.
+    /// Polecat finished a bead â†’ submit an MR to the review queue, source â†’ in_review.
     fn polecat_done(&self, agent: &Agent, bead: &Bead, dc: &DispatchCtx, res: DispatchResult) {
         let rig = self.store.get_rig(&dc.rig_id);
         let default_branch = rig.as_ref().map(|r| r.default_branch.clone()).unwrap_or_else(|| "main".to_string());
@@ -909,14 +909,14 @@ impl Orchestrator {
             res.pr_url.clone(),
             res.summary.clone(),
         );
-        // source → in_review
+        // source â†’ in_review
         if let Some(mut b) = self.store.get_bead(&bead.bead_id) {
             b.status = BeadStatus::InReview;
             b.updated_at = now();
             let bid = b.bead_id.clone();
             let btitle = b.title.clone();
             self.store.put_bead(&b);
-            // P0-E: Polecat completed → produced evidence, submitted for review.
+            // P0-E: Polecat completed â†’ produced evidence, submitted for review.
             self.store.emit_bead_status(
                 &bid, "polecat", "in_review",
                 res.summary.as_deref(),
@@ -928,7 +928,7 @@ impl Orchestrator {
         self.store.update_agent_status(agent.bead_id.clone(), AgentStatus::Idle, None);
     }
 
-    /// Refinery finished an MR review → complete the review (merged), close source.
+    /// Refinery finished an MR review â†’ complete the review (merged), close source.
     fn refinery_done(&self, agent: &Agent, bead: &Bead, _dc: &DispatchCtx, res: DispatchResult) {
         let source_bead_id = bead.parent_bead_id.clone();
         // The refinery actually merged the MR: record independently verified merge
@@ -942,17 +942,17 @@ impl Orchestrator {
                     let sid = b.bead_id.clone();
                     let stitle = b.title.clone();
                     // Stamp verification FIRST, then close via the canonical boundary.
-                    let epoch = self.store.hot_get("gastown/portability/epoch").unwrap_or_default();
+                    let epoch = self.store.hot_get("helldesk/portability/epoch").unwrap_or_default();
                     self.store.mark_bead_verified(&src, &epoch, "COMPLETE", 8, 8);
                     let _ = self.store.transition_bead(
                         &src,
                         state::BeadStatus::Closed,
                         &state::TransitionCtx::new(state::TransitionOrigin::Scheduler, "refinery_done"),
                     );
-                    // P0-E: durable transition — Resource verified & closed by review.
+                    // P0-E: durable transition â€” Resource verified & closed by review.
                     self.store.emit_bead_status(
                         &sid, "refinery", "closed",
-                        Some("reviewed + merged — verified 10/10"), Some(&stitle),
+                        Some("reviewed + merged â€” verified 10/10"), Some(&stitle),
                         None,
                     );
                 }
@@ -1044,7 +1044,7 @@ impl Orchestrator {
             .map(|d| d.depends_on_bead_id)?;
         if let Some(source) = self.store.get_bead(&source_id) {
             if source.bead_type == BeadType::Convoy {
-                // Landing MR → merge into the rig default branch (main).
+                // Landing MR â†’ merge into the rig default branch (main).
                 return None;
             }
             // The source bead's convoy (Tracks edge pointing TO a convoy).

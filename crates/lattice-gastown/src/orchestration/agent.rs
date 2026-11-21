@@ -158,7 +158,7 @@ pub fn apply_file_changes(root: &Path, changes: &[FileChange]) -> Result<(), Str
                     // changes in this decision still apply, and the bead can
                     // still be reviewed/closed. This is the tolerance needed for
                     // graceful handling of real-model edit noise.
-                    eprintln!("[gastown-agent] skipping non-applicable edit {}: old_text not found (len data={})",
+                    eprintln!("[helldesk-agent] skipping non-applicable edit {}: old_text not found (len data={})",
                         c.path, data.len());
                     continue;
                 }

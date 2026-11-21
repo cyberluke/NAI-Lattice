@@ -85,7 +85,7 @@ export function makeFeed(following, tasks) {
         }
         return (task.drops ?? []).filter(drop => drop.revision > after && on.includes(drop.to))
             .map(drop => ({ id, title: task.title.slice(0, 180), workspaceId: task.workspaceId, product: task.product, ...drop }));
-    }).sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id) || a.revision - b.revision);
+    }).sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id) || b.revision - a.revision);
     const latest = Object.create(null);
     for (const drop of events)
         latest[drop.id] = Math.max(latest[drop.id] ?? 0, drop.revision);

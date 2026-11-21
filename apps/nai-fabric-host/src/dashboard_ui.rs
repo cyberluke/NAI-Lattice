@@ -3,7 +3,7 @@
 //! Project-centric governor UI. Reads REAL persisted state via the loopback
 //! server (`GET /dashboard`, `POST /project`, `/inquisitor`, `/recall`), streams
 //! the durable audit event log live via `GET /events` (SSE), and drives the
-//! Mayor / convoy / quaran / vector mutation endpoints with the control token.
+//! Operator / batch / quarantine / vector mutation endpoints with the control token.
 //! No mock data. Single-source Kilo session picker. Create-&-Open project UX.
 
 pub(crate) const UI_HTML: &str = r#"<!DOCTYPE html>

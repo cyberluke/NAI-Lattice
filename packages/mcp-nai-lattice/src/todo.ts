@@ -72,6 +72,71 @@ export interface GateRecord {
   cmd?: string
   evidence?: string
   doneAt?: string
+  /** Who verified this gate (the agent / actor label that ran the build/deploy). */
+  actor?: string
+  /** The product whose build/deploy this gate attests (the record's owner). */
+  product?: string
+  workspaceId?: string
+  /** Non-zero exit captured by the runner when `ok` was false, if available. */
+  exit?: number
+}
+
+/**
+ * A gate's storage key is per-ATTESTOR so a producer-native build and a
+ * consumer deploy never overwrite each other: "${kind}:${attestorProduct}".
+ * The task's OWNING product is the product whose gate must be ok for `done`,
+ * so `owningGateKey` (attestor = owner) is what the done-check consults.
+ */
+export type GateKey = `${GateKind}:${string}` | GateKind
+
+/** The key a gate is stored under, scoped by the PRODUCT THAT RAN the build/deploy. */
+export function gateKey(attestorProduct: string | undefined, kind: GateKind): GateKey {
+  return (attestorProduct && attestorProduct.trim() ? `${kind}:${attestorProduct}` : kind) as GateKey
+}
+
+/** The key the task's OWNING product's gate lives under (attestor == task owner). */
+export function owningGateKey(task: Pick<Task, "product">, kind: GateKind): GateKey {
+  return gateKey(task?.product, kind)
+}
+
+/** True when the gate for `kind` owned by `task.product` is recorded ok.
+ *  Backward-compatible: an OLD bare `build`/`deploy` record counts only when its
+ *  stamped `product` (if present) matches the task owner, so a pre-per-product
+ *  gate recorded by the right owner still unblocks a gated task. */
+export function owningGateOk(task: Task, kind: GateKind): boolean {
+  const ownerKey = owningGateKey(task, kind) as GateKey
+  const gate = task.gates?.[ownerKey]
+  if (gate?.ok === true) return true
+  if (ownerKey === kind) return false
+  // Legacy bare key (build/deploy without product suffix).
+  const legacy = task.gates?.[kind]
+  if (legacy?.ok === true) {
+    // If the legacy record stamped a product, it must match the owner; otherwise
+    // (pre-provenance records) accept it so existing gated tasks still complete.
+    return legacy.product == null || !task.product || legacy.product === task.product
+  }
+  return false
+}
+
+/**
+ * A content-addressed artifact attached to a task. Used for repro media that
+ * cannot live in a title/description (e.g. a crash repro video, an audio clip,
+ * a failing image, a capture log). `sha256` fingerprints the bytes so the
+ * recipient can verify what they received (AAF fingerprint discipline). The
+ * bytes themselves are NOT copied into the ledger — only the reference/URI
+ * (or the caller arranges out-of-band storage for `uri` payloads).
+ */
+export interface TaskAttachment {
+  kind: "video" | "audio" | "image" | "text"
+  name: string
+  /** Where the actual bytes are reachable (local path, blob/snapshot uri, etc.). */
+  uri?: string
+  /** SHA-256 of the artifact bytes; required for immutable fingerprinting. */
+  sha256?: string
+  /** Size in bytes (uncompressed where relevant). */
+  size?: number
+  /** Free-form note (what this repro shows, camera/source, timestamps...). */
+  note?: string
 }
 
 export interface Task {
@@ -86,6 +151,14 @@ export interface Task {
   updatedBy?: string
   parent?: string | null
   title: string
+  /**
+   * Full handoff body — the DoD / acceptance criteria, the crash log, the
+   * startup/approach ordering, and the "why". Kept OUT of `title` so a title
+   * stays a short index and the detail lives here (or in `attachments`).
+   */
+  description?: string
+  /** Content-addressed repro/evidence artifacts (video/audio/image/text). */
+  attachments?: TaskAttachment[]
   /** Node kind in the mind map: "task" (default) | "decision" | "fact" | "lamp" | "state" | "blocker". */
   kind?: string
   status: TaskStatus
@@ -94,7 +167,7 @@ export interface Task {
   updatedAt?: string
   doneAt?: string
   gated?: { needsBuild?: boolean; needsDeploy?: boolean }
-  gates?: Partial<Record<GateKind, GateRecord & { doneAt: string }>>
+  gates?: Partial<Record<GateKey, GateRecord & { doneAt: string }>>
 }
 
 // ---------------------------------------------------------------------------
@@ -314,9 +387,10 @@ export function doneCheck(now = new Date().toISOString(), todos = readTodos()): 
   const needsDeploy = notDone.filter((t) => t.gated?.needsDeploy)
   const ungated = notDone.filter((t) => !t.gated?.needsBuild && !t.gated?.needsDeploy)
 
-  // Prefer the most specific milestone explanation.
-  const buildUnsatisfied = needsBuild.filter((t) => t.gates?.build?.ok !== true)
-  const deployUnsatisfied = needsDeploy.filter((t) => t.gates?.deploy?.ok !== true)
+  // Prefer the most specific milestone explanation. A gated task is satisfied
+  // only when its OWNING product's gate for that kind is recorded ok.
+  const buildUnsatisfied = needsBuild.filter((t) => !owningGateOk(t, "build"))
+  const deployUnsatisfied = needsDeploy.filter((t) => !owningGateOk(t, "deploy"))
 
   if (ungated.length || buildUnsatisfied.length || deployUnsatisfied.length) {
     const incomplete = [
@@ -347,10 +421,11 @@ export function commitChecklist(todos: Task[], milestone: string): string[] {
       `- [${t.doneAt ? "x" : " "}] ${t.title}` + (t.doneAt ? ` (finished ${t.doneAt})` : ""),
     )
   }
-  // add gate evidence
+  // add gate evidence (per-product keys; show each recorded ok gate)
   for (const t of todos) {
-    if (t.gates?.build?.ok) lines.push(`- build gate ok: ${t.title} @ ${t.gates.build.doneAt} ${mkCmd(t.gates.build.cmd)}`)
-    if (t.gates?.deploy?.ok) lines.push(`- deploy gate ok: ${t.title} @ ${t.gates.deploy.doneAt} ${mkCmd(t.gates.deploy.cmd)}`)
+    for (const [key, gate] of Object.entries(t.gates ?? {})) {
+      if (gate?.ok) lines.push(`- gate ok ${key}: ${t.title} @ ${gate.doneAt} ${mkCmd(gate.cmd)}`)
+    }
   }
   lines.push(`completed-at: ${new Date().toISOString()}`)
   return lines
@@ -368,6 +443,8 @@ export function newTask(title: string, opts: Partial<Task> = {}): Task {
     id: opts.id ?? randomUUID(),
     parent: opts.parent ?? null,
     title,
+    description: opts.description,
+    attachments: opts.attachments,
     kind: opts.kind ?? "task",
     status: opts.status ?? "open",
     createdBy: opts.createdBy ?? "agent",

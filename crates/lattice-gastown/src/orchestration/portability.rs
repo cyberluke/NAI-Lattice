@@ -1,9 +1,9 @@
-//! Portable Gas Town domain contract, exclusive ownership epochs, fencing, and
+﻿//! Portable Gas Town domain contract, exclusive ownership epochs, fencing, and
 //! durable state transfer (cloud portability, locally verifiable).
 //!
 //! Gas Town's full domain state (town, rigs, agents, beads, dependencies,
 //! convoys, review passes, escalations, events, envelopes) is serialized into a
-//! **portable envelope** — a content-addressed payload with an ownership epoch.
+//! **portable envelope** â€” a content-addressed payload with an ownership epoch.
 //! A site that holds the envelope with the HIGHEST epoch is the exclusive writer
 //! (single-writer). A previously-primary site that has been demoted is FENCED:
 //! any attempt to persist a mutation under a stale (lower) epoch is rejected, so
@@ -52,7 +52,7 @@ pub const CONTRACT_VERSION: u32 = 1;
 
 /// The current ownership epoch for a site, persisted in its local store.
 pub fn current_epoch(store: &OrchestrationStore) -> u64 {
-    store.hot_get("gastown/portability/epoch").and_then(|s| s.trim().parse().ok()).unwrap_or(0)
+    store.hot_get("helldesk/portability/epoch").and_then(|s| s.trim().parse().ok()).unwrap_or(0)
 }
 
 /// Fence token validation: a writer with a lower-or-equal epoch than the current
@@ -94,7 +94,7 @@ pub fn export_state(store: &OrchestrationStore, town_id: &str, owner_site: &str)
     let cas = blake3::hash(state_json.as_bytes()).to_hex().to_string();
     let epoch = current_epoch(store) + 1;
     // Persist the new epoch locally (we own it after the bump).
-    let _ = store.hot_put("gastown/portability/epoch", &epoch.to_string());
+    let _ = store.hot_put("helldesk/portability/epoch", &epoch.to_string());
     PortabilityEnvelope { epoch, owner_site: owner_site.to_string(), cas, state_json }
 }
 
@@ -109,11 +109,11 @@ pub fn import_state(store: &OrchestrationStore, envelope: &PortabilityEnvelope) 
         return false;
     }
     if !fence_and_reject_stale(store, envelope.epoch) {
-        return false; // fenced: this site's epoch is higher/equal → stale transfer rejected
+        return false; // fenced: this site's epoch is higher/equal â†’ stale transfer rejected
     }
     // Decode + apply (idempotent overwrite as an atomic swap under the accepted
     // epoch). For interruption safety we decode EVERYTHING first and only apply
-    // when the whole payload is well-formed — a truncated/partial envelope is
+    // when the whole payload is well-formed â€” a truncated/partial envelope is
     // rejected before any mutation, so an interrupted transfer leaves no partial
     // state.
     let Ok(st): Result<PortableTownState, _> = serde_json::from_str(&envelope.state_json) else { return false };
@@ -135,7 +135,7 @@ pub fn import_state(store: &OrchestrationStore, envelope: &PortabilityEnvelope) 
     if towns.len() != st.towns.len() || rigs.len() != st.rigs.len() || agents.len() != st.agents.len()
         || beads.len() != st.beads.len() || deps.len() != st.dependencies.len() || reviews.len() != st.review_metadata.len()
         || escalations.len() != st.escalations.len() || passes.len() != st.review_passes.len() || events.len() != st.events.len() {
-        return false; // interrupted / malformed payload → nothing applied
+        return false; // interrupted / malformed payload â†’ nothing applied
     }
     // Apply (all-or-nothing within a well-formed payload).
     for t in towns { store.put_town(&t); }
@@ -151,7 +151,7 @@ pub fn import_state(store: &OrchestrationStore, envelope: &PortabilityEnvelope) 
     for m in molecules { store.put_molecule_metadata(&m); }
     for t in triage { store.put_bead(&t); }
     // Advance the local epoch (we now own it).
-    let _ = store.hot_put("gastown/portability/epoch", &envelope.epoch.to_string());
+    let _ = store.hot_put("helldesk/portability/epoch", &envelope.epoch.to_string());
     true
 }
 
@@ -195,7 +195,7 @@ mod tests {
         let b = Bead::create(BeadType::Issue, "feature".into(), None, None, vec![], serde_json::json!({}), Some("rig-1".into()), None, Some("mayor"));
         src.put_bead(&b);
 
-        // Export → transfer envelope (epoch 1).
+        // Export â†’ transfer envelope (epoch 1).
         let env = export_state(&src, "t-1", "site-local");
         assert_eq!(env.epoch, 1);
         assert_eq!(env.cas.len(), 64);
@@ -218,11 +218,11 @@ mod tests {
         let env2 = export_state(&cloud, "t-1", "site-cloud"); // epoch 2 (cloud now owner)
         assert_eq!(env2.epoch, 2);
         // A stale primary RECOVERS by importing the newer (single-source-of-truth)
-        // envelope — this converges state, it does not create divergence.
+        // envelope â€” this converges state, it does not create divergence.
         assert!(import_state(&a, &env2), "stale primary must recover to the newest epoch");
         assert_eq!(current_epoch(&a), 2, "recovered site advances to the owning epoch");
         // FENCING: once a site is at epoch 2, it cannot WRITE a mutation under a
-        // stale (equal or lower) epoch — a stale writer is rejected, preventing
+        // stale (equal or lower) epoch â€” a stale writer is rejected, preventing
         // split-brain double-writes even if the old primary is still running.
         assert!(!fence_and_reject_stale(&a, 2), "a writer proposing the current epoch is fenced");
         assert!(!fence_and_reject_stale(&a, 1), "a writer proposing a LOWER epoch is fenced (stale)");
@@ -233,7 +233,7 @@ mod tests {
     fn tampered_envelope_fails_integrity() {
         let src = store();
         let mut env = export_state(&src, "t-1", "site-local");
-        // Tamper with the payload → CAS mismatch → import rejected, no split-brain.
+        // Tamper with the payload â†’ CAS mismatch â†’ import rejected, no split-brain.
         env.state_json.push('x');
         let dst = store();
         assert!(!import_state(&dst, &env), "tampered envelope must be rejected by CAS integrity");

@@ -1,4 +1,4 @@
-//! Native Windows notifications for Gas Town, driven off the durable event log.
+﻿//! Native Windows notifications for Gas Town, driven off the durable event log.
 //!
 //! Satisfies the "why do I see nothing when an agent finishes" gap: when a
 //! convoy lands, a bead fails irrecoverably, review cycles are exhausted, or a
@@ -52,7 +52,7 @@ pub struct NotificationInbox {
     pub entries: Vec<Notification>,
 }
 
-const INBOX_KEY: &str = "gastown/notifications/inbox";
+const INBOX_KEY: &str = "helldesk/notifications/inbox";
 
 fn inbox_key(town_id: &str) -> String {
     format!("{INBOX_KEY}/{town_id}")
@@ -76,7 +76,7 @@ pub fn derive_and_record(store: &OrchestrationStore, town_id: &str) -> Vec<Notif
 }
 
 /// Map a Gas Town event to an operator notification, or None if not actionable.
-/// Pure function over the event — the unit tests drive it directly.
+/// Pure function over the event â€” the unit tests drive it directly.
 fn classify_event(ev: &lattice_gastown::orchestration::state::BeadEvent) -> Option<Notification> {
     let msg = &ev.event;
     let data = &ev.data;
@@ -88,7 +88,7 @@ fn classify_event(ev: &lattice_gastown::orchestration::state::BeadEvent) -> Opti
             id: format!("notif-{}", ev.event_id),
             kind: NotificationKind::ConvoyCompleted,
             title: "Convoy completed".into(),
-            body: format!("Landing successful · {n}/{t} beads"),
+            body: format!("Landing successful Â· {n}/{t} beads"),
             source_event_id: ev.event_id.clone(),
             target,
             severity: Severity::Info,
@@ -150,7 +150,7 @@ fn classify_event(ev: &lattice_gastown::orchestration::state::BeadEvent) -> Opti
 
 /// Fire native Windows toasts for freshly-derived notifications. Best-effort:
 /// any failure (disabled OS notifications, broken registry identity) degrades
-/// to the durable inbox silently — never blocks, never spawns a shell per
+/// to the durable inbox silently â€” never blocks, never spawns a shell per
 /// event. The Windows toast path requires an unpackaged AUMID registered under
 /// `HKCU\Software\Classes\AppUserModelId`; `verify_native_toast_supported()`
 /// reports whether the caller should attempt it.

@@ -83,7 +83,7 @@ export function makeFeed(following: Follow[], tasks: Task[]) {
     }
     return (task.drops ?? []).filter(drop => drop.revision > after && on.includes(drop.to))
       .map(drop => ({id,title:task.title.slice(0,180),workspaceId:task.workspaceId,product:task.product,...drop}))
-  }).sort((a,b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id) || a.revision-b.revision)
+  }).sort((a,b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id) || b.revision-a.revision)
   const latest: Record<string,number> = Object.create(null)
   for (const drop of events) latest[drop.id] = Math.max(latest[drop.id] ?? 0,drop.revision)
   return {events:events.slice(0,MAX_FEED_PAGE),total:events.length,more:events.length > MAX_FEED_PAGE,gaps,latest}

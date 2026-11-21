@@ -1,4 +1,4 @@
-//! Gas Town reconciler + action dispatcher (`orchestration::reconciler`).
+﻿//! Gas Town reconciler + action dispatcher (`orchestration::reconciler`).
 //!
 //! Faithful reimplementation of `services/gastown/src/dos/town/reconciler.ts`
 //! and `actions.ts`: read-only examine current state, emit `Action`s describing
@@ -106,7 +106,7 @@ pub fn parse_iso_ms(s: &str) -> Option<i64> {
     let hh = tokens[3];
     let mm = tokens[4];
     let ss = tokens.get(5).copied().unwrap_or(0);
-    // Milliseconds token: the value after the '.' — but '.' splits on non-digit
+    // Milliseconds token: the value after the '.' â€” but '.' splits on non-digit
     // so the fractional is already part of tokens (unless 3-digit). We take the
     // 7th token as raw ms only if it came from the fractional part. Safer: parse
     // the substring after the last '.' (or after seconds) as the +ss fraction.
@@ -187,7 +187,7 @@ fn circuit_breaker_open(store: &OrchestrationStore, now_ms: i64) -> bool {
         .into_iter()
         .filter(|b| {
             // P0-B/C: a CORRECTIVE iteration (new bounded plan) is not penalised by
-            // the breaker — it represents a CHANGED hypothesis, so it must be able to
+            // the breaker â€” it represents a CHANGED hypothesis, so it must be able to
             // dispatch even after the identical prior strategy exhausted the breaker.
             // Everything else that keeps failing identical strategies trips the gate.
             if b.has_label("gt:corrective") { return false; }
@@ -204,15 +204,15 @@ fn circuit_breaker_open(store: &OrchestrationStore, now_ms: i64) -> bool {
     count as u32 >= CIRCUIT_BREAKER_FAILURE_THRESHOLD
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // reconcileAgents
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn reconcile_agents(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Action> {
     let mut actions = Vec::new();
     let now = ctx.now_ms;
     for agent in store.list_agents() {
-        // Working agents w/ stale or missing heartbeat → idle. Mayors excluded.
+        // Working agents w/ stale or missing heartbeat â†’ idle. Mayors excluded.
         if agent.role != AgentRole::Mayor && agent.status == AgentStatus::Working {
             if agent.last_activity_at.is_none() {
                 actions.push(Action::TransitionAgent {
@@ -237,7 +237,7 @@ pub fn reconcile_agents(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<A
                 });
             }
         }
-        // Stalled agents past auto-idle threshold → idle + unhook.
+        // Stalled agents past auto-idle threshold â†’ idle + unhook.
         if agent.status == AgentStatus::Stalled {
             let entered = agent.stalled_at.as_deref().or(agent.last_activity_at.as_deref());
             if let Some(st) = entered.and_then(parse_iso_ms) {
@@ -263,7 +263,7 @@ pub fn reconcile_agents(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<A
         {
             actions.push(Action::ResetAgentDispatchAttempts { agent_id: agent.bead_id.clone() });
         }
-        // Idle agents hooked to live beads when heartbeat stale → unhook+reopen.
+        // Idle agents hooked to live beads when heartbeat stale â†’ unhook+reopen.
         if agent.status == AgentStatus::Idle && agent.current_hook_bead_id.is_some() {
             if let Some(hook) = store.get_bead(&agent.current_hook_bead_id.clone().unwrap()) {
                 if hook.status.is_terminal() {
@@ -277,7 +277,7 @@ pub fn reconcile_agents(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<A
                         bead_id: hook.bead_id.clone(),
                         from: Some(hook.status),
                         to: BeadStatus::Open,
-                        reason: "agent went idle without completing work — reset for re-dispatch".into(),
+                        reason: "agent went idle without completing work â€” reset for re-dispatch".into(),
                         actor: "system".into(),
                     });
                 }
@@ -287,9 +287,9 @@ pub fn reconcile_agents(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<A
     actions
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // reconcileBeads
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -308,7 +308,7 @@ pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
             && !is_tracked_by_staged_convoy(store, &b.bead_id)
     };
 
-    // Rule 1: open unassigned issue beads → dispatch (or fail on max attempts).
+    // Rule 1: open unassigned issue beads â†’ dispatch (or fail on max attempts).
     for b in store.list_beads().into_iter().filter(issue_open) {
         let rig = b.rig_id.clone().unwrap();
         if draining {
@@ -335,7 +335,7 @@ pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
         actions.push(Action::DispatchAgent { agent_id: String::new(), bead_id: b.bead_id.clone(), rig_id: b.rig_id.clone().unwrap_or_default() });
     }
 
-    // Rule 1b: open beads with stale assignee (agent not hooked) → clear.
+    // Rule 1b: open beads with stale assignee (agent not hooked) â†’ clear.
     for b in store.list_beads() {
         if b.bead_type == BeadType::Issue
             && b.status == BeadStatus::Open
@@ -356,7 +356,7 @@ pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
         }
     }
 
-    // Rule 2: idle agents with hooks → dispatch (non-refinery).
+    // Rule 2: idle agents with hooks â†’ dispatch (non-refinery).
     for agent in store.list_agents() {
         if agent.status == AgentStatus::Idle
             && agent.current_hook_bead_id.is_some()
@@ -396,7 +396,7 @@ pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
         }
     }
 
-    // Rule 3: in_progress issue beads with no working agent → reopen.
+    // Rule 3: in_progress issue beads with no working agent â†’ reopen.
     for b in store.list_beads() {
         if b.bead_type != BeadType::Issue || b.status != BeadStatus::InProgress {
             continue;
@@ -440,7 +440,7 @@ pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
         }
     }
 
-    // Rule 4: in_review beads with all-MR-terminal → close or reopen.
+    // Rule 4: in_review beads with all-MR-terminal â†’ close or reopen.
     for b in store.list_beads() {
         if b.bead_type != BeadType::Issue || b.status != BeadStatus::InReview {
             continue;
@@ -498,7 +498,7 @@ pub fn reconcile_beads(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
 /// Whether a bead has an unresolved `blocks` blocker (blended with MR status).
 ///
 /// P0-A invariant: a `blocks` blocker releases its downstream bead ONLY when the
-/// blocker achieved a real VERIFIED_10_10 — Inquisitor verdict COMPLETE + all
+/// blocker achieved a real VERIFIED_10_10 â€” Inquisitor verdict COMPLETE + all
 /// deterministic task gates PASS + source_revision matching the current epoch.
 /// A manually Closed, Failed, or revision-superseded blocker is NOT sufficient to
 /// unlock the next primary bead. This is enforced atomically here, in the
@@ -542,9 +542,9 @@ fn is_tracked_by_staged_convoy(store: &OrchestrationStore, bead_id: &str) -> boo
         .any(|cm| cm.staged)
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// reconcileReviewQueue — refinery dispatch, PR polling
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// reconcileReviewQueue â€” refinery dispatch, PR polling
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -567,7 +567,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
         let pr_url = meta.as_ref().and_then(|m| m.pr_url.clone());
         let meta_meta: &serde_json::Value = &mr.metadata;
 
-        // Rule 1: PR-strategy in_progress → poll_pr (rate-limited by last_poll_at).
+        // Rule 1: PR-strategy in_progress â†’ poll_pr (rate-limited by last_poll_at).
         if mr.status == BeadStatus::InProgress {
             if let Some(purl) = &pr_url {
                 let last_poll = meta_meta["last_poll_at"].as_str().and_then(parse_iso_ms);
@@ -580,7 +580,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
                     actions.push(Action::MergePr { bead_id: mr.bead_id.clone(), pr_url: purl.clone() });
                 }
             }
-            // Rule 2: stuck MR in_progress, no PR, stale → reopen.
+            // Rule 2: stuck MR in_progress, no PR, stale â†’ reopen.
             if pr_url.is_none() && stale_ms(Some(&mr.updated_at), STUCK_REVIEW_TIMEOUT_MS, now) {
                 if has_unresolved_rework_blockers(store, &mr.bead_id) {
                     continue;
@@ -629,7 +629,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
 
     for (rig_id, open_mrs) in open_by_rig {
         let ec = get_effective(store, ctx.town, Some(&rig_id));
-        // code_review=false → only dispatch refinery for convoy review-and-merge
+        // code_review=false â†’ only dispatch refinery for convoy review-and-merge
         // or system landing MRs; otherwise fast-track poll_pr (handled by poll
         // rule above when in_progress). We keep refinery dispatch for code_review=true.
         if !ec.code_review {
@@ -638,7 +638,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
         // When per-bead adversarial review is enabled, the per-bead MR lifecycle
         // is owned by the adversarial policy (dispatches Reviewer A/B/Adversarial/
         // Adjudicator, then merges on Approve, else rejects/escalates). The base
-        // reconciler's refinery dispatch must NOT auto-merge such MRs — only
+        // reconciler's refinery dispatch must NOT auto-merge such MRs â€” only
         // landing MRs (source=convoy) still flow through the refinery for a final
         // merge. Suppress here so the two paths never double-merge.
         if ec.adversarial_review {
@@ -693,7 +693,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
                 }
             }
             None => {
-                // No refinery exists — getOrCreate on dispatch with empty agent_id
+                // No refinery exists â€” getOrCreate on dispatch with empty agent_id
                 // infers role from bead type. But default dispatch in applyAction
                 // only picks agent when agent_id empty; here we create + hook via
                 // a dispatch_agent with empty id (applyAction creates refinery).
@@ -709,7 +709,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
         }
     }
 
-    // Rule 6: idle refinery hooked to in_progress MR → re-dispatch.
+    // Rule 6: idle refinery hooked to in_progress MR â†’ re-dispatch.
     for ref_agent in store.list_agents() {
         if ref_agent.role != AgentRole::Refinery
             || ref_agent.status != AgentStatus::Idle
@@ -748,7 +748,7 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
         actions.push(Action::DispatchAgent { agent_id: ref_agent.bead_id.clone(), bead_id: hook.clone(), rig_id: rig });
     }
 
-    // Rule 7: working refinery hooked to terminal MR → stop + unhook + idle.
+    // Rule 7: working refinery hooked to terminal MR â†’ stop + unhook + idle.
     for ref_agent in store.list_agents() {
         if ref_agent.role != AgentRole::Refinery {
             continue;
@@ -760,8 +760,8 @@ pub fn reconcile_review_queue(ctx: &ReconcileCtx, store: &OrchestrationStore) ->
             if let Some(mr) = store.get_bead(&hook) {
                 if mr.status.is_terminal() {
                     actions.push(Action::StopAgent { agent_id: ref_agent.bead_id.clone(), reason: format!("MR bead {hook} is terminal") });
-                    actions.push(Action::UnhookAgent { agent_id: ref_agent.bead_id.clone(), reason: "MR bead terminal — cleanup".into() });
-                    actions.push(Action::TransitionAgent { agent_id: ref_agent.bead_id.clone(), from: Some(ref_agent.status), to: AgentStatus::Idle, reason: "MR bead terminal — cleanup".into() });
+                    actions.push(Action::UnhookAgent { agent_id: ref_agent.bead_id.clone(), reason: "MR bead terminal â€” cleanup".into() });
+                    actions.push(Action::TransitionAgent { agent_id: ref_agent.bead_id.clone(), from: Some(ref_agent.status), to: AgentStatus::Idle, reason: "MR bead terminal â€” cleanup".into() });
                 }
             }
         }
@@ -793,9 +793,9 @@ fn has_working_agent(store: &OrchestrationStore, bead_id: &str) -> bool {
         })
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// reconcileConvoys — progress, landing MR creation
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// reconcileConvoys â€” progress, landing MR creation
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn reconcile_convoys(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -908,16 +908,16 @@ pub fn reconcile_convoys(ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<
                 });
             }
         } else {
-            // review-and-merge or no feature branch → auto-close.
+            // review-and-merge or no feature branch â†’ auto-close.
             actions.push(Action::CloseConvoy { convoy_id: cid.clone() });
         }
     }
     actions
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // reconcileGUPP + GC
-// ────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 pub fn reconcile_gupp(_ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Action> {
     let mut actions = Vec::new();
@@ -944,7 +944,7 @@ pub fn reconcile_gupp(_ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Ac
             }
         }
         if elapsed > GUPP_FORCE_STOP_MS {
-            actions.push(Action::TransitionAgent { agent_id: agent.bead_id.clone(), from: Some(agent.status), to: AgentStatus::Stalled, reason: "GUPP force stop — no SDK activity for 2h".into() });
+            actions.push(Action::TransitionAgent { agent_id: agent.bead_id.clone(), from: Some(agent.status), to: AgentStatus::Stalled, reason: "GUPP force stop â€” no SDK activity for 2h".into() });
             actions.push(Action::StopAgent { agent_id: agent.bead_id.clone(), reason: "exceeded 2h GUPP limit".into() });
             actions.push(Action::CreateTriageRequest { agent_id: agent.bead_id.clone(), triage_type: "stuck_agent".into(), reason: "GUPP force stop".into() });
         } else if elapsed > GUPP_ESCALATE_MS {
@@ -1000,11 +1000,11 @@ pub fn reconcile_gc(_ctx: &ReconcileCtx, store: &OrchestrationStore) -> Vec<Acti
 }
 
 /// Rule 9: detect beads that are `Closed` WITHOUT a durable `gastown_verified`
-/// stamp AND WITHOUT an audited `admin_decision` marker — i.e. records that
+/// stamp AND WITHOUT an audited `admin_decision` marker â€” i.e. records that
 /// reached a terminal state through a path that bypassed (or failed) the
 /// canonical transition boundary. Such a close must NOT silently escape the
 /// scheduler reconciliation. Emits a `SUSPECT_FALSE_CLOSE` event and returns a
-/// `TransitionBead → Open` action so the orchestrator re-examines it.
+/// `TransitionBead â†’ Open` action so the orchestrator re-examines it.
 ///
 /// Deliberate administrative closes (those carrying `admin_decision`) are NEVER
 /// reopened: they are the legal cancellation/skip/override path (rule 6).
@@ -1124,7 +1124,7 @@ mod tests {
     fn p0a_manual_close_does_not_unlock_next_primary() {
         use crate::orchestration::state::{BeadStatus, Dependency, DependencyKind};
         let (_mem, store) = crate::orchestration::adversarial::test_store();
-        store.hot_put("gastown/portability/epoch", "rev-1");
+        store.hot_put("helldesk/portability/epoch", "rev-1");
 
         let mk = |title: &str| {
             let b = crate::orchestration::state::Bead::create(
@@ -1139,20 +1139,20 @@ mod tests {
         store.put_dependency(&Dependency { bead_id: b2.clone(), depends_on_bead_id: b1.clone(), kind: DependencyKind::Blocks });
         store.put_dependency(&Dependency { bead_id: b3.clone(), depends_on_bead_id: b2.clone(), kind: DependencyKind::Blocks });
 
-        // 1) b1 manually closed, never verified → does NOT release b2.
+        // 1) b1 manually closed, never verified â†’ does NOT release b2.
         store.update_bead_status(b1.clone(), BeadStatus::Closed, "operator".into(), None);
         assert!(has_unresolved_blockers(&store, &b2), "manual close must NOT unlock b2");
 
-        // 2) b1 verified against CURRENT rev-1 → releases b2.
+        // 2) b1 verified against CURRENT rev-1 â†’ releases b2.
         store.mark_bead_verified(&b1, "rev-1", "COMPLETE", 8, 8);
         assert!(!has_unresolved_blockers(&store, &b2), "verified(current) must unlock b2");
         // Idempotent: re-stamping the same revision does not regress.
         store.mark_bead_verified(&b1, "rev-1", "COMPLETE", 8, 8);
         assert!(!has_unresolved_blockers(&store, &b2));
 
-        // 3) rev-2 arrives (source revision changed) → b1's stamp is stale,
+        // 3) rev-2 arrives (source revision changed) â†’ b1's stamp is stale,
         //    even though it is still Closed. Must NOT release b2 (or b3).
-        store.hot_put("gastown/portability/epoch", "rev-2");
+        store.hot_put("helldesk/portability/epoch", "rev-2");
         assert!(has_unresolved_blockers(&store, &b2), "superseded revision must block b2 again");
         assert!(has_unresolved_blockers(&store, &b3));
     }

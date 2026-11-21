@@ -10,8 +10,8 @@ name = "nai-fabric-host"
 path = "src/main.rs"
 
 [[bin]]
-name = "gastown-release"
-path = "src/bin/gastown-release.rs"
+name = "helldesk-release"
+path = "src/bin/helldesk-release.rs"
 
 [dependencies]
 lattice-core = { path = "../../crates/lattice-core" }

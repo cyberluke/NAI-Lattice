@@ -6,7 +6,7 @@
 //!
 //! The installed scheduler dispatches polecats serially per tick; to prove the
 //! concurrency aperture HONESTLY we spawn the first tier (3 independent beads)
-//! as real `gastown-agent` workers CONCURRENTLY (3 threads each invoking the
+//! as real `helldesk-agent` workers CONCURRENTLY (3 threads each invoking the
 //! actual polecat path over the live gateway), recording per-polecat start/end
 //! wall timestamps → overlap proof. The remainder + review + landing use the
 //! durable Orchestrator. Then we drop + reopen the same runtime to prove the
@@ -39,16 +39,16 @@ impl Git {
     }
 }
 
-/// Spawn ONE real polecat worker (identical to the orchestration `gastown-agent`
+/// Spawn ONE real polecat worker (identical to the orchestration `helldesk-agent`
 /// path) against a worktree on a rig origin, using the live model gateway. Runs
 /// in its own thread so multiple can overlap. Returns (label, ok, elapsed_ms).
 fn spawn_polecat(label: &str, worktree: &std::path::Path, target: &str, branch: &str, json_req: &serde_json::Value, elapsed_out: &Arc<Mutex<Vec<(String, u128, u128)>>>, start_ms: u128) {
     let t0 = Instant::now();
     let result = {
-        // Reuse the host's own gastown-agent subprocess for the REAL model call.
+        // Reuse the host's own helldesk-agent subprocess for the REAL model call.
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("nai-fabric-host.exe"));
         let mut child = std::process::Command::new(exe)
-            .arg("gastown-agent")
+            .arg("helldesk-agent")
             .current_dir(worktree)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -89,7 +89,7 @@ pub(crate) fn run_convoy_a_live() {
     use lattice_gastown::orchestration::state::OrchestrationStore;
     use crate::gastown_orto::HostAgentRunner;
 
-    let work_root = std::env::var_os("GASTOWN_CONVOY_A_ROOT")
+    let work_root = std::env::var_os("HELLDESK_CONVOY_A_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("gastown-convoy-a").join(format!("run-{}", std::process::id())));
     let _ = std::fs::create_dir_all(&work_root);
@@ -190,7 +190,7 @@ pub(crate) fn run_convoy_a_live() {
     }
 
     // --- 5. Run the FIRST TIER (b0,b1,b2) CONCURRENTLY as real polecats ---
-    // Each spawns a real gastown-agent worker on an isolated worktree of its rig.
+    // Each spawns a real helldesk-agent worker on an isolated worktree of its rig.
     let overlaps = Arc::new(Mutex::new(Vec::<(String, u128, u128)>::new()));
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
     let mut handles = Vec::new();

@@ -360,6 +360,27 @@
       "dependsOn": [
         "nai-lattice"
       ]
+    },
+    {
+      "name": "new-chat",
+      "workspacePath": "D:\\_NANOTRIK_WORKFLOW\\_AI_CHAT\\NAI-Chat-COPILOT\\new-chat3\\new-chat",
+      "description": "V271 AI platform (NAI Chat) — Next.js 16 pnpm/turbo monorepo: chat + agents (Agent Store / WorkflowFactory / LayoutRegistry), Math Compiler (server IR -> browser WASM workers -> durable agent answer), LUSI local on-device AI (WebLLM/LiteRT/ONNX/Supertonic), LiveAvatar, NAIGPT OpenAI-compatible gateway, Cognitive Manifold.",
+      "techStack": [
+        "Next.js 16",
+        "React 19",
+        "TypeScript",
+        "Turborepo",
+        "pnpm",
+        "Drizzle ORM",
+        "PostgreSQL",
+        "AI SDK v7",
+        "Tailwind",
+        "WebGPU",
+        "ONNX Runtime Web"
+      ],
+      "buildCommand": "pnpm exec tsc --noEmit && turbo run build --filter=web",
+      "runCommand": "pnpm dev (turbo; web on http://localhost:3000)",
+      "deployTarget": "internal CI (http://<internal-host>:6610) auto-build on push to dev -> LAN registry <internal-host>:4357/nanotrik-ai/new-chat/new-chat:<sha> -> new-chat-ai container (<product-host>, port 3636); r4 = Vercel container project v271-new-chat (team VIVERRA, v271-new-chat.vercel.app)"
     }
   ]
 }

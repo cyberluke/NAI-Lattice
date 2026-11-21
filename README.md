@@ -48,7 +48,7 @@ vendor locks your logs.
 
 ```bash
 cargo build --release -p nai-fabric-host
-target/release/nai-fabric-host.exe gastown-release install v0.0.1 \
+target/release/nai-fabric-host.exe helldesk-release install v0.0.1 \
   target/release/nai-fabric-host.exe
 # resolves endpoint.json (named pipe), binds control HTTP on 127.0.0.1:8787
 ```
