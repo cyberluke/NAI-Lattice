@@ -19,7 +19,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
-use lattice_protocol::pb;
+use nai_lattice_protocol::pb;
 use prost::Message;
 
 use super::LedgerError;
@@ -285,7 +285,7 @@ pub fn recover(
             Ok(f) => f,
             Err(e) => return Err(RecoveryError::Corrupt(offset as u64, e.to_string())),
         };
-        if frame.magic != lattice_protocol::FRAME_MAGIC {
+        if frame.magic != nai_lattice_protocol::FRAME_MAGIC {
             return Err(RecoveryError::Corrupt(offset as u64, "bad frame magic".into()));
         }
         // Integrity: crc32c + frame_blake3 computed over the frame with crc +

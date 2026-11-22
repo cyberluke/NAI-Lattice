@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
-use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
 
 /// Fjall hot-store adapter. Uses a single logical keyspace for all keyspaces.
 pub struct FjallHotStore {

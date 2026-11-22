@@ -24,8 +24,8 @@ pub mod segment;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
-use lattice_protocol::pb;
+use nai_lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
+use nai_lattice_protocol::pb;
 use prost::Message;
 use tokio::sync::Mutex;
 
@@ -36,7 +36,7 @@ pub enum LedgerError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("frame: {0}")]
-    Frame(#[from] lattice_protocol::ProtocolError),
+    Frame(#[from] nai_lattice_protocol::ProtocolError),
     #[error("segment target {0} out of range: must be 64..256 MiB")]
     BadSegmentTarget(u64),
     #[error("append encode: {0}")]
@@ -406,7 +406,7 @@ pub fn build_frame(
     let proto_event = canonical_event_to_proto(event, seq, previous_hash)?;
     let event_bytes = proto_event.encode_to_vec();
     let mut frame = pb::Frame {
-        magic: lattice_protocol::FRAME_MAGIC,
+        magic: nai_lattice_protocol::FRAME_MAGIC,
         format_version: 1,
         frame_length: event_bytes.len() as u64,
         runtime_sequence: seq,

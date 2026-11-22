@@ -15,18 +15,18 @@
 //! (which stayed compatible for app launchers); it is the dataset retrieval layer in
 //! `lattice-query`.
 
-use lattice_lakehouse::manifest::NormalizedRecordV1;
-use lattice_search::DocumentIndex;
+use nai_lattice_lakehouse::manifest::NormalizedRecordV1;
+use nai_lattice_search::DocumentIndex;
 
 /// Errors from hybrid recall.
 #[derive(Debug, thiserror::Error)]
 pub enum RecallError {
     #[error("search: {0}")]
-    Search(#[from] lattice_search::SearchError),
+    Search(#[from] nai_lattice_search::SearchError),
     #[error("embeddings: {0}")]
-    Embeddings(#[from] lattice_embeddings::EmbeddingError),
+    Embeddings(#[from] nai_lattice_embeddings::EmbeddingError),
     #[error("vector: {0}")]
-    Vector(#[from] lattice_vector::VectorError),
+    Vector(#[from] nai_lattice_vector::VectorError),
     #[error("no indexed documents / embeddings populated")]
     Empty,
 }
@@ -68,7 +68,7 @@ pub struct HybridHit {
 /// Callers build the index + semantic store once (see helpers) and pass them here.
 pub fn hybrid_recall(
     search: &DocumentIndex,
-    vectors: &lattice_vector::SemanticStore,
+    vectors: &nai_lattice_vector::SemanticStore,
     query: &str,
     namespace: &str,
     top_k: usize,
@@ -86,7 +86,7 @@ pub fn hybrid_recall(
     }
 
     // 2. Vector recall via LUSI query embedding.
-    let lusi = lattice_embeddings::LusiFederated::at_default_url();
+    let lusi = nai_lattice_embeddings::LusiFederated::at_default_url();
     let vector_hits = lusi.semantic_query(vectors, query, VECTOR_TOPK.max(1))?;
     let vector = vector_hits
         .iter()
@@ -110,7 +110,7 @@ pub fn hybrid_recall(
     let reranked = if docs.len() > 1 {
         lusi.rerank(query, &docs.iter().map(|(i, d)| (i.as_str(), d.as_str())).collect::<Vec<_>>(), RERANK_TOPN).unwrap_or_default()
     } else {
-        docs.iter().map(|(i, _)| lattice_embeddings::RerankHit { id: i.clone(), index: 0, score: 1.0 }).collect()
+        docs.iter().map(|(i, _)| nai_lattice_embeddings::RerankHit { id: i.clone(), index: 0, score: 1.0 }).collect()
     };
 
     // 5. Resolve full records in reranked order, tacking on the fused score.

@@ -13,7 +13,7 @@
 //! quarantine, and governor state) is durable and is re-opened after restart.
 
 use std::path::PathBuf;
-use lattice_gastown::orchestration::state::OrchestrationStore;
+use nai_lattice_gastown::orchestration::state::OrchestrationStore;
 
 const PROJECT_PREFIX: &str = "helldesk/project/";
 const TRANSCRIPT_PREFIX: &str = "helldesk/project/transcript/";
@@ -323,18 +323,18 @@ const PROJECT_TRANSCRIPT_INDEX: &str = "helldesk/project/transcript_idx/";
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use lattice_gastown::orchestration::state::{OrchestrationStore, Town, TownConfig, now};
+    use nai_lattice_gastown::orchestration::state::{OrchestrationStore, Town, TownConfig, now};
 
     fn test_store() -> OrchestrationStore {
-        use lattice_hotstore::{HotKey, HotValue};
+        use nai_lattice_hotstore::{HotKey, HotValue};
         #[derive(Default, Debug)]
         struct Mem(Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>);
-        impl lattice_hotstore::HotStore for Mem {
-            fn get(&self, k: &HotKey) -> Result<Option<HotValue>, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().get(&k.0).cloned().map(HotValue)) }
-            fn put(&self, k: &HotKey, v: &HotValue) -> Result<(), lattice_hotstore::HotStoreError> { self.0.lock().unwrap().insert(k.0.clone(), v.0.clone()); Ok(()) }
-            fn delete(&self, k: &HotKey) -> Result<bool, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().remove(&k.0).is_some()) }
-            fn exists(&self, k: &HotKey) -> Result<bool, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().contains_key(&k.0)) }
-            fn scan_prefix(&self, p: &[u8]) -> Result<Vec<HotKey>, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().keys().filter(|k| k.starts_with(p)).cloned().map(HotKey).collect()) }
+        impl nai_lattice_hotstore::HotStore for Mem {
+            fn get(&self, k: &HotKey) -> Result<Option<HotValue>, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().get(&k.0).cloned().map(HotValue)) }
+            fn put(&self, k: &HotKey, v: &HotValue) -> Result<(), nai_lattice_hotstore::HotStoreError> { self.0.lock().unwrap().insert(k.0.clone(), v.0.clone()); Ok(()) }
+            fn delete(&self, k: &HotKey) -> Result<bool, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().remove(&k.0).is_some()) }
+            fn exists(&self, k: &HotKey) -> Result<bool, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().contains_key(&k.0)) }
+            fn scan_prefix(&self, p: &[u8]) -> Result<Vec<HotKey>, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().keys().filter(|k| k.starts_with(p)).cloned().map(HotKey).collect()) }
         }
         let s = OrchestrationStore::new(Arc::new(Mem::default()));
         s.put_town(&Town { town_id: "t".into(), owner_user_id: None, config: TownConfig::default(), created_at: now() });

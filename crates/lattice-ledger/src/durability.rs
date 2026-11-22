@@ -70,7 +70,6 @@ impl BatchedDurableWriter {
                     // Re-push this failing frame and every already-popped member
                     // back to the front (FIFO order) so nothing is lost.
                     survivors.push(body);
-                    let mut ordered: Vec<Vec<u8>> = Vec::new();
                     while let Some(b) = q.pop_front() {
                         survivors.push(b);
                     }

@@ -1,20 +1,23 @@
 [package]
-name = "lattice-runtime"
+name = "nai-lattice-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "NAI Lattice runtime: wires ledger + hotstore + CAS + AAF and dispatches NAF/1 capabilities."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
-lattice-protocol = { path = "../lattice-protocol" }
-lattice-ledger = { path = "../lattice-ledger" }
-lattice-cas = { path = "../lattice-cas" }
-lattice-hotstore = { path = "../lattice-hotstore" }
-lattice-hotstore-surrealkv = { path = "../lattice-hotstore-surrealkv" }
-lattice-aaf = { path = "../lattice-aaf" }
-lattice-vector = { path = "../lattice-vector" }
-lattice-search = { path = "../lattice-search" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-protocol = { path = "../lattice-protocol", version = "0.1.0" }
+nai-lattice-ledger = { path = "../lattice-ledger", version = "0.1.0" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.0" }
+nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.0" }
+nai-lattice-hotstore-surrealkv = { path = "../lattice-hotstore-surrealkv", version = "0.1.0" }
+nai-lattice-aaf = { path = "../lattice-aaf", version = "0.1.0" }
+nai-lattice-vector = { path = "../lattice-vector", version = "0.1.0" }
+nai-lattice-search = { path = "../lattice-search", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -16,14 +16,14 @@
 //! DataFusion SQL engine. It reuses the lakehouse's real Arrow/Parquet reader and
 //! operates over the normalized [`crate::manifest::NormalizedRecordV1`] model.
 
-use lattice_lakehouse::manifest::NormalizedRecordV1;
-use lattice_lakehouse::snapshot::SnapshotLayout;
+use nai_lattice_lakehouse::manifest::NormalizedRecordV1;
+use nai_lattice_lakehouse::snapshot::SnapshotLayout;
 
 /// Errors from the structural query layer.
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
     #[error("snapshot: {0}")]
-    Snapshot(#[from] lattice_lakehouse::snapshot::SnapshotError),
+    Snapshot(#[from] nai_lattice_lakehouse::snapshot::SnapshotError),
     #[error("no active snapshot for source {0}")]
     NoActiveSnapshot(String),
     #[error("record not found: {0}")]
@@ -167,8 +167,8 @@ pub fn count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_lakehouse::manifest::{Acquisition, NormalizedRecordV1, SourceManifestV1};
-    use lattice_lakehouse::SnapshotLayout;
+    use nai_lattice_lakehouse::manifest::{Acquisition, NormalizedRecordV1, SourceManifestV1};
+    use nai_lattice_lakehouse::SnapshotLayout;
 
     fn rec(id: &str, kind: &str, split: &str, lang: Option<&str>, payload: serde_json::Value) -> NormalizedRecordV1 {
         NormalizedRecordV1 {

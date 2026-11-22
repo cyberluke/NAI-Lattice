@@ -1,12 +1,12 @@
 //! Live-pipe integration probe: connects to the running `nai-fabric-host.exe`
-//! singleton via the Rust `lattice_client::win_pipe` + `NafClient` and performs
+//! singleton via the Rust `nai_lattice_client::win_pipe` + `NafClient` and performs
 //! a NAF handshake. This isolates whether the host is serving the pipe (vs a
 //! TS-only client issue). Requires the singleton to be running.
 //! Run: `cargo test -p nai-fabric-host --test live_pipe -- --ignored --nocapture`
 
-use lattice_client::NafClient;
-use lattice_client::win_pipe::NamedPipeStream;
-use lattice_protocol::pb;
+use nai_lattice_client::NafClient;
+use nai_lattice_client::win_pipe::NamedPipeStream;
+use nai_lattice_protocol::pb;
 
 #[tokio::test]
 #[ignore = "requires the running singleton"]

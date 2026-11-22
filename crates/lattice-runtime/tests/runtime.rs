@@ -1,6 +1,6 @@
 //! Runtime integration test: full NAF dispatch through ledger + CAS + hotstore.
 
-use lattice_runtime::{LatticeRuntime, RuntimeConfig};
+use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
 #[test]
 fn runtime_appends_event_and_artifact() {

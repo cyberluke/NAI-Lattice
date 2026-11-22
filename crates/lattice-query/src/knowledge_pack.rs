@@ -11,7 +11,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use lattice_lakehouse::manifest::{NormalizedRecordV1, Relation};
+use nai_lattice_lakehouse::manifest::{NormalizedRecordV1, Relation};
 
 /// One evidence item within a pack, mapping against the spec's `evidenceClass`.
 #[derive(Debug, Clone, Serialize)]
@@ -172,7 +172,7 @@ fn human_or_derived(kind: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_lakehouse::manifest::NormalizedRecordV1;
+    use nai_lattice_lakehouse::manifest::NormalizedRecordV1;
 
     fn pair(id: &str, chosen_score: i64, rejected_score: i64) -> NormalizedRecordV1 {
         NormalizedRecordV1 {

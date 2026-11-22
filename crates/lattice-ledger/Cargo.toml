@@ -1,13 +1,16 @@
 [package]
-name = "lattice-ledger"
+name = "nai-lattice-ledger"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "Durable, replayable canonical event ledger: segments, BLAKE3 chains, crash recovery."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
-lattice-protocol = { path = "../lattice-protocol" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-protocol = { path = "../lattice-protocol", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -206,7 +206,7 @@ pub trait LogSink: Send + Sync + 'static {
 /// A reactor-bound NAF client. Tokio Windows named pipes register their IOCP
 /// handle with the reactor where connect ran: dispatch MUST run on that same
 /// runtime, not on a second Tokio runtime created in a sink constructor.
-pub type DynNafClient = lattice_client::NafClient<Box<dyn lattice_client::transport::NafTransportTrait>>;
+pub type DynNafClient = nai_lattice_client::NafClient<Box<dyn nai_lattice_client::transport::NafTransportTrait>>;
 type ConnectFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<DynNafClient, String>> + Send>,
 >;

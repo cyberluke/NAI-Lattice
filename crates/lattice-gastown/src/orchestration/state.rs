@@ -1,4 +1,4 @@
-﻿//! Durable Gas Town orchestration state model (`lattice-gastown::orchestration`).
+//! Durable Gas Town orchestration state model (`lattice-gastown::orchestration`).
 //!
 //! Mirrors the hosted Gas Town data model (`services/gastown/src/db/tables/`) â€”
 //! beads (issues / merge_requests / convoys / agents / messages), agents +
@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use lattice_hotstore::{HotKey, HotStore, HotValue};
+use nai_lattice_hotstore::{HotKey, HotStore, HotValue};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -2570,8 +2570,8 @@ pub enum TransitionError {
 /// concrete backend type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotStoreErrorLike(pub String);
-impl From<lattice_hotstore::HotStoreError> for HotStoreErrorLike {
-    fn from(e: lattice_hotstore::HotStoreError) -> Self {
+impl From<nai_lattice_hotstore::HotStoreError> for HotStoreErrorLike {
+    fn from(e: nai_lattice_hotstore::HotStoreError) -> Self {
         HotStoreErrorLike(e.to_string())
     }
 }

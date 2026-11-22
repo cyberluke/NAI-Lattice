@@ -1,12 +1,15 @@
 [package]
-name = "lattice-provider-windows-search"
+name = "nai-lattice-provider-windows-search"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "NAI Lattice lattice-provider-windows-search."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

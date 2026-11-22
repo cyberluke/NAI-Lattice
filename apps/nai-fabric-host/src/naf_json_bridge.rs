@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 
-use lattice_runtime::LatticeRuntime;
+use nai_lattice_runtime::LatticeRuntime;
 
 const MAX_HEADER: usize = 64 * 1024;
 const MAX_BODY: usize = 8 * 1024 * 1024;

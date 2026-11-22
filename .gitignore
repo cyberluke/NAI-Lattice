@@ -20,3 +20,21 @@ Cargo.lock.orig
 node_modules/
 **/node_modules/
 packages/naf-client-ts/dist/
+packages/mcp-nai-lattice/dist/
+/dist/
+
+# Machine-specific MCP registry and local state (ship projects.example.json instead)
+packages/mcp-nai-lattice/projects.json
+packages/mcp-nai-lattice/state/
+
+# Signing material: private keys and PFX passwords never enter git
+.cert/
+*.pfx
+*.pfx.pwd
+*.key
+
+.env
+.env.local
+
+.kelvin-write-fence
+.cargo

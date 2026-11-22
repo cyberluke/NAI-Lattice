@@ -1,12 +1,12 @@
 //! SurrealKV HotStore end-to-end tests.
 
-use lattice_hotstore::{HotStore, HotKey, HotValue, Keyspace};
+use nai_lattice_hotstore::{HotStore, HotKey, HotValue, Keyspace};
 
 #[test]
 fn hotstore_roundtrip_scan_and_idempotency() {
     let dir = tempfile::tempdir().unwrap();
-    let store = lattice_hotstore_surrealkv::SurrealKvHotStore::open(
-        lattice_hotstore_surrealkv::SurrealKvOptions::new(dir.path().join("db")),
+    let store = nai_lattice_hotstore_surrealkv::SurrealKvHotStore::open(
+        nai_lattice_hotstore_surrealkv::SurrealKvOptions::new(dir.path().join("db")),
     )
     .unwrap();
 

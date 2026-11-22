@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn symbol_token_is_unverified_not_hallucinated() {
         let idx = sample_index();
-        let ev = CitedEvidence { path: "lattice_supervisor::child::run".into(), lines: None, snippet: None };
-        assert_eq!(idx.verify(&ev, &["lattice_supervisor::child::run"]), EvidenceVerdict::Unverified);
+        let ev = CitedEvidence { path: "nai_lattice_supervisor::child::run".into(), lines: None, snippet: None };
+        assert_eq!(idx.verify(&ev, &["nai_lattice_supervisor::child::run"]), EvidenceVerdict::Unverified);
     }
 }

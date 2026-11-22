@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
-use lattice_core::CanonicalEvent;
+use nai_lattice_core::CanonicalEvent;
 use crate::LedgerError;
 
 /// A lightweight, queryable projection of the canonical events we index.
@@ -464,7 +464,7 @@ fn meta_for(seq: u64, ts: i64, namespace: &str, ev_type: &str) -> EventMeta {
 #[cfg(test)]
 fn sample_event(seq: u64, ts: i64, namespace: &str, ev_type: &str) -> CanonicalEvent {
     CanonicalEvent {
-        event_id: lattice_core::EventId::uuid_v7(),
+        event_id: nai_lattice_core::EventId::uuid_v7(),
         runtime_sequence: seq,
         timestamp_utc_ms: ts,
         device_id: uuid::Uuid::nil(),

@@ -629,7 +629,7 @@ async function openResolver(beadId,title){
     <button onclick="rsSetActive()">▶ set as active primary</button>
     <div class="tick" style="margin:10px 0 3px">4) Edit the project's allowed resource roots (multi-repo)</div>
     <div style="display:flex;gap:6px;align-items:center">
-      <input id="rs_roots" placeholder="comma-separated roots, e.g. <workspace>\MNN, <workspace>\TaoAvatar-NNR-MNN" style="flex:1"/>
+      <input id="rs_roots" placeholder="comma-separated roots, e.g. D:\datasets\example, D:\datasets\corpus" style="flex:1"/>
       <button onclick="rsSetRoots()">save roots</button>
     </div>
     `;

@@ -10,7 +10,7 @@
 //! Uses the lightweight synchronous `ureq` HTTP client (plain localhost, no
 //! TLS stack) so the federation adds negligible size/deps.
 
-use lattice_vector::{SemanticStore, VectorHit};
+use nai_lattice_vector::{SemanticStore, VectorHit};
 use serde::{Deserialize, Serialize};
 
 /// Errors from the federated embeddings provider.
@@ -23,7 +23,7 @@ pub enum EmbeddingError {
     #[error("no embedding returned for input {0}")]
     NoVector(usize),
     #[error("vector store: {0}")]
-    Vector(#[from] lattice_vector::VectorError),
+    Vector(#[from] nai_lattice_vector::VectorError),
 }
 
 /// One LUSI `/v1/rerank` result.

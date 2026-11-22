@@ -1,6 +1,6 @@
 //! NAF/1 frame codec over an async stream.
 //!
-//! Same framing as `lattice_protocol::frame` but transport-level:
+//! Same framing as `nai_lattice_protocol::frame` but transport-level:
 //! ```text
 //! u32le wire_len | pb::Frame { magic, ..., protobuf_event = pb::Envelope }
 //! ```
@@ -9,8 +9,8 @@ use bytes::{Buf, BytesMut};
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use lattice_protocol::pb;
-use lattice_protocol::{ProtocolError, FRAME_MAGIC};
+use nai_lattice_protocol::pb;
+use nai_lattice_protocol::{ProtocolError, FRAME_MAGIC};
 
 /// Maximum accepted frame size (128 MiB).
 pub const MAX_FRAME: usize = 128 * 1024 * 1024;

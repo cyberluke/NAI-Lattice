@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/icons/lattice-hub-256.png" alt="NAI Lattice" width="160" />
+
 # NAI-Lattice
 
 **A local-first, enterprise-grade, event-sourcing + CQRS multi-dimensional datalake.**
@@ -48,10 +50,16 @@ vendor locks your logs.
 
 ```bash
 cargo build --release -p nai-fabric-host
-target/release/nai-fabric-host.exe helldesk-release install v0.0.1 \
-  target/release/nai-fabric-host.exe
+target/release/nai-fabric-host.exe
 # resolves endpoint.json (named pipe), binds control HTTP on 127.0.0.1:8787
 ```
+
+> **Shipping the host inside a NAI product?** Follow
+> [docs/PRODUCT_BUNDLING.md](docs/PRODUCT_BUNDLING.md): bundle the exe +
+> manifest, install into the shared `runtime\<version>` root, maintain
+> `active.json`, and spawn the host directly. The optional
+> `helldesk-release` binary is developer tooling, **not** the product contract;
+> products never invoke it or write `releases\current.json`.
 
 Then write an event:
 

@@ -16,10 +16,10 @@ use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use lattice_gastown::orchestration;
-use lattice_gastown::orchestration::scheduler::Orchestrator;
-use lattice_gastown::orchestration::state::{BeadStatus, Dependency, DependencyKind, MergeMode};
-use lattice_runtime::{LatticeRuntime, RuntimeConfig};
+use nai_lattice_gastown::orchestration;
+use nai_lattice_gastown::orchestration::scheduler::Orchestrator;
+use nai_lattice_gastown::orchestration::state::{BeadStatus, Dependency, DependencyKind, MergeMode};
+use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
 struct Git;
 impl Git {
@@ -84,9 +84,9 @@ fn write_json_to_stdin(child: &mut std::process::Child, json: &serde_json::Value
 }
 
 pub(crate) fn run_convoy_a_live() {
-    use lattice_gastown::orchestration::control::ControlApi;
-    use lattice_gastown::orchestration::scheduler::Orchestrator;
-    use lattice_gastown::orchestration::state::OrchestrationStore;
+    use nai_lattice_gastown::orchestration::control::ControlApi;
+    use nai_lattice_gastown::orchestration::scheduler::Orchestrator;
+    use nai_lattice_gastown::orchestration::state::OrchestrationStore;
     use crate::gastown_orto::HostAgentRunner;
 
     let work_root = std::env::var_os("HELLDESK_CONVOY_A_ROOT")
@@ -307,7 +307,7 @@ pub(crate) fn run_convoy_a_live() {
 /// Phase B (fresh process): reopen the durable root and report whether the
 /// convoy bead is Closed + metadata landed_at set (survival proof).
 pub(crate) fn run_convoy_a_verify(root: &str, convoy_id: &str) {
-    use lattice_gastown::orchestration::state::OrchestrationStore;
+    use nai_lattice_gastown::orchestration::state::OrchestrationStore;
     let rt = match LatticeRuntime::open(RuntimeConfig { root: std::path::PathBuf::from(root), ledger_segment_bytes: 64 * 1024 * 1024 }) {
         Ok(r) => Arc::new(r),
         Err(e) => { println!("{}", serde_json::json!({"ok": false, "reopened": false, "error": format!("{e}")})); std::process::exit(2); }
@@ -334,7 +334,7 @@ pub(crate) fn run_convoy_a_verify(root: &str, convoy_id: &str) {
 fn runner_tick(orch: &Arc<Orchestrator>, runner: &crate::gastown_orto::HostAgentRunner,
                timeline: &mut Vec<serde_json::Value>, t0: Instant)
     -> (Option<String>, u64) {
-    use lattice_gastown::orchestration::scheduler::AgentRunner as _;
+    use nai_lattice_gastown::orchestration::scheduler::AgentRunner as _;
     let rep = orch.tick(runner);
     timeline.push(serde_json::json!({"tick": rep.tick, "gen": rep.generated, "app": rep.applied, "disp": rep.dispatched, "ms": t0.elapsed().as_millis()}));
     (rep.error, rep.tick)

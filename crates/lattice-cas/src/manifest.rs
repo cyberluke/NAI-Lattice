@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use lattice_core::{
+use nai_lattice_core::{
     ArtifactLocation, ArtifactManifest, Blake3Hash, ChunkManifest, LocationHealth,
     StabilityClass, VerificationState,
 };

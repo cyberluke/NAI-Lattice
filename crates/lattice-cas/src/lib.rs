@@ -36,7 +36,7 @@ pub enum CasError {
 
 /// A fully opened artifact: its manifest plus access to the owned bytes.
 pub struct OpenedArtifact {
-    pub manifest: lattice_core::ArtifactManifest,
+    pub manifest: nai_lattice_core::ArtifactManifest,
     pub owned_path: PathBuf,
     pub size: u64,
 }

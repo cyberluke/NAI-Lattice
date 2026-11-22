@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
-use lattice_cas::object::ObjectStore;
+use nai_lattice_cas::object::ObjectStore;
 
 use crate::source::ExternalArtifactSource;
 use crate::{AafError, Candidate, DiscoverFilter, Locator, ProviderHealth, Resolution};

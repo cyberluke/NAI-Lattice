@@ -13,12 +13,19 @@ fn main() -> std::io::Result<()> {
     );
 
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let proto_root = manifest
+    // The workspace keeps the canonical schema at /protos/naf/protocol.proto.
+    // A crates.io package only contains files under the crate directory, so the
+    // same schema is vendored at crates/lattice-protocol/protos/naf/protocol.proto
+    // and used as the fallback when the workspace root is absent.
+    let workspace_proto = manifest
         .parent()
         .and_then(|p| p.parent())
-        .expect("workspace root")
-        .join("protos")
-        .join("naf");
+        .map(|p| p.join("protos").join("naf"));
+    let packaged_proto = manifest.join("protos").join("naf");
+    let proto_root = match workspace_proto {
+        Some(root) if root.join("protocol.proto").exists() => root,
+        _ => packaged_proto,
+    };
     let proto_file = proto_root.join("protocol.proto");
     if !proto_file.exists() {
         return Err(std::io::Error::new(

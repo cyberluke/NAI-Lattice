@@ -1,14 +1,17 @@
 [package]
-name = "lattice-lakehouse"
+name = "nai-lattice-lakehouse"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "NAI Lattice lakehouse: Parquet/Arrow ingest, immutable snapshot manifests, and streaming delta synchronization for federated datasets of tutty-studio / nai-fabric-host."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
-lattice-aaf = { path = "../lattice-aaf" }
-lattice-cas = { path = "../lattice-cas" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-aaf = { path = "../lattice-aaf", version = "0.1.0" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

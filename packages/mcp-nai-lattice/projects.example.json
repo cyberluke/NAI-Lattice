@@ -1,0 +1,17 @@
+{
+  "_readme": "Template for the machine-specific project registry. Copy to projects.json (gitignored) or point REGISTRY_PATH at your own file. Paths are local to your machine.",
+  "projects": [
+    {
+      "name": "example",
+      "description": "Replace with a real project. This entry is a template.",
+      "workspacePath": "D:\\work\\example",
+      "techStack": [
+        "TypeScript"
+      ],
+      "buildCommand": "npm run build",
+      "runCommand": "npm run dev",
+      "deployTarget": "local",
+      "dependsOn": []
+    }
+  ]
+}

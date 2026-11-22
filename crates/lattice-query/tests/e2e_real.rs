@@ -13,11 +13,11 @@
 //! coupled to the data lake), but on this machine it runs against the verified
 //! 1,800-record snapshot.
 
-use lattice_lakehouse::adapters::WritingPreferenceAdapter;
-use lattice_lakehouse::snapshot::SnapshotLayout;
-use lattice_lakehouse::{Acquisition, SourceManifestV1};
-use lattice_query::dataset_sql::StructFilter;
-use lattice_query::{aggregate_by, build_pack, query_structural};
+use nai_lattice_lakehouse::adapters::WritingPreferenceAdapter;
+use nai_lattice_lakehouse::snapshot::SnapshotLayout;
+use nai_lattice_lakehouse::{Acquisition, SourceManifestV1};
+use nai_lattice_query::dataset_sql::StructFilter;
+use nai_lattice_query::{aggregate_by, build_pack, query_structural};
 
 const RAW_ROOT: &str = r"D:\NAI\DataLake\raw\writing-preference";
 const REV: &str = "676d7114ce37ad5d8eff5b39f3648b855730bf77";
@@ -61,7 +61,7 @@ fn e2e_ingest_query_and_pack_on_real_data() {
     // Same source+records -> the same manifest content hash (idempotence).
     assert_eq!(hash1, hash2);
     // Delta must be a no-op: identical normalized hashes -> no inserts/updates/deletes.
-    let delta = lattice_lakehouse::delta::diff(
+    let delta = nai_lattice_lakehouse::delta::diff(
         "writing-preference",
         Some(REV),
         REV,

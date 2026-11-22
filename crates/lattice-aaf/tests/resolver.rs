@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use lattice_aaf::source::MemorySource;
-use lattice_aaf::{AafResolver, DiscoverFilter, Locator, Resolution};
-use lattice_cas::object::ObjectStore;
+use nai_lattice_aaf::source::MemorySource;
+use nai_lattice_aaf::{AafResolver, DiscoverFilter, Locator, Resolution};
+use nai_lattice_cas::object::ObjectStore;
 
 #[test]
 fn resolves_owned_cas_before_external() {
@@ -68,5 +68,5 @@ fn no_location_when_unmatched() {
     let cas = Arc::new(ObjectStore::new(dir.path().join("cas")).unwrap());
     let resolver = AafResolver::new(cas.clone());
     let res = resolver.resolve("deadbeef".repeat(8).as_str(), &DiscoverFilter::default());
-    assert!(matches!(res, Err(lattice_aaf::AafError::NoLocation(_))));
+    assert!(matches!(res, Err(nai_lattice_aaf::AafError::NoLocation(_))));
 }

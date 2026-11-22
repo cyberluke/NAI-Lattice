@@ -1,18 +1,21 @@
 [package]
-name = "lattice-gastown"
+name = "nai-lattice-gastown"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 rust-version.workspace = true
 description = "Gas Town domain module inside NAI-Lattice (host/session registry, task epochs, review graph)."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
-lattice-ledger = { path = "../lattice-ledger" }
-lattice-cas = { path = "../lattice-cas" }
-lattice-git = { path = "../lattice-git" }
-lattice-supervisor = { path = "../lattice-supervisor" }
-lattice-hotstore = { path = "../lattice-hotstore" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-ledger = { path = "../lattice-ledger", version = "0.1.0" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.0" }
+nai-lattice-git = { path = "../lattice-git", version = "0.1.0" }
+nai-lattice-supervisor = { path = "../lattice-supervisor", version = "0.1.0" }
+nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

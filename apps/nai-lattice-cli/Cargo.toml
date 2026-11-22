@@ -3,6 +3,7 @@ name = "nai-lattice-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "NAI Lattice inspection, verification, recovery and rebuild CLI (spec §7)."
 
 [[bin]]
@@ -10,13 +11,13 @@ name = "nai-lattice-cli"
 path = "src/main.rs"
 
 [dependencies]
-lattice-runtime = { path = "../../crates/lattice-runtime" }
-lattice-ledger = { path = "../../crates/lattice-ledger" }
-lattice-cas = { path = "../../crates/lattice-cas" }
-lattice-gastown = { path = "../../crates/lattice-gastown" }
-lattice-protocol = { path = "../../crates/lattice-protocol" }
-lattice-client = { path = "../../crates/lattice-client" }
-lattice-observability = { path = "../../crates/lattice-observability" }
+nai-lattice-runtime = { path = "../../crates/lattice-runtime" }
+nai-lattice-ledger = { path = "../../crates/lattice-ledger" }
+nai-lattice-cas = { path = "../../crates/lattice-cas" }
+nai-lattice-gastown = { path = "../../crates/lattice-gastown" }
+nai-lattice-protocol = { path = "../../crates/lattice-protocol" }
+nai-lattice-client = { path = "../../crates/lattice-client" }
+nai-lattice-observability = { path = "../../crates/lattice-observability" }
 tokio.workspace = true
 serde_json.workspace = true
 serde.workspace = true

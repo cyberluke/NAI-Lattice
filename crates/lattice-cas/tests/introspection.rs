@@ -1,9 +1,9 @@
 //! CAS end-to-end tests.
 
-use lattice_core::{StabilityClass, VerificationState};
+use nai_lattice_core::{StabilityClass, VerificationState};
 
-use lattice_cas::object::ObjectStore;
-use lattice_cas::manifest::ManifestStore;
+use nai_lattice_cas::object::ObjectStore;
+use nai_lattice_cas::manifest::ManifestStore;
 
 #[test]
 fn put_verify_open_range_and_external_location() {

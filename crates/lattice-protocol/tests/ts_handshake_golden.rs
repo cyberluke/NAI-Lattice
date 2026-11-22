@@ -6,8 +6,8 @@
 //! client's handshake is byte-compatible with the native host.
 
 use bytes::BytesMut;
-use lattice_protocol::frame;
-use lattice_protocol::pb;
+use nai_lattice_protocol::frame;
+use nai_lattice_protocol::pb;
 use prost::Message;
 
 const TS_HS_HEX: &str =

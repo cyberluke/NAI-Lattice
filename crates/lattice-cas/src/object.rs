@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use lattice_core::{ArtifactManifest, Blake3Hash, ChunkDescriptor, ChunkManifest};
+use nai_lattice_core::{ArtifactManifest, Blake3Hash, ChunkDescriptor, ChunkManifest};
 
 use crate::{CasError, OpenedArtifact, RangeRead};
 

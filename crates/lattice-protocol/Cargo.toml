@@ -1,13 +1,16 @@
 [package]
-name = "lattice-protocol"
+name = "nai-lattice-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "NAF/1 protocol: handshake, frames, events, artifacts, queries (prost pb)."
 build = "build.rs"
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
 prost.workspace = true
 prost-types.workspace = true
 bytes.workspace = true

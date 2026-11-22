@@ -1,4 +1,4 @@
-﻿//! Gas Town orchestration integration test (`orchestration::integration`).
+//! Gas Town orchestration integration test (`orchestration::integration`).
 //!
 //! Drives the REAL Orchestrator + reconciler + apply state machine end-to-end
 //! against an in-memory hot-store with a SCRIPTED agent runner (deterministic,
@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
 
 use crate::orchestration::control::ControlApi;
 use crate::orchestration::scheduler::{AgentRunner, DispatchCtx, DispatchResult, Orchestrator};

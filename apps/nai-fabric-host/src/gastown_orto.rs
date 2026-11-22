@@ -1,6 +1,6 @@
 //! Gas Town orchestration integration inside the host (`gastown_orto.rs`).
 //!
-//! Wires the `lattice_gastown::orchestration` engine into the running
+//! Wires the `nai_lattice_gastown::orchestration` engine into the running
 //! `nai-fabric-host` singleton: builds the durable orchestrator + control API
 //! over the shared runtime hot-store, exposes `helldesk.orto.*` NAF methods, runs
 //! a background durable-scheduler thread, and supervises REAL model agent
@@ -10,12 +10,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lattice_gastown::orchestration::agent::{ProviderConfig};
-use lattice_gastown::orchestration::control::ControlApi;
-use lattice_gastown::orchestration::git as ggit;
-use lattice_gastown::orchestration::scheduler::{AgentRunner, DispatchCtx, DispatchResult, Orchestrator};
-use lattice_gastown::orchestration::state::{BeadStatus, Finding, OrchestrationStore};
-use lattice_runtime::LatticeRuntime;
+use nai_lattice_gastown::orchestration::agent::{ProviderConfig};
+use nai_lattice_gastown::orchestration::control::ControlApi;
+use nai_lattice_gastown::orchestration::git as ggit;
+use nai_lattice_gastown::orchestration::scheduler::{AgentRunner, DispatchCtx, DispatchResult, Orchestrator};
+use nai_lattice_gastown::orchestration::state::{BeadStatus, Finding, OrchestrationStore};
+use nai_lattice_runtime::LatticeRuntime;
 
 /// Process-global orchestrator + store, initialized once in `run_worker_main`.
 pub(crate) static ORCH: std::sync::OnceLock<Arc<Orchestrator>> = std::sync::OnceLock::new();
@@ -86,7 +86,7 @@ fn run_polecat_worker(
     branch: &str,
     custom: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    use lattice_gastown::orchestration::agent::*;
+    use nai_lattice_gastown::orchestration::agent::*;
     let agent_name = req["agent_name"].as_str().unwrap_or("Polecat").to_string();
     let rig_id = req["rig_id"].as_str().unwrap_or("").to_string();
     let town_id = req["town_id"].as_str().unwrap_or("").to_string();
@@ -155,7 +155,7 @@ fn run_refinery_worker(
     branch: &str,
     custom: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    use lattice_gastown::orchestration::agent::*;
+    use nai_lattice_gastown::orchestration::agent::*;
     let identity = req["agent_identity"].as_str().unwrap_or("").to_string();
     let rig_id = req["rig_id"].as_str().unwrap_or("").to_string();
     let gates: Vec<String> = req["gates"]
@@ -439,12 +439,12 @@ pub(crate) fn parse_body(body: &str) -> Option<serde_json::Value> {
 }
 
 /// Count the raw imported messages persisted for a project (immutable refs).
-fn project_transcript_count(store: &lattice_gastown::orchestration::state::OrchestrationStore, project_id: &str) -> usize {
+fn project_transcript_count(store: &nai_lattice_gastown::orchestration::state::OrchestrationStore, project_id: &str) -> usize {
     crate::project::project_transcript(store, project_id).len()
 }
 
 /// Fetch the top text turns of a linked Kilo session (federates Recall).
-fn recall_session_top(store: &lattice_gastown::orchestration::state::OrchestrationStore, session_id: &str) -> Option<String> {
+fn recall_session_top(store: &nai_lattice_gastown::orchestration::state::OrchestrationStore, session_id: &str) -> Option<String> {
     let _ = store;
     match crate::recall::session_context(session_id, 40) {
         Ok(msgs) => Some(msgs.into_iter().map(|m| m.text).filter(|t| !t.trim().is_empty()).take(30).collect::<Vec<_>>().join("\n")),
@@ -468,11 +468,11 @@ fn serde_json_to_value(b: impl serde::Serialize) -> serde_json::Value {
 /// the refinery review result, the landed convoy id + landed_at, and the
 /// post-restart recovery state.
 pub(crate) fn run_live_e2e_subcommand() {
-    use lattice_gastown::orchestration::control::ControlApi;
-    use lattice_gastown::orchestration::scheduler::Orchestrator;
-    use lattice_gastown::orchestration::state::OrchestrationStore;
-    use lattice_gastown::orchestration::state::{AgentRole, MergeMode};
-    use lattice_runtime::{LatticeRuntime, RuntimeConfig};
+    use nai_lattice_gastown::orchestration::control::ControlApi;
+    use nai_lattice_gastown::orchestration::scheduler::Orchestrator;
+    use nai_lattice_gastown::orchestration::state::OrchestrationStore;
+    use nai_lattice_gastown::orchestration::state::{AgentRole, MergeMode};
+    use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
     let work_root = std::env::var_os("HELLDESK_E2E_ROOT")
         .map(std::path::PathBuf::from)
@@ -530,8 +530,8 @@ pub(crate) fn run_live_e2e_subcommand() {
 
     // 3. Real Mayor decomposition of a multi-step task into a dependency DAG convoy.
     let user_request = "Add two new math functions (subtract and multiply) to src/lib.rs, plus a README.md, with unit tests. The functions must be independent; the README depends on both being present.";
-    let mayor = match lattice_gastown::orchestration::agent::mayor_decide(
-        &lattice_gastown::orchestration::agent::ProviderConfig::from_env().unwrap_or_else(|e| {
+    let mayor = match nai_lattice_gastown::orchestration::agent::mayor_decide(
+        &nai_lattice_gastown::orchestration::agent::ProviderConfig::from_env().unwrap_or_else(|e| {
             println!("{}", serde_json::json!({"ok": false, "error": format!("llm config: {e}") }));
             std::process::exit(2);
         }),
@@ -586,7 +586,7 @@ pub(crate) fn run_live_e2e_subcommand() {
             std::thread::sleep(std::time::Duration::from_millis(1500));
         }
         if !rep.landed.is_empty() {
-            landed_at = Some(lattice_gastown::orchestration::state::now());
+            landed_at = Some(nai_lattice_gastown::orchestration::state::now());
         }
         // Every tick, re-persist a recovery manifest to the durable root.
         let manifest_path = work_root.join("gastown-e2e-manifest.json");
@@ -598,7 +598,7 @@ pub(crate) fn run_live_e2e_subcommand() {
         if let Some(e) = &rep.error { last_error = Some(e.clone()); }
         // First persistent-landed detection: convoy Closed with landed_at.
         let convoy_closed = orch.store().get_bead(convoy_id.as_deref().unwrap_or(""))
-            .map(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Closed)
+            .map(|b| b.status == nai_lattice_gastown::orchestration::state::BeadStatus::Closed)
             .unwrap_or(false);
         let convoy_landed = orch.store().get_convoy_metadata(convoy_id.as_deref().unwrap_or(""))
             .map(|m| m.landed_at.is_some())
@@ -762,12 +762,12 @@ pub(crate) fn dispatch_orto(
             let title = args["title"].as_str().unwrap_or("").to_string();
             let project_id = args["project_id"].as_str().map(str::to_string);
             let merge_mode = match args["merge_mode"].as_str() {
-                Some("review-and-merge") => lattice_gastown::orchestration::state::MergeMode::ReviewAndMerge,
-                _ => lattice_gastown::orchestration::state::MergeMode::ReviewThenLand,
+                Some("review-and-merge") => nai_lattice_gastown::orchestration::state::MergeMode::ReviewAndMerge,
+                _ => nai_lattice_gastown::orchestration::state::MergeMode::ReviewThenLand,
             };
             let staged = args["staged"].as_bool().unwrap_or(false);
             let feature_branch = args["feature_branch"].as_str().map(str::to_string);
-            let mut bead_inputs: Vec<lattice_gastown::orchestration::control::ConvoyBeadInput> = Vec::new();
+            let mut bead_inputs: Vec<nai_lattice_gastown::orchestration::control::ConvoyBeadInput> = Vec::new();
             let mut primary_indexes: Vec<usize> = Vec::new(); // primary beads (exclude corrective/verification)
             for (idx, b) in args["beads"].as_array().unwrap_or(&Vec::new()).iter().enumerate() {
                 let mut deps_idx = Vec::new();
@@ -786,7 +786,7 @@ pub(crate) fn dispatch_orto(
                     }
                     primary_indexes.push(idx);
                 }
-                bead_inputs.push(lattice_gastown::orchestration::control::ConvoyBeadInput {
+                bead_inputs.push(nai_lattice_gastown::orchestration::control::ConvoyBeadInput {
                     title: b["title"].as_str().unwrap_or("task").to_string(),
                     body: b["body"].as_str().map(str::to_string),
                     priority: latch_priority(b["priority"].as_str()),
@@ -838,7 +838,7 @@ pub(crate) fn dispatch_orto(
                 Ok(c) => c,
                 Err(e) => return serde_json::json!({"error": format!("provider: {e}")}),
             };
-            let decision = match lattice_gastown::orchestration::agent::mayor_decide(&cfg, &town, &user_request) {
+            let decision = match nai_lattice_gastown::orchestration::agent::mayor_decide(&cfg, &town, &user_request) {
                 Ok(d) => d,
                 Err(e) => return serde_json::json!({"error": format!("mayor: {e}")}),
             };
@@ -945,17 +945,17 @@ pub(crate) fn dispatch_orto(
                 return serde_json::json!({"ok": false, "error": "project not found"});
             };
             // Prior (last added) non-terminal primary among this project's convoys.
-            let prior = p.convoy_ids.iter().flat_map(|cid| store.list_beads().into_iter().filter(move |b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == lattice_gastown::orchestration::state::BeadType::Issue)).filter(|b| !b.status.is_terminal()).max_by_key(|b| b.created_at.clone());
+            let prior = p.convoy_ids.iter().flat_map(|cid| store.list_beads().into_iter().filter(move |b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == nai_lattice_gastown::orchestration::state::BeadType::Issue)).filter(|b| !b.status.is_terminal()).max_by_key(|b| b.created_at.clone());
             let rig = if args["rig_id"].as_str().unwrap_or("").is_empty() { store.list_rigs().first().map(|r| r.rig_id.clone()).unwrap_or_default() } else { args["rig_id"].as_str().unwrap_or("").to_string() };
             let convoy_title = format!("kanban-{}", p.project_id.chars().take(8).collect::<String>());
             // Create the new task (as a primary issue in its own project convoy).
-            let convoy_id = ctrl.create_convoy(&town_id, &rig, &convoy_title, vec![lattice_gastown::orchestration::control::ConvoyBeadInput {
+            let convoy_id = ctrl.create_convoy(&town_id, &rig, &convoy_title, vec![nai_lattice_gastown::orchestration::control::ConvoyBeadInput {
                 title: title.to_string(),
                 body: obj,
                 priority: None,
                 labels: vec!["gt:primary".to_string()],
                 depends_on_index: vec![],
-            }], lattice_gastown::orchestration::state::MergeMode::ReviewThenLand, false, None);
+            }], nai_lattice_gastown::orchestration::state::MergeMode::ReviewThenLand, false, None);
             let new_bead = store.list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(convoy_id.as_str())).map(|b| b.bead_id.clone());
             // P0-D: attach TASK-SPECIFIC acceptance gates (from the caller or stored
             // per bead) so the Quality Oracle scores the actual task, not infra.
@@ -980,7 +980,7 @@ pub(crate) fn dispatch_orto(
             }
             // Serial gate across convoys: blocks on the prior primary.
             if let (Some(nb), Some(prior_id)) = (&new_bead, prior.map(|b| b.bead_id.clone())) {
-                let _ = store.put_dependency_if_valid(&lattice_gastown::orchestration::state::Dependency { bead_id: nb.clone(), depends_on_bead_id: prior_id.clone(), kind: lattice_gastown::orchestration::state::DependencyKind::Blocks });
+                let _ = store.put_dependency_if_valid(&nai_lattice_gastown::orchestration::state::Dependency { bead_id: nb.clone(), depends_on_bead_id: prior_id.clone(), kind: nai_lattice_gastown::orchestration::state::DependencyKind::Blocks });
             }
             if !p.convoy_ids.contains(&convoy_id) { p.convoy_ids.push(convoy_id.clone()); }
             if p.active_bead_id.is_none() { if let Some(nb) = &new_bead { p.active_bead_id = Some(nb.clone()); } }
@@ -1001,7 +1001,7 @@ pub(crate) fn dispatch_orto(
             };
             // Primary = the active bead (walk to the primary Issue under a convoy).
             let primary_id = p.active_bead_id.clone()
-                .or_else(|| p.convoy_ids.iter().find_map(|cid| store.as_ref().list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == lattice_gastown::orchestration::state::BeadType::Issue).map(|b| b.bead_id.clone())));
+                .or_else(|| p.convoy_ids.iter().find_map(|cid| store.as_ref().list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == nai_lattice_gastown::orchestration::state::BeadType::Issue).map(|b| b.bead_id.clone())));
             let Some(primary_id) = primary_id else {
                 return serde_json::json!({"ok": false, "error": "no active primary bead"});
             };
@@ -1034,8 +1034,8 @@ pub(crate) fn dispatch_orto(
             }).to_string();
             let mut meta = serde_json::json!({"corrective_plan": plan_body.clone(), "parent_primary": primary_id, "inquisitor_first_pass": true});
             meta["bt_gates"] = serde_json::Value::Array(owner_gates.clone());
-            let cb = lattice_gastown::orchestration::state::Bead::create(
-                lattice_gastown::orchestration::state::BeadType::Issue,
+            let cb = nai_lattice_gastown::orchestration::state::Bead::create(
+                nai_lattice_gastown::orchestration::state::BeadType::Issue,
                 &format!("corrective: {}", primary.title),
                 Some(&plan_body),
                 None,
@@ -1143,7 +1143,7 @@ pub(crate) fn dispatch_orto(
                 // Strict: only set as active if no un-finished active bead exists.
                 let current_finished = p.active_bead_id.as_ref()
                     .and_then(|bid| store.get_bead(bid))
-                    .map(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Closed)
+                    .map(|b| b.status == nai_lattice_gastown::orchestration::state::BeadStatus::Closed)
                     .unwrap_or(true);
                 let now_active = p.completed_primary_beads.is_empty() || !current_finished;
                 if !now_active {
@@ -1240,7 +1240,7 @@ pub(crate) fn dispatch_orto(
                             .collect();
                         // blocks edges: bead -> the primary(s) it awaits (serial chain).
                         let blocks: Vec<serde_json::Value> = deps.iter()
-                            .filter(|d| d.kind == lattice_gastown::orchestration::state::DependencyKind::Blocks && members.iter().any(|m| m["bead_id"] == serde_json::json!(d.bead_id)))
+                            .filter(|d| d.kind == nai_lattice_gastown::orchestration::state::DependencyKind::Blocks && members.iter().any(|m| m["bead_id"] == serde_json::json!(d.bead_id)))
                             .map(|d| serde_json::json!({"bead": d.bead_id, "awaits": d.depends_on_bead_id, "kind": "blocks"}))
                             .collect();
                         convoys.push(serde_json::json!({"convoy_id": cid, "beads": members, "blocks_edges": blocks}));
@@ -1269,7 +1269,7 @@ pub(crate) fn dispatch_orto(
                         .map(|b| serde_json_to_value(b.clone()))
                         .collect();
                     let blocks: Vec<serde_json::Value> = deps.iter()
-                        .filter(|d| d.kind == lattice_gastown::orchestration::state::DependencyKind::Blocks && members.iter().any(|m| m["bead_id"] == serde_json::json!(d.bead_id)))
+                        .filter(|d| d.kind == nai_lattice_gastown::orchestration::state::DependencyKind::Blocks && members.iter().any(|m| m["bead_id"] == serde_json::json!(d.bead_id)))
                         .map(|d| serde_json::json!({"bead": d.bead_id, "awaits": d.depends_on_bead_id, "kind": "blocks"}))
                         .collect();
                     // Flatten primaries (issue beads in this convoy) into the universal list.
@@ -1303,8 +1303,8 @@ pub(crate) fn dispatch_orto(
     }
 }
 
-fn latch_priority(s: Option<&str>) -> Option<lattice_gastown::orchestration::state::BeadPriority> {
-    Some(lattice_gastown::orchestration::state::BeadPriority::parse(s))
+fn latch_priority(s: Option<&str>) -> Option<nai_lattice_gastown::orchestration::state::BeadPriority> {
+    Some(nai_lattice_gastown::orchestration::state::BeadPriority::parse(s))
 }
 
 fn rt_root_as_string() -> Option<String> {
@@ -1325,9 +1325,9 @@ fn rt_root_as_string() -> Option<String> {
 /// machine-valid (non-hallucinated) rejection finding, and then an approval
 /// after repair.
 pub(crate) fn run_live_adversarial_demo() {
-    use lattice_gastown::orchestration::adversarial::{build_snapshot, verify_finding};
-    use lattice_gastown::orchestration::agent::real_completion;
-    use lattice_gastown::review_evidence::EvidenceVerdict;
+    use nai_lattice_gastown::orchestration::adversarial::{build_snapshot, verify_finding};
+    use nai_lattice_gastown::orchestration::agent::real_completion;
+    use nai_lattice_gastown::review_evidence::EvidenceVerdict;
 
     let cfg = match ProviderConfig::from_env() {
         Ok(c) => c,
@@ -1370,13 +1370,13 @@ pub(crate) fn run_live_adversarial_demo() {
     };
     let parsed = parse_review_json(&raw);
     let decision = parsed.get("decision").and_then(|d| d.as_str()).unwrap_or("approved");
-    let findings: Vec<lattice_gastown::orchestration::state::Finding> = parsed
+    let findings: Vec<nai_lattice_gastown::orchestration::state::Finding> = parsed
         .get("findings")
         .and_then(|f| f.as_array())
         .cloned()
         .unwrap_or_default()
         .iter()
-        .filter_map(lattice_gastown::orchestration::adversarial::finding_from_json)
+        .filter_map(nai_lattice_gastown::orchestration::adversarial::finding_from_json)
         .collect();
     // 3. Adjudicate: machine-validate each finding against the snapshot.
     let adjudicated: Vec<serde_json::Value> = findings.iter().map(|f| {
@@ -1440,9 +1440,9 @@ Do NOT invent files, lines, or strings. False positives are worse than missing a
 /// against the real source snapshot (evidence semantics). Reports per-role
 /// decisions + verdicts so distinctness and corroboration are observable live.
 pub(crate) fn run_live_4role_demo() {
-    use lattice_gastown::orchestration::adversarial::{build_snapshot, verify_finding};
-    use lattice_gastown::orchestration::agent::real_completion;
-    use lattice_gastown::review_evidence::EvidenceVerdict;
+    use nai_lattice_gastown::orchestration::adversarial::{build_snapshot, verify_finding};
+    use nai_lattice_gastown::orchestration::agent::real_completion;
+    use nai_lattice_gastown::review_evidence::EvidenceVerdict;
 
     let cfg = match ProviderConfig::from_env() { Ok(c) => c, Err(e) => { println!("{}", serde_json::json!({"ok":false,"error":e})); return; } };
     let dir = std::env::temp_dir().join(format!("gastown-4role-{}", std::process::id()));
@@ -1474,9 +1474,9 @@ pub(crate) fn run_live_4role_demo() {
         let raw = real_completion(&cfg, system, &user, 800).unwrap_or_default();
         let parsed = parse_review_json(&raw);
         let decision = parsed.get("decision").and_then(|d| d.as_str()).unwrap_or("unparseable").to_string();
-        let findings: Vec<lattice_gastown::orchestration::state::Finding> = parsed
+        let findings: Vec<nai_lattice_gastown::orchestration::state::Finding> = parsed
             .get("findings").and_then(|f| f.as_array()).cloned().unwrap_or_default()
-            .iter().filter_map(lattice_gastown::orchestration::adversarial::finding_from_json).collect();
+            .iter().filter_map(nai_lattice_gastown::orchestration::adversarial::finding_from_json).collect();
         let verdicts: Vec<serde_json::Value> = findings.iter().map(|f| {
             let v = verify_finding(&snapshot, f, &[]);
             serde_json::json!({"message":f.message, "severity":f.severity, "lines":f.evidence.as_ref().and_then(|e|e.lines), "verdict": v.as_str()})
@@ -1608,25 +1608,25 @@ impl AgentRunner for HostAgentRunner {
                 return Ok(DispatchResult { done: false, pr_url: None, summary: Some("agent dispatch skipped (hive_controls.agents=false)".into()), review: None });
             }
         }
-        use lattice_supervisor::{ProcessSpec, WorkerLimits};
+        use nai_lattice_supervisor::{ProcessSpec, WorkerLimits};
         // REVIEW-PASS dispatch: the worker consumes the resolved role-specific
         // model (per-role registry) and returns a review decision + anchored
         // findings. This is how Reviewer A/B/Adversarial/Adjudicator are run by
         // the live scheduler against the real model endpoint.
         if let Some(role) = ctx.review_role {
-            use lattice_gastown::orchestration::agent::{ProviderConfig, real_completion};
-            use lattice_gastown::orchestration::adversarial::finding_from_json;
-            use lattice_gastown::orchestration::state::ReviewDecision;
+            use nai_lattice_gastown::orchestration::agent::{ProviderConfig, real_completion};
+            use nai_lattice_gastown::orchestration::adversarial::finding_from_json;
+            use nai_lattice_gastown::orchestration::state::ReviewDecision;
             let cfg = ProviderConfig::from_env().map_err(|e| format!("provider: {e}"))?;
             // The resolved per-role model overrides the default endpoint model.
             let _ = role;
             let model = ctx.review_model.clone().unwrap_or_else(|| cfg.model.clone());
             let role_label = match ctx.review_role {
                 Some(rr) => match rr {
-                    lattice_gastown::orchestration::state::ReviewPassRole::ReviewerA => "Reviewer A",
-                    lattice_gastown::orchestration::state::ReviewPassRole::ReviewerB => "Reviewer B (adversarial second opinion)",
-                    lattice_gastown::orchestration::state::ReviewPassRole::Adversarial => "Adversarial (breaking)",
-                    lattice_gastown::orchestration::state::ReviewPassRole::Adjudicator => "Adjudicator (evidence validation)",
+                    nai_lattice_gastown::orchestration::state::ReviewPassRole::ReviewerA => "Reviewer A",
+                    nai_lattice_gastown::orchestration::state::ReviewPassRole::ReviewerB => "Reviewer B (adversarial second opinion)",
+                    nai_lattice_gastown::orchestration::state::ReviewPassRole::Adversarial => "Adversarial (breaking)",
+                    nai_lattice_gastown::orchestration::state::ReviewPassRole::Adjudicator => "Adjudicator (evidence validation)",
                 },
                 None => "reviewer",
             };
@@ -1662,14 +1662,14 @@ impl AgentRunner for HostAgentRunner {
             };
             let parsed = parse_review_json(&raw);
             let decision = parsed.get("decision").and_then(|d| d.as_str()).unwrap_or("changes_requested");
-            let findings: Vec<lattice_gastown::orchestration::state::Finding> = parsed
+            let findings: Vec<nai_lattice_gastown::orchestration::state::Finding> = parsed
                 .get("findings").and_then(|f| f.as_array()).cloned().unwrap_or_default()
                 .iter().filter_map(finding_from_json).collect();
             return Ok(DispatchResult {
                 done: false,
                 pr_url: None,
                 summary: Some(format!("review pass ({role_label})")),
-                review: Some(lattice_gastown::orchestration::scheduler::ReviewerOutcome {
+                review: Some(nai_lattice_gastown::orchestration::scheduler::ReviewerOutcome {
                     decision: match decision { "approved" => ReviewDecision::Approved, _ => ReviewDecision::ChangesRequested },
                     findings,
                 }),
@@ -1698,14 +1698,14 @@ impl AgentRunner for HostAgentRunner {
         } else {
             let t = base.join(&ctx.rig_id);
             std::fs::create_dir_all(&t).map_err(|e| e.to_string())?;
-            let clone_spec = lattice_gastown::orchestration::git::CloneSpec {
+            let clone_spec = nai_lattice_gastown::orchestration::git::CloneSpec {
                 git_url: rig.as_ref().map(|r| r.git_url.clone()).unwrap_or_else(|| ".".to_string()),
                 destination: t.clone(),
                 branch: ctx.default_branch.clone(),
                 depth: None,
                 token_env: None,
             };
-            let clone = lattice_gastown::orchestration::git::clone_rig(&clone_spec).map_err(|e| e.to_string())?;
+            let clone = nai_lattice_gastown::orchestration::git::clone_rig(&clone_spec).map_err(|e| e.to_string())?;
             if !clone.exit_ok {
                 return Err(format!("rig clone failed: {}", clone.stderr));
             }
@@ -1720,15 +1720,15 @@ impl AgentRunner for HostAgentRunner {
         //    fresh per-MR worktree, so its merge lands the polecat's pushed
         //    source branch onto origin/main.
         let role = match ctx.agent.role {
-            lattice_gastown::orchestration::state::AgentRole::Polecat => "polecat",
-            lattice_gastown::orchestration::state::AgentRole::Refinery => "refinery",
-            lattice_gastown::orchestration::state::AgentRole::Mayor => "mayor",
+            nai_lattice_gastown::orchestration::state::AgentRole::Polecat => "polecat",
+            nai_lattice_gastown::orchestration::state::AgentRole::Refinery => "refinery",
+            nai_lattice_gastown::orchestration::state::AgentRole::Mayor => "mayor",
         };
         let wt = if role == "refinery" {
             truth_root.clone()
         } else {
             let w = truth_root.join(&ctx.branch);
-            let wtrep = lattice_gastown::orchestration::git::worktree(&truth_root, &w, &ctx.branch, &ctx.default_branch);
+            let wtrep = nai_lattice_gastown::orchestration::git::worktree(&truth_root, &w, &ctx.branch, &ctx.default_branch);
             let _ = wtrep;
             // Apply sparse-checkout when the rig config requests it (large repos):
             // restrict materialization to the configured pathspec so a polecat's
@@ -1736,7 +1736,7 @@ impl AgentRunner for HostAgentRunner {
             if let Some(rig) = rig.as_ref() {
                 if !rig.sparse_paths.is_empty() && w.join(".git").exists() {
                     let paths: Vec<&str> = rig.sparse_paths.iter().map(|s| s.as_str()).collect();
-                    let _ = lattice_gastown::orchestration::git::sparse_checkout(&w, &paths);
+                    let _ = nai_lattice_gastown::orchestration::git::sparse_checkout(&w, &paths);
                 }
             }
             w
@@ -1752,13 +1752,13 @@ impl AgentRunner for HostAgentRunner {
             "town_id": ctx.town.town_id,
             "target_branch": ctx.target_branch.clone(),
             "merge_strategy": match ctx.town.config.merge_strategy {
-                lattice_gastown::orchestration::state::MergeStrategy::Direct => "direct",
-                lattice_gastown::orchestration::state::MergeStrategy::Pr => "pr",
+                nai_lattice_gastown::orchestration::state::MergeStrategy::Direct => "direct",
+                nai_lattice_gastown::orchestration::state::MergeStrategy::Pr => "pr",
             },
             "gates": ctx.town.config.refinery.gates,
             "review_mode": match ctx.town.config.refinery.review_mode {
-                lattice_gastown::orchestration::state::ReviewMode::Rework => "rework",
-                lattice_gastown::orchestration::state::ReviewMode::Comments => "comments",
+                nai_lattice_gastown::orchestration::state::ReviewMode::Rework => "rework",
+                nai_lattice_gastown::orchestration::state::ReviewMode::Comments => "comments",
             },
             "worktree_root": wt,
             "branch": ctx.branch,
@@ -1781,12 +1781,12 @@ impl AgentRunner for HostAgentRunner {
             no_console: true,
             no_capture: false, // structured decision is read from stdout
         };
-        let outcome = lattice_supervisor::child::run(&spec, &limits).map_err(|e| e.to_string())?;
+        let outcome = nai_lattice_supervisor::child::run(&spec, &limits).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);
-        if matches!(outcome.exit_status, lattice_supervisor::ExitStatus::TimedOut) {
+        if matches!(outcome.exit_status, nai_lattice_supervisor::ExitStatus::TimedOut) {
             return Err(format!("helldesk-agent {role} worker timed out ({:?}ms)", outcome.wall_ms));
         }
-        if !matches!(outcome.exit_status, lattice_supervisor::ExitStatus::Success) {
+        if !matches!(outcome.exit_status, nai_lattice_supervisor::ExitStatus::Success) {
             return Err(format!("helldesk-agent {role} worker failed: {:?}: {}", outcome.exit_status, outcome.stderr));
         }
         let envelope: serde_json::Value =
@@ -1794,7 +1794,7 @@ impl AgentRunner for HostAgentRunner {
         if !envelope.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             return Err(envelope.get("error").and_then(|v| v.as_str()).unwrap_or("agent worker error").to_string());
         }
-        let decision: lattice_gastown::orchestration::agent::AgentDecision =
+        let decision: nai_lattice_gastown::orchestration::agent::AgentDecision =
             serde_json::from_value(envelope.get("decision").cloned().unwrap_or_default())
                 .map_err(|e| format!("bad agent decision: {e}"))?;
         Ok(DispatchResult {
@@ -2153,7 +2153,7 @@ pub(crate) fn start_control_server() {
                                 if let Some(mut p) = crate::project::load_project(&store, &pid) {
                                     // The primary bead this correction belongs to.
                                     let primary = p.active_bead_id.clone().filter(|b| store.get_bead(b).is_some())
-                                        .or_else(|| p.convoy_ids.iter().find_map(|cid| store.list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == lattice_gastown::orchestration::state::BeadType::Issue).map(|b| b.bead_id.clone())));
+                                        .or_else(|| p.convoy_ids.iter().find_map(|cid| store.list_beads().into_iter().find(|b| b.parent_bead_id.as_deref() == Some(cid.as_str()) && b.bead_type == nai_lattice_gastown::orchestration::state::BeadType::Issue).map(|b| b.bead_id.clone())));
                                     // New corrective iteration = fresh bead (bounded
                                     // execution) chained under the SAME primary, not an
                                     // identical re-dispatch of the failed primary.
@@ -2190,8 +2190,8 @@ let corrective_rig = if let Some(pr) = p.rig_ids.first() { pr.clone() }
                                     // dispatch it to a Polecat â€” a fictitious rig never runs.
                                     let mut cb_meta = serde_json::json!({"corrective_plan": plan, "inquisitor_first_pass": true});
                                     if !owner_gates.is_empty() { cb_meta["bt_gates"] = serde_json::Value::Array(owner_gates.clone()); }
-                                    let cb = lattice_gastown::orchestration::state::Bead::create(
-                                        lattice_gastown::orchestration::state::BeadType::Issue,
+                                    let cb = nai_lattice_gastown::orchestration::state::Bead::create(
+                                        nai_lattice_gastown::orchestration::state::BeadType::Issue,
                                         &format!("corrective: {followup_title}"),
                                         Some(plan.as_str()),
                                         None,
@@ -2321,15 +2321,15 @@ fn write_html<W: std::io::Write>(w: &mut W, html: &str) {
 #[allow(clippy::too_many_arguments)]
 fn derive_transition(
     store: &OrchestrationStore,
-    ev: &lattice_gastown::orchestration::state::BeadEvent,
+    ev: &nai_lattice_gastown::orchestration::state::BeadEvent,
     proj_id: Option<&str>,
 ) -> serde_json::Value {
-    use lattice_gastown::orchestration::state::BeadEvent;
+    use nai_lattice_gastown::orchestration::state::BeadEvent;
     // Project + convoy + primary correlation (resolved once per event).
     let owner = crate::inquisitor::governor::resolve_owner_primary(store, ev.bead_id.as_deref());
     let primary_id = owner.as_ref().map(|b| b.bead_id.clone());
     let convoy_id = owner.as_ref().and_then(|b| b.parent_bead_id.clone())
-        .filter(|p| store.get_bead(p).map(|b| b.bead_type == lattice_gastown::orchestration::state::BeadType::Convoy).unwrap_or(false));
+        .filter(|p| store.get_bead(p).map(|b| b.bead_type == nai_lattice_gastown::orchestration::state::BeadType::Convoy).unwrap_or(false));
     let proj = proj_id.map(str::to_string)
         .or_else(|| crate::project::find_project_for_bead(store, primary_id.as_deref().unwrap_or_default()).map(|p| p.project_id));
     // Execution bead = the bead the worker was running (the event's bead, or its
@@ -2388,7 +2388,7 @@ fn derive_transition(
         "attempt_id": attempt_id,
         "event_id": ev.event_id,
         "timestamp": ev.created_at,
-        "ts_epoch_ms": lattice_gastown::orchestration::reconciler::parse_iso_ms(&ev.created_at).unwrap_or(0),
+        "ts_epoch_ms": nai_lattice_gastown::orchestration::reconciler::parse_iso_ms(&ev.created_at).unwrap_or(0),
         "rig_id": rig.unwrap_or_default(),
         "summary": summary,
         "evidence_refs": [],
@@ -2400,7 +2400,7 @@ fn derive_transition(
 /// most recent event seen â€” so the frontend can tell "work is advancing" from
 /// "it has stalled". Also the current wall-clock so the client can age items.
 fn sse_liveness(store: &OrchestrationStore, now_ms: i64) -> serde_json::Value {
-    use lattice_gastown::orchestration::state::BeadStatus;
+    use nai_lattice_gastown::orchestration::state::BeadStatus;
     let in_flight: Vec<serde_json::Value> = store.list_beads().into_iter()
         .filter(|b| b.status == BeadStatus::Open || b.status == BeadStatus::InProgress || b.status == BeadStatus::InReview)
         .map(|b| {
@@ -2428,7 +2428,7 @@ fn sse_liveness(store: &OrchestrationStore, now_ms: i64) -> serde_json::Value {
 
 /// ISO timestamp -> epoch ms, falling back to `now` so ages never go negative.
 fn parse_iso_or_now(s: &str, now_ms: i64) -> i64 {
-    lattice_gastown::orchestration::reconciler::parse_iso_ms(s).unwrap_or(now_ms)
+    nai_lattice_gastown::orchestration::reconciler::parse_iso_ms(s).unwrap_or(now_ms)
 }
 
 /// Real-time Server-Sent-Events stream of the durable audit event log. The
@@ -2453,8 +2453,8 @@ fn notify_sse<W: std::io::Write>(w: &mut W, town_id: &str, last_event_id: &str) 
         let _ = w.write_all(format!("id: {seen}\r\nevent: sync\ndata: {}\r\n\r\n", serde_json::json!({"count": seen, "cursor": seen})).as_bytes());
         // Liveness envelope (P0-E observability): "is work moving or stalled?"
         // Reported on connect and refreshed periodically below.
-        let liveness = sse_liveness(&store, lattice_gastown::orchestration::reconciler::parse_iso_ms(
-            &lattice_gastown::orchestration::state::now()).unwrap_or(0));
+        let liveness = sse_liveness(&store, nai_lattice_gastown::orchestration::reconciler::parse_iso_ms(
+            &nai_lattice_gastown::orchestration::state::now()).unwrap_or(0));
         let _ = w.write_all(format!("id: {seen}\r\nevent: liveness\ndata: {}\r\n\r\n", serde_json::to_string(&liveness).unwrap_or_default()).as_bytes());
         if from < evs.len() {
             // Replay the missed window as typed transition events (P0-E) â€” each
@@ -2493,8 +2493,8 @@ fn notify_sse<W: std::io::Write>(w: &mut W, town_id: &str, last_event_id: &str) 
             }
             // Periodic liveness: refresh the in-flight / stalled signal so the
             // dashboard always shows whether work is advancing or is idle.
-            let liveness = sse_liveness(&store, lattice_gastown::orchestration::reconciler::parse_iso_ms(
-                &lattice_gastown::orchestration::state::now()).unwrap_or(0));
+            let liveness = sse_liveness(&store, nai_lattice_gastown::orchestration::reconciler::parse_iso_ms(
+                &nai_lattice_gastown::orchestration::state::now()).unwrap_or(0));
             let _ = w.write_all(format!("id: {seen}\r\nevent: liveness\ndata: {}\r\n\r\n", serde_json::to_string(&liveness).unwrap_or_default()).as_bytes());
             let _ = w.flush();
         }
@@ -2678,8 +2678,8 @@ pub(crate) fn recover_interrupted_primary_on_startup() {
     // 1) Resume INTERRUPTED (not failed) in-flight primary work: in_progress whose
     //    lease expired on the dead process. Attempt history is preserved.
     let mut resumed = 0usize;
-    let in_flight: Vec<lattice_gastown::orchestration::state::Bead> = store.list_beads().into_iter()
-        .filter(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::InProgress)
+    let in_flight: Vec<nai_lattice_gastown::orchestration::state::Bead> = store.list_beads().into_iter()
+        .filter(|b| b.status == nai_lattice_gastown::orchestration::state::BeadStatus::InProgress)
         .collect();
     for mut b in in_flight {
         // Only resume when we have a numeric lease watermark; otherwise leave it
@@ -2688,7 +2688,7 @@ pub(crate) fn recover_interrupted_primary_on_startup() {
             .and_then(|s| s.parse::<i64>().ok());
         if let Some(beat) = last_beat {
             if now_ms - beat >= lease_ms {
-                b.status = lattice_gastown::orchestration::state::BeadStatus::Open;
+                b.status = nai_lattice_gastown::orchestration::state::BeadStatus::Open;
                 b.metadata.as_object_mut().map(|m| m.insert("resumed_at".to_string(), serde_json::json!(now_ms)));
                 store.put_bead(&b);
                 resumed += 1;
@@ -2706,7 +2706,7 @@ pub(crate) fn recover_interrupted_primary_on_startup() {
     //    NOT a retry-budget reset â€” it only lets a genuinely interrupted execution
     //    pick back up (with its real attempt history intact).
     let _ = orch.tick(&HostAgentRunner);
-    tracing::info!(pre_dispatch = %store.list_beads().iter().filter(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Open).count(), "auto-continue: reconciliation armed after startup");
+    tracing::info!(pre_dispatch = %store.list_beads().iter().filter(|b| b.status == nai_lattice_gastown::orchestration::state::BeadStatus::Open).count(), "auto-continue: reconciliation armed after startup");
 }
 
 #[cfg(test)]

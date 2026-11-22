@@ -1,8 +1,11 @@
 [package]
-name = "lattice-core"
+name = "nai-lattice-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "NAI Lattice core domain types: events, global identity, durability classes."
 
 [dependencies]

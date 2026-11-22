@@ -1,12 +1,15 @@
 [package]
-name = "lattice-search"
+name = "nai-lattice-search"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "Embedded fuzzy full-text search index (Tantivy) — supports query.search over indexed documents."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
 tantivy = "0.27.0"
 serde.workspace = true
 serde_json.workspace = true

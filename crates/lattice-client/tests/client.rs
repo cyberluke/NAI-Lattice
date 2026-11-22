@@ -3,14 +3,14 @@
 use bytes::BytesMut;
 use prost::Message;
 
-use lattice_client::codec::{encode_frame, read_frame, WireFrame};
-use lattice_client::NafClient;
-use lattice_protocol::pb;
+use nai_lattice_client::codec::{encode_frame, read_frame, WireFrame};
+use nai_lattice_client::NafClient;
+use nai_lattice_protocol::pb;
 
 #[tokio::test]
 async fn client_handshakes_and_dispatches_over_duplex() {
     // A single duplex pair: `client_end` (used by the client) and `server_end`.
-    let (client_end, server_end) = lattice_client::transport::duplex();
+    let (client_end, server_end) = nai_lattice_client::transport::duplex();
     let mut server = server_end;
 
     // Fake server: read handshake, reply; read dispatch, reply.

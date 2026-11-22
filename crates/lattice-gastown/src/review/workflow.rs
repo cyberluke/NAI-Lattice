@@ -139,7 +139,7 @@ pub fn parse_findings(reply: &str, category: &str) -> Vec<ReviewFinding> {
 
 /// Run the full real A/B/adjudicator review for a job against `workspace_root`.
 ///
-/// Captures an immutable snapshot via `lattice_git`, builds a review prompt that
+/// Captures an immutable snapshot via `nai_lattice_git`, builds a review prompt that
 /// includes the source delta (committed since baseline + dirty tree), runs each
 /// role as a REAL model call, and returns provenance + findings.
 pub fn run_real_review(
@@ -151,7 +151,7 @@ let now = now_ms();
     // 1. Immutable evidence snapshot (filesystem-only, no subprocess). The
     // reviewer must still see the working tree even when the folder is not a
     // git repository (e.g. a disposable fixture), marking provenance honestly.
-    let snap = lattice_git::snapshot(workspace_root, now).ok();
+    let snap = nai_lattice_git::snapshot(workspace_root, now).ok();
     let (evidence_manifest_hash, head_str) = match &snap {
         Some(s) => {
             let m = serde_json::to_vec(s).unwrap_or_default();
@@ -247,7 +247,7 @@ fn run_role_adapter(role: Role, evidence: &str, cfg: &ProviderConfig, now: i64) 
 pub fn build_source_evidence_for_worker(
     job: &ReviewJob,
     root: &Path,
-    snap: Option<&lattice_git::GitSnapshot>,
+    snap: Option<&nai_lattice_git::GitSnapshot>,
     head: &str,
 ) -> String {
     build_source_evidence(job, root, snap, head)
@@ -256,7 +256,7 @@ pub fn build_source_evidence_for_worker(
 /// Capture immutable evidence + manifest hash for the worker orchestrator.
 /// Read-only git snapshot (no subprocess), returns (evidence_text, manifest_hash).
 pub fn capture_evidence(job: &ReviewJob, root: &Path, now: i64) -> (String, String) {
-    let snap = lattice_git::snapshot(root, now).ok();
+    let snap = nai_lattice_git::snapshot(root, now).ok();
     let (manifest_hash, head) = match &snap {
         Some(s) => {
             let m = serde_json::to_vec(s).unwrap_or_default();
@@ -359,7 +359,7 @@ fn role_prompt(role: Role, evidence: &str, prior: &str) -> (String, String) {
 
 /// Bounded source evidence: committed HEAD + dirty working-tree files (no full
 /// disk scan; excluded dirs skipped). Used as review input.
-fn build_source_evidence(_job: &ReviewJob, root: &Path, snap: Option<&lattice_git::GitSnapshot>, head: &str) -> String {
+fn build_source_evidence(_job: &ReviewJob, root: &Path, snap: Option<&nai_lattice_git::GitSnapshot>, head: &str) -> String {
     let mut parts = Vec::new();
     if !head.is_empty() {
         parts.push(format!("HEAD: {head}"));

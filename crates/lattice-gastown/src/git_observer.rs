@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use lattice_git::{GitSnapshot, snapshot};
+use nai_lattice_git::{GitSnapshot, snapshot};
 use serde::{Deserialize, Serialize};
 
 /// A bound, immutable-enough snapshot request for an epoch.

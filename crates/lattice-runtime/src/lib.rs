@@ -8,11 +8,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lattice_aaf::AafResolver;
-use lattice_cas::object::ObjectStore;
-use lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
-use lattice_hotstore::{HotKey, HotValue, HotStore};
-use lattice_ledger::Ledger;
+use nai_lattice_aaf::AafResolver;
+use nai_lattice_cas::object::ObjectStore;
+use nai_lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
+use nai_lattice_hotstore::{HotKey, HotValue, HotStore};
+use nai_lattice_ledger::Ledger;
 use tracing::info;
 use tracing::warn;
 
@@ -108,13 +108,13 @@ pub enum RuntimeError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("ledger: {0}")]
-    Ledger(#[from] lattice_ledger::LedgerError),
+    Ledger(#[from] nai_lattice_ledger::LedgerError),
     #[error("cas: {0}")]
-    Cas(#[from] lattice_cas::CasError),
+    Cas(#[from] nai_lattice_cas::CasError),
     #[error("hotstore: {0}")]
-    HotStore(#[from] lattice_hotstore::HotStoreError),
+    HotStore(#[from] nai_lattice_hotstore::HotStoreError),
     #[error("aaf: {0}")]
-    Aaf(#[from] lattice_aaf::AafError),
+    Aaf(#[from] nai_lattice_aaf::AafError),
     #[error("method not found: {0}")]
     MethodNotFound(String),
     #[error("bad args for {method}: {detail}")]
@@ -124,9 +124,9 @@ pub enum RuntimeError {
     #[error("backend: {0}")]
     Backend(String),
     #[error("vector store: {0}")]
-    Vector(#[from] lattice_vector::VectorError),
+    Vector(#[from] nai_lattice_vector::VectorError),
     #[error("search index: {0}")]
-    Search(#[from] lattice_search::SearchError),
+    Search(#[from] nai_lattice_search::SearchError),
 }
 
 impl From<String> for RuntimeError {
@@ -144,9 +144,9 @@ pub struct LatticeRuntime {
     pub aaf: Arc<AafResolver>,
     pub instance_id: String,
     /// Semantic HNSW vector store (Qdrant-equivalent recall).
-    pub vector_store: lattice_vector::SemanticStore,
+    pub vector_store: nai_lattice_vector::SemanticStore,
     /// Fuzzy full-text index.
-    pub search_index: lattice_search::DocumentIndex,
+    pub search_index: nai_lattice_search::DocumentIndex,
     /// Collection projection store (Mastra canonical persistence surface),
     /// guarded by a single lock for serialized single-writer semantics.
     pub collections: tokio::sync::Mutex<CollectionStore>,
@@ -155,12 +155,12 @@ pub struct LatticeRuntime {
     /// view — never by scanning the full ledger on each request (bulkhead). Kept
     /// fresh by a background worker, not on the read hot path. `Arc` so the
     /// worker task and the read path share one instance without cloning.
-    pub read_model: std::sync::Arc<lattice_ledger::read_model::LedgerReadModel>,
+    pub read_model: std::sync::Arc<nai_lattice_ledger::read_model::LedgerReadModel>,
     /// Multi-dimensional datalake index (materialized CQRS projection) — first-class
     /// queries by namespace/entity/type/producer/correlation/time-range without
     /// scanning the whole ledger. Read-side only, own lock (bulkhead), kept fresh
     /// by the same background projection worker as `read_model`.
-    pub multi_dim_index: std::sync::Arc<lattice_ledger::multi_dim::MultiDimIndex>,
+    pub multi_dim_index: std::sync::Arc<nai_lattice_ledger::multi_dim::MultiDimIndex>,
     /// Internal async executor owned by the runtime. Async work runs on this
     /// runtime from a dedicated thread so callers never see a runtime conflict.
     rt: tokio::runtime::Runtime,
@@ -175,7 +175,7 @@ impl LatticeRuntime {
         let local = config.root.to_path_buf();
 
         // Canonical ledger (opened with crash recovery + projection catch-up).
-        let ledger_cfg = lattice_ledger::LedgerConfig {
+        let ledger_cfg = nai_lattice_ledger::LedgerConfig {
             root: local.clone(),
             target_segment_bytes: config.ledger_segment_bytes,
             batched_latency_ms: 25,
@@ -189,22 +189,22 @@ impl LatticeRuntime {
         let cas = Arc::new(ObjectStore::new(local.join("cas"))?);
 
         // SurrealKV hot store (production adapter).
-        let sk_opts = lattice_hotstore_surrealkv::SurrealKvOptions::new(local.join("hot"));
+        let sk_opts = nai_lattice_hotstore_surrealkv::SurrealKvOptions::new(local.join("hot"));
         let hot: Arc<dyn HotStore> =
-            Arc::new(lattice_hotstore_surrealkv::SurrealKvHotStore::open(sk_opts)?);
+            Arc::new(nai_lattice_hotstore_surrealkv::SurrealKvHotStore::open(sk_opts)?);
 
         // AAF resolver over the owned CAS.
         let aaf = Arc::new(AafResolver::new(cas.clone()));
 
         // Semantic HNSW vector store (Qdrant-equivalent recall).
-        let vector_store = lattice_vector::SemanticStore::open(
+        let vector_store = nai_lattice_vector::SemanticStore::open(
             &local.join("vector"),
             "semantic",
             1024, // Qwen3-Embedding default dim; callers upsert at runtime.
         )?;
 
         // Fuzzy full-text index (Tantivy).
-        let search_index = lattice_search::DocumentIndex::open(&local.join("search"))?;
+        let search_index = nai_lattice_search::DocumentIndex::open(&local.join("search"))?;
 
         let instance_id = format!("nai-lattice-{}", uuid::Uuid::now_v7().simple());
 
@@ -214,7 +214,7 @@ impl LatticeRuntime {
             .map_err(|e| RuntimeError::Backend(format!("rt: {e}")))?;
 
         info!(instance = %instance_id, "Lattice runtime opened");
-        let mut this = Self {
+        let this = Self {
             config,
             ledger,
             cas,
@@ -224,12 +224,12 @@ impl LatticeRuntime {
             vector_store,
             search_index,
             collections: tokio::sync::Mutex::new(CollectionStore::new()),
-            read_model: std::sync::Arc::new(lattice_ledger::read_model::LedgerReadModel::open_with_snapshot(
+            read_model: std::sync::Arc::new(nai_lattice_ledger::read_model::LedgerReadModel::open_with_snapshot(
                 local.join("read-model.json"),
                 crate::READ_MODEL_TAIL_CAPACITY,
             )),
             multi_dim_index: std::sync::Arc::new(
-                lattice_ledger::multi_dim::MultiDimIndex::open_with_checkpoint(
+                nai_lattice_ledger::multi_dim::MultiDimIndex::open_with_checkpoint(
                     local.join("multi-dim-index.json"),
                 ),
             ),
@@ -258,7 +258,7 @@ impl LatticeRuntime {
                     let mut synced_any = false;
                     if read_model.applied_sequence() < hwm {
                         let scan = |after: u64| {
-                            ledger.scan_events(&lattice_ledger::EventScanFilter::exclusive_after(after))
+                            ledger.scan_events(&nai_lattice_ledger::EventScanFilter::exclusive_after(after))
                         };
                         match read_model.sync(scan) {
                             Ok(()) => {
@@ -286,7 +286,7 @@ impl LatticeRuntime {
                     // path and never re-ingests an applied event.
                     if multi_dim_index.applied_sequence() < hwm {
                         let scan = |after: u64| {
-                            ledger.scan_events(&lattice_ledger::EventScanFilter::exclusive_after(after))
+                            ledger.scan_events(&nai_lattice_ledger::EventScanFilter::exclusive_after(after))
                         };
                         match multi_dim_index.sync(scan) {
                             Ok(()) => synced_any = true,
@@ -454,7 +454,7 @@ impl LatticeRuntime {
     }
 
     /// `query.vector { vector: [f32], limit }` — HNSW kNN cosine search.
-    fn on_query_vector(store: &lattice_vector::SemanticStore, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+    fn on_query_vector(store: &nai_lattice_vector::SemanticStore, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
         let vector = args
             .get("vector")
             .and_then(|v| v.as_array())
@@ -472,8 +472,8 @@ impl LatticeRuntime {
     /// `semantic.index { id, vector, title?, body? }` — upsert a vector (and
     /// optionally index its text) for launcher/files semantic + fuzzy recall.
     fn on_semantic_index(
-        store: &lattice_vector::SemanticStore,
-        search: &lattice_search::DocumentIndex,
+        store: &nai_lattice_vector::SemanticStore,
+        search: &nai_lattice_search::DocumentIndex,
         args: &serde_json::Value,
     ) -> Result<Vec<u8>, RuntimeError> {
         let id = Self::apply_semantic_index(store, search, args)?;
@@ -482,8 +482,8 @@ impl LatticeRuntime {
 
     /// Upserts one semantic point (vector + optional text); shared by single/batch.
     fn apply_semantic_index(
-        store: &lattice_vector::SemanticStore,
-        search: &lattice_search::DocumentIndex,
+        store: &nai_lattice_vector::SemanticStore,
+        search: &nai_lattice_search::DocumentIndex,
         args: &serde_json::Value,
     ) -> Result<String, RuntimeError> {
         let id = args
@@ -511,8 +511,8 @@ impl LatticeRuntime {
 
     /// `semantic.index_batch { items: [{ id, vector, title?, body?, namespace? }] }`
     fn on_semantic_index_batch(
-        store: &lattice_vector::SemanticStore,
-        search: &lattice_search::DocumentIndex,
+        store: &nai_lattice_vector::SemanticStore,
+        search: &nai_lattice_search::DocumentIndex,
         args: &serde_json::Value,
     ) -> Result<Vec<u8>, RuntimeError> {
         let items = args
@@ -533,8 +533,8 @@ impl LatticeRuntime {
 
     /// `semantic.delete { id } | { ids: [...] }` — removes vectors and text docs.
     fn on_semantic_delete(
-        store: &lattice_vector::SemanticStore,
-        search: &lattice_search::DocumentIndex,
+        store: &nai_lattice_vector::SemanticStore,
+        search: &nai_lattice_search::DocumentIndex,
         args: &serde_json::Value,
     ) -> Result<Vec<u8>, RuntimeError> {
         let ids: Vec<String> = if let Some(array) = args.get("ids").and_then(|v| v.as_array()) {
@@ -565,7 +565,7 @@ impl LatticeRuntime {
     }
 
     /// `query.search { query, limit, fuzzy? }` — fuzzy full-text search.
-    fn on_query_search(index: &lattice_search::DocumentIndex, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+    fn on_query_search(index: &nai_lattice_search::DocumentIndex, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -587,8 +587,8 @@ impl LatticeRuntime {
     /// optional semantic vector hits into one ranked list (AAF federation of
     /// the LUSI-leveraged recall planes).
     fn on_query_federated(
-        search: &lattice_search::DocumentIndex,
-        vector: &lattice_vector::SemanticStore,
+        search: &nai_lattice_search::DocumentIndex,
+        vector: &nai_lattice_vector::SemanticStore,
         args: &serde_json::Value,
     ) -> Result<Vec<u8>, RuntimeError> {
         let query = args
@@ -1059,7 +1059,7 @@ impl LatticeRuntime {
     /// for specific namespaces/entities/after) still fall back to `scan_events`
     /// — rare and not on the live-read hot path.
     async fn on_event_range(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
-        use lattice_ledger::EventScanFilter;
+        use nai_lattice_ledger::EventScanFilter;
         let tail = args.get("tail").and_then(|v| v.as_bool()).unwrap_or(false);
         let requested_limit = args.get("limit")
             .and_then(|l| l.as_u64()).map(|l| l.clamp(1, 10_000));
@@ -1206,7 +1206,7 @@ impl LatticeRuntime {
     /// Returns lightweight `EventMeta` (no payload — the authoritative payload
     /// stays in the ledger; callers fetch it via `event.read_range` by seq).
     fn on_index_query(
-        idx: &lattice_ledger::multi_dim::MultiDimIndex,
+        idx: &nai_lattice_ledger::multi_dim::MultiDimIndex,
         args: &serde_json::Value,
     ) -> Result<Vec<u8>, RuntimeError> {
         let dim = args.get("dim").and_then(|d| d.as_str()).unwrap_or("namespace").to_string();

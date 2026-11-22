@@ -1,13 +1,16 @@
 [package]
-name = "lattice-aaf"
+name = "nai-lattice-aaf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "Ambient Asset Federation resolver: reuse existing compatible bytes instead of copying/downloading."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
-lattice-cas = { path = "../lattice-cas" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

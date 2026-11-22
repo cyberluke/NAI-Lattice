@@ -1,16 +1,19 @@
 [package]
-name = "lattice-query"
+name = "nai-lattice-query"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 description = "NAI Lattice lattice-query: structural SQL-over-Parquet, hybrid recall (lexical+vector+rerank), and reproducible 512K knowledge packs for federated datasets."
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
-lattice-lakehouse = { path = "../lattice-lakehouse" }
-lattice-search = { path = "../lattice-search" }
-lattice-vector = { path = "../lattice-vector" }
-lattice-embeddings = { path = "../lattice-embeddings" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-lakehouse = { path = "../lattice-lakehouse", version = "0.1.0" }
+nai-lattice-search = { path = "../lattice-search", version = "0.1.0" }
+nai-lattice-vector = { path = "../lattice-vector", version = "0.1.0" }
+nai-lattice-embeddings = { path = "../lattice-embeddings", version = "0.1.0" }
 
 serde.workspace = true
 serde_json.workspace = true

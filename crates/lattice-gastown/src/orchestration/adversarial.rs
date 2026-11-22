@@ -456,8 +456,8 @@ pub fn review_summary(store: &OrchestrationStore, source_id: &str) -> serde_json
 
 /// A durable in-memory store for tests/tools (shared with the state topology tests).
 #[cfg(test)]
-pub fn test_store() -> (std::sync::Arc<dyn lattice_hotstore::HotStore>, OrchestrationStore) {
-    use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+pub fn test_store() -> (std::sync::Arc<dyn nai_lattice_hotstore::HotStore>, OrchestrationStore) {
+    use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
     use std::sync::{Arc, Mutex};
     #[derive(Default, Debug)]
     struct Mem(Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>);
@@ -479,7 +479,7 @@ mod tests {
     use super::*;
     use crate::orchestration::state::{Bead, Town, TownConfig, ReviewCycleState, gen_id, now};
     use crate::review_evidence::CitedEvidence;
-    use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+    use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 

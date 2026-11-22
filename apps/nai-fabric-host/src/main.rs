@@ -23,11 +23,11 @@ use std::sync::{Arc, Mutex};
 use bytes::BytesMut;
 use prost::Message;
 
-use lattice_gastown::events::{EventKind, GastownEvent};
-use lattice_gastown::host_registry::{AttachState, HostRecord};
-use lattice_gastown::GastownService;
-use lattice_protocol::pb;
-use lattice_runtime::{LatticeRuntime, RuntimeConfig};
+use nai_lattice_gastown::events::{EventKind, GastownEvent};
+use nai_lattice_gastown::host_registry::{AttachState, HostRecord};
+use nai_lattice_gastown::GastownService;
+use nai_lattice_protocol::pb;
+use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
 mod naf_server;
 mod naf_json_bridge;
@@ -127,7 +127,7 @@ fn main() {
 
 /// Monitor supervisor: spawn the worker singleton as a supervised child and
 /// restart it on crash (non-zero exit) with bounded backoff. Fully independent
-/// of Kilo, VS Code, or any shell. Uses `lattice_supervisor` (CREATE_NO_WINDOW,
+/// of Kilo, VS Code, or any shell. Uses `nai_lattice_supervisor` (CREATE_NO_WINDOW,
 /// no console flash). A CLEAN exit (code 0, e.g. `stop`) ends the monitor.
 ///
 /// Live self-update: a background watcher polls `releases/current.json`. When a
@@ -137,7 +137,7 @@ fn main() {
 /// host continuously follows the release ladder (`current.json` is the single
 /// authority, written atomically by `helldesk-release install`).
 fn run_monitor_main() {
-    use lattice_supervisor::{ExitStatus, ProcessSpec, WorkerLimits};
+    use nai_lattice_supervisor::{ExitStatus, ProcessSpec, WorkerLimits};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -205,7 +205,7 @@ fn run_monitor_main() {
             no_console: true,
             no_capture: true, // worker output is unlogged; keeps live swap prompt
         };
-        let outcome = match lattice_supervisor::child::run(&spec, &limits) {
+        let outcome = match nai_lattice_supervisor::child::run(&spec, &limits) {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("monitor: failed to spawn worker: {e}; retrying in 2s");
@@ -337,7 +337,7 @@ pub(crate) fn handle_connection<S: Read + Write>(
                 }
                 _ => return,
             };
-            match build_handshake_response(rt, &hs_req, &lattice_gastown::capabilities::GASTOWN_CAPABILITIES) {
+            match build_handshake_response(rt, &hs_req, &nai_lattice_gastown::capabilities::GASTOWN_CAPABILITIES) {
                 Ok(resp) => {
                     let resp_env = pb::Envelope {
                         kind: Some(pb::envelope::Kind::Response(pb::Response {
@@ -517,7 +517,7 @@ fn dispatch_gastown(
             if job_id.is_empty() {
                 return (400, Vec::new(), "job_id required".into());
             }
-            let job = match lattice_gastown::review::ReviewJob::from_json(&args) {
+            let job = match nai_lattice_gastown::review::ReviewJob::from_json(&args) {
                 Ok(j) => j,
                 Err(e) => return (400, Vec::new(), e),
             };
@@ -608,7 +608,7 @@ fn maybe_replay_gastown(
     let hash = blake3::hash(&payload).to_hex().to_string();
     let seq = next_replay_seq();
     if let Ok(mut svc) = gastown.lock() {
-        svc.replay(lattice_gastown::projection::CommittedSignal {
+        svc.replay(nai_lattice_gastown::projection::CommittedSignal {
             ledger_sequence: seq,
             producer_app: "gastown".into(),
             event_type: ev.kind.as_str().to_string(),
@@ -706,7 +706,7 @@ fn production_migrate_legacy(
     reports_dir: &str,
     root: &str,
 ) -> Result<serde_json::Value, String> {
-    use lattice_gastown::review::{Artifacts, JobState, ReviewJob};
+    use nai_lattice_gastown::review::{Artifacts, JobState, ReviewJob};
 
     let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| format!("open db: {e}"))?;
@@ -816,9 +816,9 @@ fn production_migrate_legacy(
             artifacts: Artifacts {
                 reviewer_a: None,
                 reviewer_b: None,
-                adjudicator: Some(lattice_gastown::review::RoleOutput {
-                    provenance: lattice_gastown::review::ModelProvenance {
-                        role: lattice_gastown::review::Role::Adjudicator,
+                adjudicator: Some(nai_lattice_gastown::review::RoleOutput {
+                    provenance: nai_lattice_gastown::review::ModelProvenance {
+                        role: nai_lattice_gastown::review::Role::Adjudicator,
                         requested_model: "legacy-migrated".into(),
                         observed_backend_model: None,
                         worker_pid: None,
@@ -904,15 +904,15 @@ fn load_migration_manifest_on_startup(gastown: &Arc<Mutex<GastownService>>) {
             if svc.projection.jobs.contains_key(job_id) { continue; }
             let ws = e.get("workspace").and_then(|x| x.as_str()).unwrap_or("").to_string();
             let report = e.get("report_cas_ref").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            svc.projection.upsert_job(lattice_gastown::review::ReviewJob {
+            svc.projection.upsert_job(nai_lattice_gastown::review::ReviewJob {
                 job_id: job_id.to_string(),
                 workspace_canonical: ws,
                 epoch: None,
                 source_manifest_hash: format!("legacy:{job_id}"),
                 review_policy_version: 1,
-                state: lattice_gastown::review::JobState::Completed,
+                state: nai_lattice_gastown::review::JobState::Completed,
                 created_unix_ms: now,
-                artifacts: lattice_gastown::review::Artifacts::default(),
+                artifacts: nai_lattice_gastown::review::Artifacts::default(),
                 attempts: 0,
             });
             // Ensure the report ref survives by re-setting it post-upsert.
@@ -942,22 +942,22 @@ fn run_review_worker_subcommand() {
     let evidence = req.get("evidence").and_then(|v| v.as_str()).unwrap_or("");
     let prior = req.get("prior").and_then(|v| v.as_str()).unwrap_or("");
     let role = match role_name {
-        "reviewer_a" => lattice_gastown::review::Role::ReviewerA,
-        "reviewer_b" => lattice_gastown::review::Role::ReviewerB,
-        "adjudicator" => lattice_gastown::review::Role::Adjudicator,
+        "reviewer_a" => nai_lattice_gastown::review::Role::ReviewerA,
+        "reviewer_b" => nai_lattice_gastown::review::Role::ReviewerB,
+        "adjudicator" => nai_lattice_gastown::review::Role::Adjudicator,
         _ => {
             println!("{}", serde_json::json!({"ok":false,"error":format!("unknown role {role_name}")}));
             std::process::exit(2);
         }
     };
-    let cfg = match lattice_gastown::review::workflow::ProviderConfig::from_env() {
+    let cfg = match nai_lattice_gastown::review::workflow::ProviderConfig::from_env() {
         Ok(c) => c,
         Err(e) => {
             println!("{}", serde_json::json!({"ok":false,"error":format!("provider config: {e}")}));
             std::process::exit(2);
         }
     };
-    match lattice_gastown::review::workflow::run_worker_role(role, evidence, prior, &cfg) {
+    match nai_lattice_gastown::review::workflow::run_worker_role(role, evidence, prior, &cfg) {
         Ok(run) => {
             println!("{}", serde_json::json!({"ok":true,"role_run":run,"worker_pid":std::process::id()}));
         }
@@ -974,19 +974,19 @@ fn run_review_worker_subcommand() {
 /// managed by `lattice-supervisor` (hard timeout + kill, CREATE_NO_WINDOW, output
 /// capture, worker lease + real PID). A model hang or worker crash is killed by
 /// the supervisor without blocking the NAF accept/dispatch loop or killing the
-/// singleton. Evidence is captured read-only (lattice_git snapshot) inside the
+/// singleton. Evidence is captured read-only (nai_lattice_git snapshot) inside the
 /// host, then passed to workers as text.
 fn run_real_review_worker(
     rt: &Arc<LatticeRuntime>,
     gastown: &Arc<Mutex<GastownService>>,
-    job: &lattice_gastown::review::ReviewJob,
+    job: &nai_lattice_gastown::review::ReviewJob,
     workspace_root: &str,
 ) {
-    use lattice_gastown::review::Role;
-    use lattice_gastown::review::workflow::{to_artifacts, RoleRun};
-    use lattice_supervisor::{ProcessSpec, WorkerLimits};
+    use nai_lattice_gastown::review::Role;
+    use nai_lattice_gastown::review::workflow::{to_artifacts, RoleRun};
+    use nai_lattice_supervisor::{ProcessSpec, WorkerLimits};
 
-    let cfg = match lattice_gastown::review::workflow::ProviderConfig::from_env() {
+    let cfg = match nai_lattice_gastown::review::workflow::ProviderConfig::from_env() {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(job = %job.job_id, "review worker: provider config error: {e}");
@@ -998,7 +998,7 @@ fn run_real_review_worker(
     //    receive the bounded evidence text, never mutate the workspace.
     let now = crate::now_unix_ms();
     let root = std::path::Path::new(workspace_root);
-    let (evidence, evidence_manifest_hash) = lattice_gastown::review::workflow::capture_evidence(job, root, now);
+    let (evidence, evidence_manifest_hash) = nai_lattice_gastown::review::workflow::capture_evidence(job, root, now);
 
     // Supervisor limits: hard timeout + resource bounds per worker.
     let limits = WorkerLimits { timeout: std::time::Duration::from_secs(300), idle_timeout: None, ..Default::default() };
@@ -1014,7 +1014,7 @@ fn run_real_review_worker(
         evidence: &str,
         prior: &str,
     ) -> Result<RoleRun, String> {
-        let req = serde_json::json!({"role": match role { lattice_gastown::review::Role::ReviewerA => "reviewer_a", lattice_gastown::review::Role::ReviewerB => "reviewer_b", _ => "adjudicator" }, "evidence": evidence, "prior": prior});
+        let req = serde_json::json!({"role": match role { nai_lattice_gastown::review::Role::ReviewerA => "reviewer_a", nai_lattice_gastown::review::Role::ReviewerB => "reviewer_b", _ => "adjudicator" }, "evidence": evidence, "prior": prior});
         // stdin payload cannot go through `Command`; use a temp file to hand the
         // worker request cross-process (bounded, per-worker).
         let tmp = std::env::temp_dir().join(format!("naf-rw-{}-{}.json", std::process::id(), rand_u64()));
@@ -1027,12 +1027,12 @@ fn run_real_review_worker(
             no_console: true,
             no_capture: false, // JSON result is read from stdout
         };
-        let outcome = lattice_supervisor::child::run(&spec, limits).map_err(|e| e.to_string())?;
+        let outcome = nai_lattice_supervisor::child::run(&spec, limits).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);
-        if matches!(outcome.exit_status, lattice_supervisor::ExitStatus::TimedOut) {
+        if matches!(outcome.exit_status, nai_lattice_supervisor::ExitStatus::TimedOut) {
             return Err(format!("role {} worker timed out after {:?}ms", role_name(role), outcome.wall_ms));
         }
-        if !matches!(outcome.exit_status, lattice_supervisor::ExitStatus::Success) {
+        if !matches!(outcome.exit_status, nai_lattice_supervisor::ExitStatus::Success) {
             return Err(format!("role {} worker failed: {:?}: {}", role_name(role), outcome.exit_status, outcome.stderr));
         }
         let envelope: serde_json::Value = serde_json::from_str(outcome.stdout.trim()).map_err(|e| format!("bad worker output: {e}"))?;
@@ -1068,7 +1068,7 @@ fn run_real_review_worker(
     };
 
     // 4. Aggregate + persist immutable report to CAS.
-    let report = lattice_gastown::review::workflow::build_report_for_worker(job, &ra_run, &rb_run, &adj_run, &evidence_manifest_hash, now);
+    let report = nai_lattice_gastown::review::workflow::build_report_for_worker(job, &ra_run, &rb_run, &adj_run, &evidence_manifest_hash, now);
     let report_hash = blake3::hash(report.as_bytes()).to_hex().to_string();
     let report_bytes = report.as_bytes();
     let cas_ref = rt
@@ -1080,7 +1080,7 @@ fn run_real_review_worker(
             format!("inline://{report_hash}")
         });
     // Record artifacts + provenance on the job (worker PIDs = supervised OS PIDs).
-    let mut artifacts = to_artifacts(&lattice_gastown::review::workflow::ReviewWorkflowResult {
+    let mut artifacts = to_artifacts(&nai_lattice_gastown::review::workflow::ReviewWorkflowResult {
         job_id: job.job_id.clone(),
         reviewer_a: ra_run.clone(),
         reviewer_b: rb_run.clone(),
@@ -1093,7 +1093,7 @@ fn run_real_review_worker(
     artifacts.final_report_cas_ref = Some(cas_ref.clone());
     if let Ok(mut svc) = gastown.lock() {
         if let Some(j) = svc.projection.jobs.get_mut(&job.job_id) {
-            j.state = lattice_gastown::review::JobState::Completed;
+            j.state = nai_lattice_gastown::review::JobState::Completed;
             j.artifacts = artifacts.clone();
         }
     }
@@ -1112,7 +1112,7 @@ fn run_real_review_worker(
 fn mark_failed(gastown: &Arc<Mutex<GastownService>>, job_id: &str) {
     if let Ok(mut svc) = gastown.lock() {
         if let Some(j) = svc.projection.jobs.get_mut(job_id) {
-            j.state = lattice_gastown::review::JobState::Failed;
+            j.state = nai_lattice_gastown::review::JobState::Failed;
         }
     }
 }
@@ -1136,11 +1136,11 @@ fn build_handshake_response(
     // NAF-001: reject incompatible NAF version ranges explicitly — never
     // silently downgrade (a client demanding an unsupported range must learn
     // the negotiation failed, not receive a falsely-selected version).
-    let selected = lattice_protocol::select_version(
+    let selected = nai_lattice_protocol::select_version(
         req.naf_min,
         req.naf_max,
-        lattice_protocol::NAF_VERSION_1,
-        lattice_protocol::NAF_VERSION_1,
+        nai_lattice_protocol::NAF_VERSION_1,
+        nai_lattice_protocol::NAF_VERSION_1,
     )
     .ok_or_else(|| {
         format!(
@@ -1288,7 +1288,7 @@ mod tests {
         let mut buf = bytes::BytesMut::from(bytes);
         while !buf.is_empty() {
             let mut frames = Vec::new();
-            match lattice_protocol::frame::decode_frames(&mut buf, &mut frames) {
+            match nai_lattice_protocol::frame::decode_frames(&mut buf, &mut frames) {
                 Ok(()) => {
                     out.extend(frames.into_iter().map(|f| pb::Envelope::decode(&f.payload[..]).unwrap()));
                 }

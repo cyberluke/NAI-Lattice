@@ -1,0 +1,221 @@
+// NAF/1 — NAI Ambient Fabric Protocol v1.
+//
+// Language-neutral messages shared by NAI products. Products depend on these
+// capability contracts, never on engine implementations (Lattice spec §8).
+//
+// Wire conventions (forward-compatible):
+//   * never reuse a removed field number;
+//   * unknown/new payload types stay preserved and replayable;
+//   * deterministic generated bindings for Rust, C/C++, TS/Node and C#.
+syntax = "proto3";
+
+package naf.v1;
+
+// ---------------------------------------------------------------------------
+// Envelope / framing
+// ---------------------------------------------------------------------------
+
+// One length-prefixed frame on the named pipe. The on-the-wire framing adds
+// CRC32C + BLAKE3 of the serialized `Frame` (Lattice spec §9 segment format
+// concepts are reused for the IPC body; the pipe itself is length-prefixed).
+message Frame {
+  // 0x4E414631 "NAF1" as u32le, defines magic framing for parsers.
+  uint32 magic = 1;
+  uint32 format_version = 2;
+  // Length (bytes) of the `protobuf_event` payload field. Redundant with the
+  // wire `u32le` prefix but kept on-wire for self-describing frames.
+  uint64 frame_length = 3;
+  uint64 runtime_sequence = 4;
+  string event_id = 5;
+  bytes protobuf_event = 6;
+  uint32 crc32c = 7;
+  bytes frame_blake3 = 8;
+}
+
+// A generic request/response wrapper carrying a typed payload. The payload is
+// preserved verbatim so older runtimes can replay it even when unknown.
+message Envelope {
+  uint64 request_id = 1;              // UUIDv7 bits (high/low) preserved as bytes.
+  bytes request_id_raw = 2;           // canonical UUIDv7/ULID raw bytes.
+  string idempotency_key = 3;
+  string producer_id = 4;
+  string correlation_id = 5;
+  string causation_id = 6;
+  uint64 deadline_ms = 7;
+  uint32 priority = 8;
+  // Discriminates the payload type; unknown values must be preservable.
+  string payload_type = 9;
+  bytes payload = 10;
+  oneof kind {
+    Request request = 11;
+    Response response = 12;
+    Event event = 13;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Handshake
+// ---------------------------------------------------------------------------
+
+message HandshakeRequest {
+  string client_app_id = 1;
+  string client_version = 2;
+  int64 client_pid = 3;
+  uint32 naf_min = 4;
+  uint32 naf_max = 5;
+  repeated string requested_capabilities = 6;
+  string package_identity = 7;
+  string build_sha = 8;
+  bytes nonce = 9;
+}
+
+message HandshakeResponse {
+  string runtime_version = 1;
+  string runtime_build_sha = 2;
+  uint32 selected_naf_version = 3;
+  repeated Capability capabilities = 4;
+  string runtime_instance_id = 5;
+  uint32 storage_schema_version = 6;
+  Health health = 7;
+}
+
+message Capability {
+  string name = 1;
+  string version = 2;
+  string detail = 3;
+}
+
+message Health {
+  string state = 1;          // "healthy" | "degraded" | "unhealthy" | ...
+  string detail = 2;
+  repeated string lanes = 3;
+}
+
+message HelloProbe {
+  bytes nonce = 1;
+}
+
+message HelloProbeAck {
+  bytes nonce = 1;
+  bytes signature = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+message Request {
+  string method = 1;         // DOT path, e.g. "event.append"
+  bytes args = 2;            // JSON-encoded arguments (payload preserved).
+}
+
+message Response {
+  uint32 status = 1;         // gRPC-like status code 0 = OK.
+  string error = 2;
+  bytes body = 3;            // JSON-encoded result (payload preserved).
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+message Event {
+  string event_id = 1;           // UUIDv7 or ULID.
+  uint64 runtime_sequence = 2;
+  int64 timestamp_utc_ms = 3;
+  bytes device_id_bytes = 4;
+  string producer_app = 5;
+  string producer_version = 6;
+  string namespace = 7;
+  string entity_id_uri = 8;      // optional entity://… URI.
+  string event_type = 9;
+  uint32 schema_version = 10;
+  string correlation_id = 11;
+  string causation_id = 12;
+  string payload_type = 13;
+  bytes payload_bytes = 14;
+  repeated string artifact_refs = 15;   // artifact://… URIs.
+  string previous_hash = 16;
+  string frame_hash = 17;
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts (CAS) — §10
+// ---------------------------------------------------------------------------
+
+message ArtifactPut {
+  string expected_hash = 1;      // BLAKE3 whole-object hex.
+  bytes data = 2;
+  string media_type = 3;
+  string logical_type = 4;
+}
+
+message ArtifactPutResult {
+  string artifact_uri = 1;       // artifact://blake3/<hash>
+  bool deduplicated = 2;
+}
+
+message ArtifactOpen {
+  string artifact_uri = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+}
+
+message ArtifactOpenResult {
+  bytes data = 1;
+  string artifact_uri = 2;
+}
+
+message ArtifactResolve {
+  string artifact_uri = 1;
+  string preferred_provider = 2;
+}
+
+message ArtifactResolveResult {
+  string opaque_locator = 1;
+  string provider_id = 2;
+  string stability = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Query — §query.federated / search / vector / graph
+// ---------------------------------------------------------------------------
+
+message QueryRequest {
+  string query_type = 1;         // "sql" | "federated" | "search" | "vector" | "graph"
+  string text = 2;
+  bytes typed_args = 3;          // JSON extension for provider-specific args.
+  uint32 limit = 4;
+  uint32 offset = 5;
+}
+
+message QueryResult {
+  repeated Row rows = 1;
+  string next_cursor = 2;
+}
+
+message Row {
+  repeated Field fields = 1;
+}
+
+message Field {
+  string name = 1;
+  oneof value {
+    string string_value = 2;
+    int64 int_value = 3;
+    double double_value = 4;
+    bool bool_value = 5;
+    bytes bytes_value = 6;
+  }
+}
+
+message ProjectionList {
+  repeated ProjectionInfo projections = 1;
+}
+
+message ProjectionInfo {
+  string id = 1;
+  string status = 2;
+  uint64 high_water_mark = 3;
+  string last_error = 4;
+}

@@ -1,13 +1,13 @@
 /**
  * fabric.ts — read-only query helper against the NAI Lattice canonical
  * observability ledger (`observability.log.v1`), reused by the mcp-nai-lattice
- * log tools. It opens one ephemeral `@nai-lattice/client` connection to the
+ * log tools. It opens one ephemeral `@cyberluke/nai-lattice-client` connection to the
  * fabric host (auto-discovered canonical pipe), runs `event.read_range` for the
  * observability namespace, and returns the records as plain objects. Best-effort:
  * a down host degrades to an empty result + error string (the tool reports it),
  * never throws into the MCP stream.
  */
-import { NafClient } from "@nai-lattice/client";
+import { NafClient } from "@cyberluke/nai-lattice-client";
 
 const NAMESPACE = "observability.log.v1";
 const EVENT_TYPE = "log.record";
@@ -48,9 +48,9 @@ export async function fetchLogs(opts: QueryOpts): Promise<{ records: Rec[]; erro
   try {
     client = new NafClient({
       appId: "mcp-nai-lattice/log",
-      clientVersion: "0.1.0",
+      clientVersion: "0.2.0",
       requestedCapabilities: ["event.read_range"],
-      packageIdentity: "@nai-lattice/client@0.1.0",
+      packageIdentity: "@cyberluke/nai-lattice-client@0.2.0",
       buildSha: "mcp-nai-lattice",
       producerId: `mcp-nai-lattice-${process.pid}`,
     })

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
 use surrealkv::{Durability, LSMIterator, Tree, TreeBuilder};
 
 /// SurrealKV hot-store adapter.

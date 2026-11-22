@@ -39,7 +39,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use lattice_core::CanonicalEvent;
+use nai_lattice_core::CanonicalEvent;
 
 use crate::{EventScanFilter, LedgerError};
 
@@ -233,7 +233,7 @@ impl EventScanFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_core::{EventId, GlobalId};
+    use nai_lattice_core::{EventId, GlobalId};
 
     fn ev(seq: u64) -> CanonicalEvent {
         CanonicalEvent {

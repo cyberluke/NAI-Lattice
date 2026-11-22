@@ -35,7 +35,7 @@ pub enum AafError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("cas: {0}")]
-    Cas(#[from] lattice_cas::CasError),
+    Cas(#[from] nai_lattice_cas::CasError),
     #[error("source: {0}")]
     Source(String),
 }

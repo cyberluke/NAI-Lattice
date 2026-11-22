@@ -1663,347 +1663,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lattice-aaf"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "bytes",
- "lattice-cas",
- "lattice-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "lattice-cas"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "lattice-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "lattice-client"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "bytes",
- "crc32c",
- "lattice-core",
- "lattice-protocol",
- "prost",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "lattice-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "ulid",
- "uuid",
-]
-
-[[package]]
-name = "lattice-embeddings"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "lattice-vector",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "ureq",
-]
-
-[[package]]
-name = "lattice-gastown"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "chrono",
- "lattice-cas",
- "lattice-core",
- "lattice-git",
- "lattice-hotstore",
- "lattice-ledger",
- "lattice-supervisor",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "ureq",
- "uuid",
-]
-
-[[package]]
-name = "lattice-git"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-graph"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-hotstore"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "lattice-hotstore-fjall"
-version = "0.1.0"
-dependencies = [
- "fjall",
- "lattice-hotstore",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-hotstore-surrealkv"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "lattice-hotstore",
- "serde",
- "surrealkv",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "lattice-lakehouse"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "blake3",
- "lattice-aaf",
- "lattice-cas",
- "lattice-core",
- "parquet",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-ledger"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "bytes",
- "crc32c",
- "lattice-core",
- "lattice-protocol",
- "prost",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "lattice-observability"
-version = "0.1.0"
-dependencies = [
- "lattice-client",
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "lattice-protocol"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "bytes",
- "crc32c",
- "lattice-core",
- "prost",
- "prost-build",
- "prost-types",
- "protoc-bin-vendored",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "lattice-provider-appcontent"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-provider-filesystem"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-provider-opfs"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-provider-windows-search"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-query"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "lattice-core",
- "lattice-embeddings",
- "lattice-lakehouse",
- "lattice-search",
- "lattice-vector",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-runtime"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "lattice-aaf",
- "lattice-cas",
- "lattice-core",
- "lattice-hotstore",
- "lattice-hotstore-surrealkv",
- "lattice-ledger",
- "lattice-protocol",
- "lattice-search",
- "lattice-vector",
- "prost",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "lattice-search"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "tantivy",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-supervisor"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
- "windows 0.58.0",
-]
-
-[[package]]
-name = "lattice-testkit"
-version = "0.1.0"
-dependencies = [
- "lattice-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "lattice-vector"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "hnsw_rs",
- "lattice-core",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2288,14 +1947,14 @@ dependencies = [
  "blake3",
  "bytes",
  "crc32c",
- "lattice-client",
- "lattice-core",
- "lattice-gastown",
- "lattice-hotstore",
- "lattice-ledger",
- "lattice-protocol",
- "lattice-runtime",
- "lattice-supervisor",
+ "nai-lattice-client",
+ "nai-lattice-core",
+ "nai-lattice-gastown",
+ "nai-lattice-hotstore",
+ "nai-lattice-ledger",
+ "nai-lattice-protocol",
+ "nai-lattice-runtime",
+ "nai-lattice-supervisor",
  "prost",
  "rusqlite",
  "serde",
@@ -2309,17 +1968,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "nai-lattice-aaf"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "nai-lattice-cas",
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "nai-lattice-cas"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "nai-lattice-cli"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "lattice-cas",
- "lattice-client",
- "lattice-gastown",
- "lattice-ledger",
- "lattice-observability",
- "lattice-protocol",
- "lattice-runtime",
+ "nai-lattice-cas",
+ "nai-lattice-client",
+ "nai-lattice-gastown",
+ "nai-lattice-ledger",
+ "nai-lattice-observability",
+ "nai-lattice-protocol",
+ "nai-lattice-runtime",
  "prost",
  "rusqlite",
  "serde",
@@ -2327,6 +2015,318 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nai-lattice-client"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "crc32c",
+ "nai-lattice-core",
+ "nai-lattice-protocol",
+ "prost",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "nai-lattice-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ulid",
+ "uuid",
+]
+
+[[package]]
+name = "nai-lattice-embeddings"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "nai-lattice-vector",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
+name = "nai-lattice-gastown"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "nai-lattice-cas",
+ "nai-lattice-core",
+ "nai-lattice-git",
+ "nai-lattice-hotstore",
+ "nai-lattice-ledger",
+ "nai-lattice-supervisor",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
+name = "nai-lattice-git"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-graph"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-hotstore"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "nai-lattice-hotstore-fjall"
+version = "0.1.0"
+dependencies = [
+ "fjall",
+ "nai-lattice-hotstore",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-hotstore-surrealkv"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "nai-lattice-hotstore",
+ "serde",
+ "surrealkv",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "nai-lattice-lakehouse"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "blake3",
+ "nai-lattice-aaf",
+ "nai-lattice-cas",
+ "nai-lattice-core",
+ "parquet",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-ledger"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "crc32c",
+ "nai-lattice-core",
+ "nai-lattice-protocol",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "nai-lattice-observability"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-client",
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nai-lattice-protocol"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "crc32c",
+ "nai-lattice-core",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "nai-lattice-provider-appcontent"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-provider-filesystem"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-provider-opfs"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-provider-windows-search"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-query"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nai-lattice-core",
+ "nai-lattice-embeddings",
+ "nai-lattice-lakehouse",
+ "nai-lattice-search",
+ "nai-lattice-vector",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-runtime"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "nai-lattice-aaf",
+ "nai-lattice-cas",
+ "nai-lattice-core",
+ "nai-lattice-hotstore",
+ "nai-lattice-hotstore-surrealkv",
+ "nai-lattice-ledger",
+ "nai-lattice-protocol",
+ "nai-lattice-search",
+ "nai-lattice-vector",
+ "prost",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "nai-lattice-search"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-supervisor"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+ "windows 0.58.0",
+]
+
+[[package]]
+name = "nai-lattice-testkit"
+version = "0.1.0"
+dependencies = [
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nai-lattice-vector"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hnsw_rs",
+ "nai-lattice-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

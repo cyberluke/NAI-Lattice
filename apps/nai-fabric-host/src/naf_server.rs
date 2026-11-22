@@ -2,7 +2,7 @@
 //!
 //! Owns the per-user pipe name, accepts connections, and bridges each to the
 //! synchronous runtime dispatch. Sync frame codec (length-prefixed, magic +
-//! crc + blake3) mirrors `lattice_protocol`.
+//! crc + blake3) mirrors `nai_lattice_protocol`.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use bytes::{Buf, BytesMut};
 use prost::Message;
 
-use lattice_gastown::GastownService;
-use lattice_protocol::pb;
-use lattice_runtime::LatticeRuntime;
+use nai_lattice_gastown::GastownService;
+use nai_lattice_protocol::pb;
+use nai_lattice_runtime::LatticeRuntime;
 
 use crate::handle_connection;
 
@@ -157,7 +157,7 @@ pub(crate) type PipeClientStream = std::io::Cursor<Vec<u8>>;
 
 /// Read one length-prefixed NAF frame from a `Read` stream.
 ///
-/// Routes every server frame through the CANONICAL `lattice_protocol::frame`
+/// Routes every server frame through the CANONICAL `nai_lattice_protocol::frame`
 /// decoder, which validates BLAKE3 + CRC32C and enforces `MAX_FRAME_BYTES`
 /// before any allocation (NAF-004). This removes the previous duplicate decoder
 /// that skipped integrity/hash checks and allocated from an unvalidated length.
@@ -178,10 +178,10 @@ pub(crate) fn read_naf_frame(
         }
         let len = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64;
         // Bounded: reject absurd lengths BEFORE reading/allocation.
-        if len > lattice_protocol::frame::MAX_FRAME_BYTES {
+        if len > nai_lattice_protocol::frame::MAX_FRAME_BYTES {
             return Err(std::io::Error::other(format!(
                 "frame too large: {len} > {}",
-                lattice_protocol::frame::MAX_FRAME_BYTES
+                nai_lattice_protocol::frame::MAX_FRAME_BYTES
             )));
         }
         let total = 4 + len as usize;
@@ -198,7 +198,7 @@ pub(crate) fn read_naf_frame(
         // Use the canonical incremental decoder for full-frame validation
         // (magic, CRC32C, BLAKE3, size). Errors reject the frame; caller breaks.
         let mut frames = Vec::new();
-        lattice_protocol::frame::decode_frames(buf, &mut frames).map_err(|e| {
+        nai_lattice_protocol::frame::decode_frames(buf, &mut frames).map_err(|e| {
             std::io::Error::other(format!("frame rejected by canonical codec: {e:?}"))
         })?;
         if frames.is_empty() {
@@ -213,10 +213,10 @@ pub(crate) fn read_naf_frame(
 /// integrity and limits in both directions).
 pub(crate) fn encode_naf(env: &pb::Envelope) -> std::io::Result<Vec<u8>> {
     let payload = env.encode_to_vec();
-    if payload.len() as u64 > lattice_protocol::frame::MAX_FRAME_BYTES {
+    if payload.len() as u64 > nai_lattice_protocol::frame::MAX_FRAME_BYTES {
         return Err(std::io::Error::other("envelope exceeds max frame bytes"));
     }
-    lattice_protocol::frame::encode_frame(1, 0, "", &payload)
+    nai_lattice_protocol::frame::encode_frame(1, 0, "", &payload)
         .map_err(|e| std::io::Error::other(format!("encode failed: {e:?}")))
 }
 

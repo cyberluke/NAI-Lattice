@@ -15,7 +15,7 @@
 //! project's configured gates to PASS / FAIL / UNVERIFIED â€” a subjective model
 //! confidence can never override deterministic test evidence.
 
-use lattice_gastown::orchestration::state::OrchestrationStore;
+use nai_lattice_gastown::orchestration::state::OrchestrationStore;
 
 // --- P0-A: event-driven hooks -------------------------------------------------
 /// The 5 Inquisitor hooks. onQualityGate is wired; these close the loop with
@@ -89,7 +89,7 @@ impl EvidenceGate {
 // store event stream + Mayor `create_bead` for corrective/verification dispatch.
 pub mod governor {
     use super::*;
-    use lattice_gastown::orchestration::state::{BeadEvent};
+    use nai_lattice_gastown::orchestration::state::{BeadEvent};
 
     const WM: &str = "helldesk/inquisitor/watermark";
     const DECISION_KEYS: &str = "helldesk/inquisitor/dispatched_events";
@@ -143,7 +143,7 @@ pub mod governor {
                     // A primary in a convoy has a convoy bead as parent; find the
                     // project that references this convoy.
                     store.list_beads().into_iter()
-                        .find(|x| x.bead_type == lattice_gastown::orchestration::state::BeadType::Convoy
+                        .find(|x| x.bead_type == nai_lattice_gastown::orchestration::state::BeadType::Convoy
                             && x.bead_id == *cid)
                         .and_then(|_| crate::project::find_project_for_convoy(store, cid).map(|p| p.project_id))
                 })
@@ -229,8 +229,8 @@ pub mod governor {
     /// whose immediate parent is its convoy bead). This keeps corrective/
     /// verification children threaded under the original primary so a verified
     /// child advances B1 â€” never orphaning work onto a detached child.
-    pub(crate) fn resolve_owner_primary(store: &OrchestrationStore, bead_id: Option<&str>) -> Option<lattice_gastown::orchestration::state::Bead> {
-        use lattice_gastown::orchestration::state::BeadType;
+    pub(crate) fn resolve_owner_primary(store: &OrchestrationStore, bead_id: Option<&str>) -> Option<nai_lattice_gastown::orchestration::state::Bead> {
+        use nai_lattice_gastown::orchestration::state::BeadType;
         let mut cur = bead_id.and_then(|id| store.get_bead(id));
         let mut guard = 0usize;
         // First pass: find the topmost Issue under a Convoy = the project primary.
@@ -250,7 +250,7 @@ pub mod governor {
             if guard > 32 { break; }
         }
         // Fallback: the topmost Issue in the chain (no further Issue parent).
-        let mut top: Option<lattice_gastown::orchestration::state::Bead> = None;
+        let mut top: Option<nai_lattice_gastown::orchestration::state::Bead> = None;
         let mut cur2 = bead_id.and_then(|id| store.get_bead(id));
         let mut guard2 = 0usize;
         while let Some(b) = cur2.as_ref() {
@@ -294,9 +294,9 @@ pub mod governor {
                         let children = store.list_beads().into_iter().filter(|b| {
                             b.parent_bead_id.as_deref() == Some(owner_id_s) && b.has_label("gt:corrective")
                         }).collect::<Vec<_>>();
-                        let has_pending = children.iter().any(|b| b.status == lattice_gastown::orchestration::state::BeadStatus::Open
-                            || b.status == lattice_gastown::orchestration::state::BeadStatus::InProgress
-                            || b.status == lattice_gastown::orchestration::state::BeadStatus::InReview);
+                        let has_pending = children.iter().any(|b| b.status == nai_lattice_gastown::orchestration::state::BeadStatus::Open
+                            || b.status == nai_lattice_gastown::orchestration::state::BeadStatus::InProgress
+                            || b.status == nai_lattice_gastown::orchestration::state::BeadStatus::InReview);
                         const MAX_CORRECTIVES_PER_PRIMARY: usize = 4;
                         if has_pending || children.len() >= MAX_CORRECTIVES_PER_PRIMARY {
                             let _ = store.hot_put("helldesk/inquisitor/corrective_cooldown",
@@ -358,7 +358,7 @@ pub mod governor {
                         // historically failed is transitioned to Closed once the
                         // corrective child proves its gates (its 5 failures stay
                         // immutable in the record; only status + stamp change).
-                        use lattice_gastown::orchestration::state::BeadStatus;
+                        use nai_lattice_gastown::orchestration::state::BeadStatus;
                         if let Some(mut pb) = store.get_bead(bid) {
                             // A historically-failed primary is legitimately upgraded
                             // to Closed once a corrective child proves all gates: the
@@ -367,7 +367,7 @@ pub mod governor {
                             // the verified terminal that releases downstream `blocks`.
                             if pb.status != BeadStatus::Closed {
                                 pb.status = BeadStatus::Closed;
-                                pb.closed_at = Some(lattice_gastown::orchestration::state::now());
+                                pb.closed_at = Some(nai_lattice_gastown::orchestration::state::now());
                                 pb.updated_at = pb.closed_at.clone().unwrap_or_default();
                                 store.put_bead(&pb);
                                 let _ = store.emit_event(&BeadEvent::new("bead.status_changed", Some(bid.to_string()), Some("inquisitor".into()), owner.as_ref().and_then(|b| b.parent_bead_id.clone()), owner_rig.clone(),
@@ -383,12 +383,12 @@ pub mod governor {
 
     /// Create a corrective/verification Issue bead (federate Mayor create_bead).
     fn ensure_store_bead(store: &OrchestrationStore, rig: &str, title: &str, body: Option<&str>, parent_primary: Option<String>, gates: Vec<serde_json::Value>) -> String {
-        use lattice_gastown::orchestration::state::Bead;
+        use nai_lattice_gastown::orchestration::state::Bead;
         let mut meta = serde_json::json!({});
         if !gates.is_empty() { meta["bt_gates"] = serde_json::Value::Array(gates); }
         if let Some(p) = &parent_primary { meta["parent_primary"] = serde_json::Value::String(p.clone()); }
         let b = Bead::create(
-            lattice_gastown::orchestration::state::BeadType::Issue, title, body,
+            nai_lattice_gastown::orchestration::state::BeadType::Issue, title, body,
             None, vec!["gt:corrective".into()], meta,
             Some(rig), parent_primary.as_deref(), Some("inquisitor"),
         );
@@ -546,7 +546,7 @@ fn inquisitor_brain_raw(provider: &str, system: &str, user: &str) -> Result<Stri
             if raw.trim().is_empty() { Err("inquisitor codex brain returned nothing".into()) } else { Ok(raw) }
         }
         _ => {
-            use lattice_gastown::orchestration::agent::{ProviderConfig, real_completion};
+            use nai_lattice_gastown::orchestration::agent::{ProviderConfig, real_completion};
             let cfg = ProviderConfig::from_env().map_err(|e| format!("provider: {e}"))?;
             real_completion(&cfg, system, user, 4000)
         }
@@ -706,7 +706,7 @@ pub fn run_inquisitor(
     let parsed: Option<InquisitorVerdict> = raw.ok()
         .and_then(|r| {
             // Accept the last balanced JSON object if the model fenced/strayed.
-            lattice_gastown::orchestration::agent::parse_decision(&r).ok()
+            nai_lattice_gastown::orchestration::agent::parse_decision(&r).ok()
         })
         .and_then(|v| serde_json::from_value(v).ok());
 
@@ -1246,20 +1246,20 @@ pub mod memory {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use lattice_gastown::orchestration::state::{BeadEvent, Town, TownConfig, now};
+    use nai_lattice_gastown::orchestration::state::{BeadEvent, Town, TownConfig, now};
 
     fn test_store() -> OrchestrationStore {
         // In-memory hot store so the governor tests are hermetic and real.
-        fn hot() -> std::sync::Arc<dyn lattice_hotstore::HotStore> {
-            use lattice_hotstore::{HotKey, HotValue};
+        fn hot() -> std::sync::Arc<dyn nai_lattice_hotstore::HotStore> {
+            use nai_lattice_hotstore::{HotKey, HotValue};
             #[derive(Default, Debug)]
             struct Mem(Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>);
-            impl lattice_hotstore::HotStore for Mem {
-                fn get(&self, k: &HotKey) -> Result<Option<HotValue>, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().get(&k.0).cloned().map(HotValue)) }
-                fn put(&self, k: &HotKey, v: &HotValue) -> Result<(), lattice_hotstore::HotStoreError> { self.0.lock().unwrap().insert(k.0.clone(), v.0.clone()); Ok(()) }
-                fn delete(&self, k: &HotKey) -> Result<bool, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().remove(&k.0).is_some()) }
-                fn exists(&self, k: &HotKey) -> Result<bool, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().contains_key(&k.0)) }
-                fn scan_prefix(&self, p: &[u8]) -> Result<Vec<HotKey>, lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().keys().filter(|k| k.starts_with(p)).cloned().map(HotKey).collect()) }
+            impl nai_lattice_hotstore::HotStore for Mem {
+                fn get(&self, k: &HotKey) -> Result<Option<HotValue>, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().get(&k.0).cloned().map(HotValue)) }
+                fn put(&self, k: &HotKey, v: &HotValue) -> Result<(), nai_lattice_hotstore::HotStoreError> { self.0.lock().unwrap().insert(k.0.clone(), v.0.clone()); Ok(()) }
+                fn delete(&self, k: &HotKey) -> Result<bool, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().remove(&k.0).is_some()) }
+                fn exists(&self, k: &HotKey) -> Result<bool, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().contains_key(&k.0)) }
+                fn scan_prefix(&self, p: &[u8]) -> Result<Vec<HotKey>, nai_lattice_hotstore::HotStoreError> { Ok(self.0.lock().unwrap().keys().filter(|k| k.starts_with(p)).cloned().map(HotKey).collect()) }
             }
             Arc::new(Mem::default())
         }
@@ -1277,7 +1277,7 @@ mod tests {
         // The reviewed bead is a PROJECT primary (the governor only acts on
         // project-owned work â€” scratch/demo convoys are drained, not corrected).
         let s = test_store();
-        use lattice_gastown::orchestration::state::{Bead, BeadType};
+        use nai_lattice_gastown::orchestration::state::{Bead, BeadType};
         let repo = std::env::temp_dir().join("p0-e-gov-cycle").join("repo");
         let _ = std::fs::create_dir_all(&repo);
         std::fs::write(repo.join("README.md"), "# p\n").unwrap();
@@ -1319,7 +1319,7 @@ mod tests {
         // The child is NOT orphaned and the primary's five failures stay
         // immutable history.
         let s = test_store();
-        use lattice_gastown::orchestration::state::{Bead, BeadType};
+        use nai_lattice_gastown::orchestration::state::{Bead, BeadType};
         // A project owning a convoy.
         let repo = std::env::temp_dir().join("p0-2-corrective-thread").join("repo");
         let _ = std::fs::create_dir_all(&repo);
@@ -1344,7 +1344,7 @@ mod tests {
         // Historically failed five times (immutable history, must not be reset).
         if let Some(mut b) = s.get_bead(&b1_id) {
             b.dispatch_attempts = 5;
-            b.status = lattice_gastown::orchestration::state::BeadStatus::Failed;
+            b.status = nai_lattice_gastown::orchestration::state::BeadStatus::Failed;
             s.put_bead(&b);
         }
         // Corrective child under the primary, on its rig, with the same gates.
@@ -1370,7 +1370,7 @@ mod tests {
         governor::apply_decision(&s, &d, &InquisitorHook::OnTaskCompleted, &ev, "stub");
         // The PRIMARY is now Closed + verified (terminal gate) so B2 is releasable.
         let b1b = s.get_bead(&b1_id).expect("primary exists");
-        assert_eq!(b1b.status, lattice_gastown::orchestration::state::BeadStatus::Closed,
+        assert_eq!(b1b.status, nai_lattice_gastown::orchestration::state::BeadStatus::Closed,
             "verified corrective must terminalize its OWNER primary, not spawn an orphan");
         assert_eq!(b1b.dispatch_attempts, 5, "the five historical failures must stay immutable");
         let b1v = b1b.metadata.get("gastown_verified").and_then(|v| v.as_object()).cloned();
@@ -1392,7 +1392,7 @@ mod tests {
         // PASS and never a permanent deadlock. Forbidden (GPU) â†’ unsafe_halt.
         // Reviewed bead is a PROJECT primary (governor acts on project work only).
         let s = test_store();
-        use lattice_gastown::orchestration::state::{Bead, BeadType};
+        use nai_lattice_gastown::orchestration::state::{Bead, BeadType};
         let repo = std::env::temp_dir().join("p0-c-missing-evidence").join("repo");
         let _ = std::fs::create_dir_all(&repo);
         std::fs::write(repo.join("README.md"), "# g\n").unwrap();

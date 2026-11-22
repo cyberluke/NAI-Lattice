@@ -1,4 +1,4 @@
-﻿//! Portable Gas Town domain contract, exclusive ownership epochs, fencing, and
+//! Portable Gas Town domain contract, exclusive ownership epochs, fencing, and
 //! durable state transfer (cloud portability, locally verifiable).
 //!
 //! Gas Town's full domain state (town, rigs, agents, beads, dependencies,
@@ -162,7 +162,7 @@ fn _noop() { let _ = gen_id(); let _ = now(); }
 mod tests {
     use super::*;
     use crate::orchestration::state::{Bead, BeadStatus, BeadType};
-    use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+    use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 

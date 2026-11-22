@@ -13,8 +13,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::path::PathBuf;
 
-use lattice_gastown::GastownService;
-use lattice_runtime::{LatticeRuntime, RuntimeConfig};
+use nai_lattice_gastown::GastownService;
+use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt().with_env_filter("error").init();
@@ -37,7 +37,7 @@ fn main() -> ExitCode {
                 println!("  - {c}");
             }
             println!("gastown capabilities:");
-            for c in lattice_gastown::capabilities::GASTOWN_CAPABILITIES {
+            for c in nai_lattice_gastown::capabilities::GASTOWN_CAPABILITIES {
                 println!("  - {c}");
             }
             ExitCode::SUCCESS
@@ -124,7 +124,7 @@ fn main() -> ExitCode {
 /// `log` domain: tail / search / by-trace over the canonical `observability.log.v1`
 /// ledger stream. Opens the shared per-user runtime (same root as the fabric host)
 /// and reads `event.read_range` back, then filters in-process with
-/// `lattice_observability::filter` — no new runtime dispatch handler needed.
+/// `nai_lattice_observability::filter` — no new runtime dispatch handler needed.
 /// Usage:
 ///   nai-lattice-cli log tail [limit] [--component <c>]
 ///   nai-lattice-cli log search <text> [limit] [--component <c>] [--level <warn|error>]
@@ -149,14 +149,14 @@ fn cli_log(args: &[String]) {
     };
 
     let raw = rt.block_on(async {
-        use lattice_client::transport::NafTransport;
-        let pipe = lattice_client::win_pipe::NamedPipeStream::pipe_name();
-        let stream = match lattice_client::win_pipe::NamedPipeStream::connect(&pipe) {
+        use nai_lattice_client::transport::NafTransport;
+        let pipe = nai_lattice_client::win_pipe::NamedPipeStream::pipe_name();
+        let stream = match nai_lattice_client::win_pipe::NamedPipeStream::connect(&pipe) {
             Ok(s) => s,
             Err(e) => return Err(format!("fabric pipe connect: {e}")),
         };
         let transport: NafTransport = Box::new(stream);
-        let request = lattice_protocol::pb::HandshakeRequest {
+        let request = nai_lattice_protocol::pb::HandshakeRequest {
             client_app_id: "nai-lattice-cli".into(),
             client_version: env!("CARGO_PKG_VERSION").into(),
             client_pid: std::process::id() as i64,
@@ -167,7 +167,7 @@ fn cli_log(args: &[String]) {
             build_sha: String::new(),
             nonce: vec![],
         };
-        let mut client = match lattice_client::NafClient::connect(transport, request).await {
+        let mut client = match nai_lattice_client::NafClient::connect(transport, request).await {
             Ok(c) => c,
             Err(e) => return Err(format!("fabric handshake: {e}")),
         };
@@ -179,16 +179,14 @@ fn cli_log(args: &[String]) {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            let record = lattice_observability::LogRecord {
-                ts_ms: now,
-                level: "info".to_string(),
-                component: "nai-lattice-cli/self-test".to_string(),
-                trace_id: Some(format!("selftest-{now}")),
-                caller: Some("n.a.".to_string()),
-                message: "canonical observability fabric self-test ping".to_string(),
-                extras: serde_json::Map::new(),
-            };
-            let args = lattice_observability::build_batch_args("nai-lattice-cli", &[record]);
+            let record = nai_lattice_observability::LogRecord::new(
+                nai_lattice_observability::Level::Info,
+                "nai-lattice-cli/self-test",
+                "canonical observability fabric self-test ping",
+            )
+            .with_trace(format!("selftest-{now}"))
+            .with_caller("n.a.");
+            let args = nai_lattice_observability::build_batch_args("nai-lattice-cli", &[record]);
             let json = match serde_json::to_vec(&args) {
                 Ok(j) => j,
                 Err(e) => return Err(format!("append serde: {e}")),
@@ -279,11 +277,11 @@ fn cli_log(args: &[String]) {
         }
     };
     // Parse each payload into a LogRecord (newest-first sort happens in filter).
-    let mut records: Vec<lattice_observability::LogRecord> = Vec::new();
+    let mut records: Vec<nai_lattice_observability::LogRecord> = Vec::new();
     if let Some(events) = value["events"].as_array() {
         for ev in events {
             let payload = &ev["payload"];
-            if let Some(rec) = lattice_observability::parse_record(payload) {
+            if let Some(rec) = nai_lattice_observability::parse_record(payload) {
                 records.push(rec);
             }
         }
@@ -293,11 +291,11 @@ fn cli_log(args: &[String]) {
         Some(i) => args
             .get(i + 1)
             .and_then(|s| match s.as_str() {
-                "trace" => Some(lattice_observability::Level::Trace),
-                "debug" => Some(lattice_observability::Level::Debug),
-                "info" => Some(lattice_observability::Level::Info),
-                "warn" => Some(lattice_observability::Level::Warn),
-                "error" => Some(lattice_observability::Level::Error),
+                "trace" => Some(nai_lattice_observability::Level::Trace),
+                "debug" => Some(nai_lattice_observability::Level::Debug),
+                "info" => Some(nai_lattice_observability::Level::Info),
+                "warn" => Some(nai_lattice_observability::Level::Warn),
+                "error" => Some(nai_lattice_observability::Level::Error),
                 _ => None,
             }),
         None => None,
@@ -316,7 +314,7 @@ fn cli_log(args: &[String]) {
                 .and_then(|i| args.get(i + 1))
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(50);
-            lattice_observability::filter(
+            nai_lattice_observability::filter(
                 &records,
                 level_min,
                 component_eq,
@@ -330,7 +328,7 @@ fn cli_log(args: &[String]) {
         "by-trace" => {
             let trace = args.get(3).map(|s| s.as_str()).unwrap_or("");
             let limit = 100;
-            lattice_observability::filter(
+            nai_lattice_observability::filter(
                 &records,
                 level_min,
                 component_eq,
@@ -349,7 +347,7 @@ fn cli_log(args: &[String]) {
                 .and_then(|i| args.get(i + 1))
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(20);
-            lattice_observability::filter(
+            nai_lattice_observability::filter(
                 &records,
                 level_min,
                 component_eq,
@@ -404,7 +402,7 @@ fn cli_gastown(_args: &[String], sub: &str) -> ExitCode {
             "total_seen": svc.projection.hosts.hosts.len(),
             "hosts": svc.projection.hosts.hosts.iter().map(|(k, v)| serde_json::json!({
                 "host_runtime_id": k, "producer_id": v.producer_id, "verified_real": v.verified_real_host,
-                "attached": matches!(v.attach_state, lattice_gastown::AttachState::Attached),
+                "attached": matches!(v.attach_state, nai_lattice_gastown::AttachState::Attached),
             })).collect::<Vec<_>>(),
         }),
         "sessions" => serde_json::json!({
@@ -440,19 +438,19 @@ fn replay_committed_gastown(rt: &Arc<LatticeRuntime>, svc: &mut GastownService) 
     if !active.exists() {
         return;
     }
-    let (frames, _tail, _hwm, _trunc) = match lattice_ledger::segment::recover(&active) {
+    let (frames, _tail, _hwm, _trunc) = match nai_lattice_ledger::segment::recover(&active) {
         Ok(v) => v,
         Err(_) => return,
     };
     use prost::Message;
     let mut seq: u64 = 0;
     for fr in frames {
-        if let Ok(ev) = lattice_protocol::pb::Event::decode(fr.protobuf_event.as_slice()) {
+        if let Ok(ev) = nai_lattice_protocol::pb::Event::decode(fr.protobuf_event.as_slice()) {
             if ev.event_type.starts_with("gastown") || ev.producer_app == "gastown" {
                 seq += 1;
                 let payload = ev.payload_bytes.clone();
                 let hash = blake3::hash(&payload).to_hex().to_string();
-                svc.replay(lattice_gastown::projection::CommittedSignal {
+                svc.replay(nai_lattice_gastown::projection::CommittedSignal {
                     ledger_sequence: seq,
                     producer_app: ev.producer_app.clone(),
                     event_type: ev.event_type.clone(),
@@ -473,8 +471,8 @@ fn now_unix_ms() -> i64 {
 
 /// A CAS-backed `ArtifactStore` used by the migration to persist each legacy
 /// artifact immutably inside NAI-Lattice (canonical store; originals untouched).
-struct CasArtifactStore(Arc<lattice_runtime::LatticeRuntime>);
-impl lattice_gastown::ArtifactStore for CasArtifactStore {
+struct CasArtifactStore(Arc<nai_lattice_runtime::LatticeRuntime>);
+impl nai_lattice_gastown::ArtifactStore for CasArtifactStore {
     fn store(&mut self, content: &[u8], _kind: &str) -> Result<String, String> {
         let h = self.0.cas.put(content, "application/json", "gastown.legacy", "migrate-legacy")
             .map_err(|e| e.to_string())?;
@@ -519,11 +517,11 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
         let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         local.join("NAI").join("Lattice").join("migration-v1").to_string_lossy().into_owned()
     });
-    let mig_rt = match lattice_runtime::LatticeRuntime::open(lattice_runtime::RuntimeConfig { root: PathBuf::from(&root), ledger_segment_bytes: 128 * 1024 * 1024 }) {
+    let mig_rt = match nai_lattice_runtime::LatticeRuntime::open(nai_lattice_runtime::RuntimeConfig { root: PathBuf::from(&root), ledger_segment_bytes: 128 * 1024 * 1024 }) {
         Ok(r) => r, Err(e) => { eprintln!("open migration runtime failed: {e}"); return ExitCode::from(2); }
     };
     let mut store = CasArtifactStore(Arc::new(mig_rt));
-    let mut mig = lattice_gastown::LegacyMigration::new(serde_json::json!({"legacy":"gastown-v7","db":db_path}));
+    let mut mig = nai_lattice_gastown::LegacyMigration::new(serde_json::json!({"legacy":"gastown-v7","db":db_path}));
     // Resumable idempotency: reload the durable manifest from a prior run so
     // already-imported legacy ids are recognized and skipped (no duplication).
     let manifest_path = PathBuf::from(&root).join("migration-manifest.json");
@@ -548,8 +546,8 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
         for row in iter.flatten() {
             let (wid, path, created) = row;
             let content = serde_json::json!({ "workspace_id": wid, "path": path, "created_at": created });
-            let _ = mig.import_row(&mut store, lattice_gastown::LegacyRow {
-                table: "workspaces", legacy_id: wid, kind: lattice_gastown::ImportKind::Workspace,
+            let _ = mig.import_row(&mut store, nai_lattice_gastown::LegacyRow {
+                table: "workspaces", legacy_id: wid, kind: nai_lattice_gastown::ImportKind::Workspace,
                 content: serde_json::to_vec(&content).unwrap_or_default(),
             });
         }
@@ -562,8 +560,8 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
         for row in iter.flatten() {
             let (sid, kind, ws, mh, ch, created) = row;
             let content = serde_json::json!({ "snapshot_id": sid, "subject_kind": kind, "workspace_id": ws, "manifest_hash": mh, "content_hash": ch, "created_at": created });
-            let _ = mig.import_row(&mut store, lattice_gastown::LegacyRow {
-                table: "snapshots", legacy_id: sid, kind: lattice_gastown::ImportKind::Snapshot,
+            let _ = mig.import_row(&mut store, nai_lattice_gastown::LegacyRow {
+                table: "snapshots", legacy_id: sid, kind: nai_lattice_gastown::ImportKind::Snapshot,
                 content: serde_json::to_vec(&content).unwrap_or_default(),
             });
         }
@@ -576,8 +574,8 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
         for row in iter.flatten() {
             let (jid, ws, snap, state) = row;
             let content = serde_json::json!({ "job_id": jid, "workspace_id": ws, "snapshot_id": snap, "state": state });
-            let _ = mig.import_row(&mut store, lattice_gastown::LegacyRow {
-                table: "review_jobs", legacy_id: jid, kind: lattice_gastown::ImportKind::Job,
+            let _ = mig.import_row(&mut store, nai_lattice_gastown::LegacyRow {
+                table: "review_jobs", legacy_id: jid, kind: nai_lattice_gastown::ImportKind::Job,
                 content: serde_json::to_vec(&content).unwrap_or_default(),
             });
         }
@@ -589,8 +587,8 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
         for row in iter.flatten() {
             let (fid, jid, sev, title) = row;
             let content = serde_json::json!({ "finding_id": fid, "job_id": jid, "severity": sev, "title": title });
-            let _ = mig.import_row(&mut store, lattice_gastown::LegacyRow {
-                table: "findings", legacy_id: fid, kind: lattice_gastown::ImportKind::Finding,
+            let _ = mig.import_row(&mut store, nai_lattice_gastown::LegacyRow {
+                table: "findings", legacy_id: fid, kind: nai_lattice_gastown::ImportKind::Finding,
                 content: serde_json::to_vec(&content).unwrap_or_default(),
             });
         }
@@ -603,8 +601,8 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
         for row in iter.flatten() {
             let (rid, jid, jp, mp, created, ch) = row;
             let content = serde_json::json!({ "report_id": rid, "job_id": jid, "json_path": jp, "md_path": mp, "created_at": created, "content_hash": ch });
-            let _ = mig.import_row(&mut store, lattice_gastown::LegacyRow {
-                table: "reports", legacy_id: rid, kind: lattice_gastown::ImportKind::Report,
+            let _ = mig.import_row(&mut store, nai_lattice_gastown::LegacyRow {
+                table: "reports", legacy_id: rid, kind: nai_lattice_gastown::ImportKind::Report,
                 content: serde_json::to_vec(&content).unwrap_or_default(),
             });
         }
@@ -616,8 +614,8 @@ fn cli_migrate_legacy(args: &[String]) -> ExitCode {
                 if let Some(ext) = e.path().extension() { if ext != "json" { continue; } }
                 if let Ok(bytes) = std::fs::read(e.path()) {
                     let rid = e.file_name().to_string_lossy().into_owned();
-                    let _ = mig.import_row(&mut store, lattice_gastown::LegacyRow {
-                        table: "reports", legacy_id: rid, kind: lattice_gastown::ImportKind::Report,
+                    let _ = mig.import_row(&mut store, nai_lattice_gastown::LegacyRow {
+                        table: "reports", legacy_id: rid, kind: nai_lattice_gastown::ImportKind::Report,
                         content: bytes,
                     });
                 }
@@ -679,6 +677,6 @@ fn rebuild_projection(_args: &[String]) {}
 
 /// Re-export for doc link only.
 #[allow(dead_code)]
-fn _ledger_alias(_cfg: RuntimeConfig) -> lattice_ledger::LedgerConfig {
+fn _ledger_alias(_cfg: RuntimeConfig) -> nai_lattice_ledger::LedgerConfig {
     unimplemented!("kept for doc reference")
 }

@@ -1,4 +1,4 @@
-﻿//! Native Windows notifications for Gas Town, driven off the durable event log.
+//! Native Windows notifications for Gas Town, driven off the durable event log.
 //!
 //! Satisfies the "why do I see nothing when an agent finishes" gap: when a
 //! convoy lands, a bead fails irrecoverably, review cycles are exhausted, or a
@@ -8,7 +8,7 @@
 //! Gas Town event log (anti-spam: deduplicated per event), never spawned as a
 //! `powershell.exe` per event, and require no VS Code or editor focus.
 
-use lattice_gastown::orchestration::state::OrchestrationStore;
+use nai_lattice_gastown::orchestration::state::OrchestrationStore;
 use std::path::PathBuf;
 
 /// One durable, operator-visible notification.
@@ -77,7 +77,7 @@ pub fn derive_and_record(store: &OrchestrationStore, town_id: &str) -> Vec<Notif
 
 /// Map a Gas Town event to an operator notification, or None if not actionable.
 /// Pure function over the event â€” the unit tests drive it directly.
-fn classify_event(ev: &lattice_gastown::orchestration::state::BeadEvent) -> Option<Notification> {
+fn classify_event(ev: &nai_lattice_gastown::orchestration::state::BeadEvent) -> Option<Notification> {
     let msg = &ev.event;
     let data = &ev.data;
     let target = ev.bead_id.clone().map(|b| format!("bead:{b}")).unwrap_or_default();
@@ -234,8 +234,8 @@ pub fn inbox_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lattice_gastown::orchestration::state::{BeadEvent, OrchestrationStore};
-    use lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
+    use nai_lattice_gastown::orchestration::state::{BeadEvent, OrchestrationStore};
+    use nai_lattice_hotstore::{HotKey, HotStore, HotStoreError, HotValue};
 
     #[derive(Default, Debug)]
     pub struct MemHotStore(std::sync::Mutex<std::collections::BTreeMap<Vec<u8>, Vec<u8>>>);

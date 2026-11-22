@@ -9,8 +9,8 @@ use bytes::BytesMut;
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use lattice_protocol::pb;
-use lattice_protocol::ProtocolError;
+use nai_lattice_protocol::pb;
+use nai_lattice_protocol::ProtocolError;
 
 pub mod codec;
 pub mod transport;

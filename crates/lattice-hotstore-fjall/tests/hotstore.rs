@@ -1,12 +1,12 @@
 //! Fjall HotStore roundtrip test (parity with SurrealKV adapter).
 
-use lattice_hotstore::{HotKey, HotStore, HotValue, Keyspace};
+use nai_lattice_hotstore::{HotKey, HotStore, HotValue, Keyspace};
 
 #[test]
 fn fjall_hotstore_roundtrip_scan_and_counters() {
     let dir = tempfile::tempdir().unwrap();
-    let store = lattice_hotstore_fjall::FjallHotStore::open(
-        lattice_hotstore_fjall::FjallOptions::new(dir.path().join("db")),
+    let store = nai_lattice_hotstore_fjall::FjallHotStore::open(
+        nai_lattice_hotstore_fjall::FjallOptions::new(dir.path().join("db")),
     )
     .unwrap();
 

@@ -9,8 +9,8 @@
 //! Generated: `GOLDEN_HEX=...` from the TS client test `frame.test.mjs`.
 
 use bytes::BytesMut;
-use lattice_protocol::frame;
-use lattice_protocol::pb;
+use nai_lattice_protocol::frame;
+use nai_lattice_protocol::pb;
 use prost::Message;
 
 const TS_GOLDEN_HEX: &str = concat!(

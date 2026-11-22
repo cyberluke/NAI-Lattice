@@ -1,8 +1,11 @@
 [package]
-name = "lattice-supervisor"
+name = "nai-lattice-supervisor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
 rust-version.workspace = true
 
 [dependencies]

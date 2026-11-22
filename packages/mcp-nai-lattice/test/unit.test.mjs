@@ -8,14 +8,14 @@ const { workspaceCollection, bm25Rank, parseQdrantQueryResult, fuseDenseAndLexic
 
 // --- workspaceCollection (the Kilo collection-hash contract) ---
 test("workspaceCollection derives ws-<sha256(0,16)> matching Kilo", () => {
-  // Verified against live Qdrant: <workspace>\Tutty\tutty-studio -> ws-000dc3e1532b07d7 (uppercase, backslashes)
-  assert.equal(workspaceCollection("D:\\_SATIN_AI_2\\Tutty\\tutty-studio"), "ws-000dc3e1532b07d7")
+  // Synthetic fixture (no machine-specific paths): uppercase/backslash form.
+  assert.equal(workspaceCollection("D:\\work\\example"), "ws-f03043509a1a2950")
 })
 
 test("collection hash is case/slash-sensitive (verified different for lowercased)", () => {
-  const norm = workspaceCollection("d:/_satin_ai_2/tutty/tutty-studio")
-  assert.equal(norm, "ws-e66c9320f165083a") // NOT the real live collection
-  assert.notEqual(norm, "ws-000dc3e1532b07d7")
+  const norm = workspaceCollection("d:/work/example")
+  assert.equal(norm, "ws-e21095ac842fc8bb") // NOT the uppercase/backslash hash
+  assert.notEqual(norm, "ws-f03043509a1a2950")
 })
 
 // --- parseQdrantQueryResult (the Qdrant /points/query shape contract) ---

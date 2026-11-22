@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use lattice_aaf::source::DirectorySource;
+use nai_lattice_aaf::source::DirectorySource;
 
 use crate::snapshot::SnapshotLayout;
 
@@ -29,8 +29,8 @@ impl DatasetFederation {
     /// Parquet shards are discoverable as federated artifacts. The provider wraps a
     /// fresh [`DirectorySource`] over the snapshot root (DirectorySource is not
     /// Clone; it only holds an id + root).
-    pub fn register(&self, resolver: &lattice_aaf::AafResolver) {
-        let provider: Arc<dyn lattice_aaf::source::ExternalArtifactSource> = Arc::new(
+    pub fn register(&self, resolver: &nai_lattice_aaf::AafResolver) {
+        let provider: Arc<dyn nai_lattice_aaf::source::ExternalArtifactSource> = Arc::new(
             DirectorySource::new(&self.provider_id(), self.root()),
         );
         resolver.register(provider).ok();
@@ -95,12 +95,12 @@ mod tests {
         // Register with an AAF resolver and discover the committed shard. Need a
         // CAS to construct the resolver; use the in-memory/temp CAS via object store.
         let cas = Arc::new(
-            lattice_cas::ObjectStore::new(dir.join("cas")).expect("temp cas"),
+            nai_lattice_cas::ObjectStore::new(dir.join("cas")).expect("temp cas"),
         );
-        let resolver = lattice_aaf::AafResolver::new(cas);
+        let resolver = nai_lattice_aaf::AafResolver::new(cas);
         fed.register(&resolver);
         assert_eq!(resolver.providers(), vec!["datasets/writing-preference"]);
-        let filt = lattice_aaf::DiscoverFilter { logical_type: None, media_type: None };
+        let filt = nai_lattice_aaf::DiscoverFilter { logical_type: None, media_type: None };
         let cands = resolver.discover_all(&filt);
         assert!(!cands.is_empty());
         assert_eq!(cands[0].provider_id, "datasets/writing-preference");
