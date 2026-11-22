@@ -76,6 +76,13 @@ if (-not $prefixName -or $prefixName -notmatch '^[0-9A-Za-z][0-9A-Za-z._/-]*$') 
 }
 $prefix = "$prefixName/$version"
 $publicBase = $PublicBase.TrimEnd('/')
+# R2_PUBLIC_URL may already include the product prefix
+# (e.g. <release-host>/NAI-Lattice). Strip it so the public URI is
+# always <root>/<prefix>/<version>/<asset>, never a doubled prefix.
+$publicSuffix = "/$prefixName"
+if ($publicBase.EndsWith($publicSuffix, [StringComparison]::OrdinalIgnoreCase)) {
+    $publicBase = $publicBase.Substring(0, $publicBase.Length - $publicSuffix.Length)
+}
 
 function Get-Sha256([string]$Path) {
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()

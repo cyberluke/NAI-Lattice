@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "mcp-nai-lattice": "./dist/index.js"
+    "mcp-nai-lattice": "dist/index.js"
   },
   "files": [
     "dist",
