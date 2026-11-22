@@ -32,7 +32,11 @@ param(
 
     # Fail the bundle when the host is not Authenticode-Valid. Product release
     # builds set this; local/dev bundles may leave it off.
-    [switch]$RequireSignature
+    [switch]$RequireSignature,
+
+    # Use the existing target/<triple>/release binary instead of rebuilding.
+    # Release flow: cargo build -> sign-release.ps1 -> bundle with -SkipBuild.
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +65,7 @@ $gitDesc = (& git -C $Lattice rev-parse --short HEAD 2>$null)
 if (-not $gitDesc) { $gitDesc = 'unknown' }
 
 # ── build (profile overrides scoped to this build only) ─────────────────────
+if (-not $SkipBuild) {
 $profileKeys = @(
     'CARGO_PROFILE_RELEASE_LTO',
     'CARGO_PROFILE_RELEASE_CODEGEN_UNITS',
@@ -95,6 +100,10 @@ finally {
     foreach ($key in $profileKeys) {
         [Environment]::SetEnvironmentVariable($key, $savedProfile[$key], 'Process')
     }
+}
+}
+else {
+    Write-Host '[fabric-host] -SkipBuild: using the existing pre-built, pre-signed binary'
 }
 
 # ── resolve and verify the built artifact ───────────────────────────────────

@@ -28,7 +28,16 @@ param(
 
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
 
-    [switch]$SkipTimestamp
+    [switch]$SkipTimestamp,
+
+    [string]$RootCert = '.cert/NAI-Sovereign-Root-CA.cer',
+
+    [string]$IntermediateCert = '.cert/NAI-Code-Signing-CA.cer',
+
+    # Install the sovereign root/intermediate into the current user's stores so
+    # signtool/Get-AuthenticodeSignature can build the chain locally. The
+    # installer does the machine-wide equivalent for customers.
+    [switch]$TrustChain
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +74,24 @@ if (-not $sdkVersion) {
 $signtool = Join-Path $sdkVersion.FullName 'x64\signtool.exe'
 if (-not (Test-Path -LiteralPath $signtool)) {
     throw "signtool.exe not found: $signtool"
+}
+
+if ($TrustChain) {
+    $caPairs = @(
+        @{ Cert = $RootCert; Store = 'Root' },
+        @{ Cert = $IntermediateCert; Store = 'CA' }
+    )
+    foreach ($pair in $caPairs) {
+        $caPath = [IO.Path]::GetFullPath($pair.Cert)
+        if (-not (Test-Path -LiteralPath $caPath)) {
+            throw "CA certificate not found: $caPath"
+        }
+        & certutil.exe -user -addstore -f $pair.Store $caPath | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "certutil failed to add $caPath to CurrentUser\$($pair.Store)"
+        }
+    }
+    Write-Host 'Trusted the sovereign chain for the current user.'
 }
 
 foreach ($file in $Files) {
