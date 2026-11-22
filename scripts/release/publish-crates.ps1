@@ -116,10 +116,14 @@ foreach ($pkg in $order) {
         Write-Host "==> cargo publish -p $pkg (attempt $attempt/$MaxRetries)"
         $cargoArgs = @('publish', '-p', $pkg)
         if ($AllowDirty) { $cargoArgs += '--allow-dirty' }
-        cargo @cargoArgs
+        $output = & cargo @cargoArgs 2>&1
+        $output | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -eq 0) {
             $published = $true
             break
+        }
+        if (($output | Out-String) -match 'verified email address is required') {
+            throw 'crates.io requires a verified email address. Verify it at https://crates.io/settings/profile, then rerun this script.'
         }
         if ($attempt -lt $MaxRetries) {
             Write-Warning "publish failed; waiting ${RetrySeconds}s for the index, then retrying."
