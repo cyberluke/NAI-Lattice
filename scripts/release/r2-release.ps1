@@ -39,6 +39,10 @@ param(
 
     [string]$Prefix = $(if ($env:R2_FOLDER_PREFIX) { $env:R2_FOLDER_PREFIX } else { 'nai-lattice' }),
 
+    [string]$Product = 'nai-lattice',
+
+    [string]$Git = '',
+
     [string]$Channel = 'latest',
 
     [switch]$Latest,
@@ -119,11 +123,11 @@ try {
 
     $latestBody = [ordered]@{
         schemaVersion = 1
-        product       = 'nai-lattice'
+        product       = $Product
         channel       = $Channel
         version       = $version
         publishedAt   = [DateTime]::UtcNow.ToString('o')
-        git           = (& git -C (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) rev-parse --short HEAD 2>$null)
+        git           = $(if ($Git) { $Git } else { (& git -C (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) rev-parse --short HEAD 2>$null) })
         artifacts     = [ordered]@{}
     }
     foreach ($asset in $assets) {
