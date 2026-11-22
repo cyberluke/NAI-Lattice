@@ -132,7 +132,7 @@ foreach ($pkg in $order) {
         if ($outText -match 'status 429 Too Many Requests') {
             $wait = [math]::Max($RetrySeconds, 60)
             $resetText = $null
-            if ($outText -match 'try again after ([^\.]+?)(?:\.|\r?\n|$)') {
+            if ($outText -match 'try again after ([A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT)') {
                 $resetText = $Matches[1].Trim()
                 try {
                     $normalized = $resetText -replace '\s+GMT$', ''
