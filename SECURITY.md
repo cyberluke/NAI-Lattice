@@ -27,6 +27,11 @@ the MSIX `Publisher`). It is issued from the same intermediate; the old
 self-signed development certificate is being retired in a coordinated NAI OS
 change.
 
+The private authority (root/intermediate keys + issuance runbook) is the
+internal `<private-ca-authority>` workspace. The public trust index is
+`<release-host>/NAI-CA/latest.json`; the public certificates here
+are byte-identical copies.
+
 ### Verify a download
 
 ```powershell

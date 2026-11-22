@@ -128,6 +128,31 @@ foreach ($pkg in $order) {
         if (($output | Out-String) -match 'missing or empty metadata fields') {
             throw "crates.io rejected $pkg metadata. Add a non-empty description/license/repository, then rerun."
         }
+        $outText = $output | Out-String
+        if ($outText -match 'status 429 Too Many Requests') {
+            $wait = [math]::Max($RetrySeconds, 60)
+            $resetText = $null
+            if ($outText -match 'try again after ([^\.]+?)(?:\.|\r?\n|$)') {
+                $resetText = $Matches[1].Trim()
+                try {
+                    $normalized = $resetText -replace '\s+GMT$', ''
+                    $when = [DateTime]::ParseExact(
+                        $normalized,
+                        'ddd, dd MMM yyyy HH:mm:ss',
+                        [Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                    )
+                    $wait = [math]::Ceiling(($when - [DateTime]::UtcNow).TotalSeconds) + 10
+                }
+                catch {
+                    Write-Warning "Could not parse crates.io reset time '$resetText'; using ${RetrySeconds}s."
+                }
+            }
+            if ($wait -lt 60) { $wait = 60 }
+            Write-Warning "crates.io rate limit for $pkg; waiting $wait s$(if ($resetText) { " until $resetText" })."
+            Start-Sleep -Seconds $wait
+            continue
+        }
         if ($attempt -lt $MaxRetries) {
             Write-Warning "publish failed; waiting ${RetrySeconds}s for the index, then retrying."
             Start-Sleep -Seconds $RetrySeconds
