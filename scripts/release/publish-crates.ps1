@@ -125,6 +125,9 @@ foreach ($pkg in $order) {
         if (($output | Out-String) -match 'verified email address is required') {
             throw 'crates.io requires a verified email address. Verify it at https://crates.io/settings/profile, then rerun this script.'
         }
+        if (($output | Out-String) -match 'missing or empty metadata fields') {
+            throw "crates.io rejected $pkg metadata. Add a non-empty description/license/repository, then rerun."
+        }
         if ($attempt -lt $MaxRetries) {
             Write-Warning "publish failed; waiting ${RetrySeconds}s for the index, then retrying."
             Start-Sleep -Seconds $RetrySeconds

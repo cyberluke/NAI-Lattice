@@ -3,6 +3,7 @@ name = "nai-lattice-git"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Git repository reader and provenance helpers for NAI Lattice."
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
