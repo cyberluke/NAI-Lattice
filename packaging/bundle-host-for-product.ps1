@@ -36,7 +36,11 @@ param(
 
     # Use the existing target/<triple>/release binary instead of rebuilding.
     # Release flow: cargo build -> sign-release.ps1 -> bundle with -SkipBuild.
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+
+    # Explicit pre-built host (used with -SkipBuild). Defaults to
+    # target/<triple>/release, then target/release when that exists.
+    [string]$HostExe = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,7 +120,13 @@ $targetRoot = if ($env:CARGO_TARGET_DIR) {
 } else {
     Join-Path $Lattice 'target'
 }
-$src = Join-Path $targetRoot "$Target\release\nai-fabric-host.exe"
+$src = if ($HostExe) {
+    [IO.Path]::GetFullPath($HostExe)
+} else {
+    $tripleSrc = Join-Path $targetRoot "$Target\release\nai-fabric-host.exe"
+    $plainSrc = Join-Path $targetRoot 'release\nai-fabric-host.exe'
+    if ($SkipBuild -and (Test-Path -LiteralPath $plainSrc)) { $plainSrc } else { $tripleSrc }
+}
 if (-not (Test-Path -LiteralPath $src)) {
     throw "bundle-host-for-product: built host missing at $src"
 }

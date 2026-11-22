@@ -42,16 +42,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$pfxPath = [IO.Path]::GetFullPath($Pfx)
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+function Resolve-RepoPath([string]$Path) {
+    if ([IO.Path]::IsPathRooted($Path)) { return $Path }
+    return [IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
+}
+
+$pfxPath = Resolve-RepoPath $Pfx
 if (-not (Test-Path -LiteralPath $pfxPath -PathType Leaf)) {
     throw "Signing PFX not found: $pfxPath"
 }
+$passwordFile = Resolve-RepoPath $PasswordFile
 
 if ($Password) {
     $pfxPassword = $Password
 }
-elseif (Test-Path -LiteralPath $PasswordFile -PathType Leaf) {
-    $pfxPassword = (Get-Content -LiteralPath $PasswordFile -Raw).TrimEnd()
+elseif (Test-Path -LiteralPath $passwordFile -PathType Leaf) {
+    $pfxPassword = (Get-Content -LiteralPath $passwordFile -Raw).TrimEnd()
 }
 elseif ($env:NAI_CA_PASSWORD) {
     $pfxPassword = $env:NAI_CA_PASSWORD
@@ -62,6 +69,11 @@ else {
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     )
 }
+
+$pfxSecure = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
+$pfxCert = Get-PfxCertificate -FilePath $pfxPath -Password $pfxSecure
+if (-not $pfxCert) { throw "Cannot read the signing certificate from $pfxPath" }
+$signerThumbprint = $pfxCert.Thumbprint
 
 $sdkRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
 $sdkVersion = Get-ChildItem -LiteralPath $sdkRoot -Directory -ErrorAction SilentlyContinue |
@@ -82,7 +94,7 @@ if ($TrustChain) {
         @{ Cert = $IntermediateCert; Store = 'CA' }
     )
     foreach ($pair in $caPairs) {
-        $caPath = [IO.Path]::GetFullPath($pair.Cert)
+        $caPath = Resolve-RepoPath $pair.Cert
         if (-not (Test-Path -LiteralPath $caPath)) {
             throw "CA certificate not found: $caPath"
         }
@@ -95,13 +107,14 @@ if ($TrustChain) {
 }
 
 foreach ($file in $Files) {
-    $target = [IO.Path]::GetFullPath($file)
+    $target = Resolve-RepoPath $file
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
         throw "Artifact not found: $target"
     }
 
     # Never put the password in a log line; it is passed as an argv element only.
-    $signArgs = @('sign', '/fd', 'SHA256', '/f', $pfxPath)
+    # The PFX carries the leaf plus its chain; /sha1 pins the leaf explicitly.
+    $signArgs = @('sign', '/fd', 'SHA256', '/f', $pfxPath, '/sha1', $signerThumbprint)
     if ($pfxPassword.Length -gt 0) { $signArgs += @('/p', $pfxPassword) }
     if (-not $SkipTimestamp -and $TimestampUrl) {
         $signArgs += @('/tr', $TimestampUrl, '/td', 'SHA256')
