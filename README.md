@@ -9,6 +9,8 @@
 _The Ambient Fabric's observability plane — an event store that runs like a real
 backend you own, not a cloud you rent._
 
+[Source](https://github.com/cyberluke/NAI-Lattice) · [Architecture](docs/ARCHITECTURE.md) · [Donate](https://revolut.me/lukalita) · [License](LICENSE)
+
 </div>
 
 ---
@@ -99,20 +101,24 @@ Active, production hardware in daily use for the NAI Ambient Fabric observabilit
 plane. Exploratory but honest: the index ships only because its benchmark beats
 a full scan on the query it exists to serve. We measure before we project.
 
+## ❤️ Support Independent Development
+
+NAI-Lattice is independently developed and open source.
+
+If you enjoy my projects and would like to support their continued development, voluntary donations are always appreciated.
+
+[☕ Donate via Revolut](https://revolut.me/lukalita)
+
+<a href="https://revolut.me/lukalita">
+  <img src="assets/revolut-qr.png" width="160" alt="Scan to donate via Revolut">
+</a>
+
+Scan the QR code or use the link above to make a one-time donation.
+
+Every contribution helps. Thank you for your support! 🧪
+
 ## Contributing & license
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — process, contracts (`LEDGER-*`,
   `CQRS-*`, `NAF-*`), and the "SurrealKV stays authoritative" ground rule.
 - [LICENSE](LICENSE) — **Apache-2.0** (patent grant, enterprise-friendly).
-
-## Support the project
-
-If NAI-Lattice is useful, a star is a great start. If you have a budget line
-for the kind of infrastructure you'd rather own than rent, donations keep the
-cloud-free runtimes alive:
-
-- [Sponsor on GitHub](#) — your name goes on the README.
-- [Buy me a runtime](#) — helps cover CI for multi-platform (Windows/macOS/Linux)
-  release builds and long-horizon compatibility testing.
-
-Every contribution is matched by a commit. Thank you.
