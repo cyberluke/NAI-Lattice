@@ -8,6 +8,7 @@ homepage.workspace = true
 keywords.workspace = true
 rust-version.workspace = true
 description = "Gas Town domain module inside NAI-Lattice (host/session registry, task epochs, review graph)."
+readme = "README.md"
 
 [dependencies]
 nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }

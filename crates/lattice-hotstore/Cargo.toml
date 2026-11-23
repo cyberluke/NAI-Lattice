@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 description = "HotStore trait: immutable-by-construction KV keyspace abstraction over production hot stores (SurrealKV/Fjall)."
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true

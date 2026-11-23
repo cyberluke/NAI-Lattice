@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 description = "NAI Lattice lakehouse: Parquet/Arrow ingest, immutable snapshot manifests, and streaming delta synchronization for federated datasets of tutty-studio / nai-fabric-host."
+readme = "README.md"
 
 [dependencies]
 nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }

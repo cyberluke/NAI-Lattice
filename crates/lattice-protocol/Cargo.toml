@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 description = "NAF/1 protocol: handshake, frames, events, artifacts, queries (prost pb)."
+readme = "README.md"
 build = "build.rs"
 
 [dependencies]

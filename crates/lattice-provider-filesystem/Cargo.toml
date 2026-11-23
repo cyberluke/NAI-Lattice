@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 description = "NAI Lattice lattice-provider-filesystem."
+readme = "README.md"
 
 [dependencies]
 nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }

@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 description = "NAI Lattice lattice-query: structural SQL-over-Parquet, hybrid recall (lexical+vector+rerank), and reproducible 512K knowledge packs for federated datasets."
+readme = "README.md"
 
 [dependencies]
 nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }

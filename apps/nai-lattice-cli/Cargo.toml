@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 description = "NAI Lattice inspection, verification, recovery and rebuild CLI (spec §7)."
+readme = "README.md"
 
 [[bin]]
 name = "nai-lattice-cli"

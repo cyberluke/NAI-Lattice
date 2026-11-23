@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 description = "NAI Ambient Fabric per-user host: serves NAF/1 over the Windows named pipe."
+readme = "README.md"
 
 [[bin]]
 name = "nai-fabric-host"
