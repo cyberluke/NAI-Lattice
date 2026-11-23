@@ -9,7 +9,7 @@
 _The Ambient Fabric's observability plane — an event store that runs like a real
 backend you own, not a cloud you rent._
 
-[Source](https://github.com/cyberluke/NAI-Lattice) · [Architecture](docs/ARCHITECTURE.md) · [Donate](https://revolut.me/lukalita) · [License](LICENSE)
+[Source](https://github.com/cyberluke/NAI-Lattice) · [NAI OS — first production integration](https://github.com/cyberluke/NAI-OS) · [Architecture](docs/ARCHITECTURE.md) · [Donate](https://revolut.me/lukalita) · [License](LICENSE)
 
 </div>
 
@@ -47,6 +47,19 @@ vendor locks your logs.
 - **Windows-first, release-shipped** — builds and ships as a release binary.
 - **Observability-first** — a live dashboard + SSE, and the fabric's own
   telemetry writes back into the same ledger it serves.
+
+## First production integration: NAI OS
+
+[<img src="assets/nai-os-icon.png" alt="NAI OS" width="96" height="96" align="left" />](https://github.com/cyberluke/NAI-OS)
+
+**[NAI OS](https://github.com/cyberluke/NAI-OS)** is the first
+production-ready integration of NAI Lattice. It ships `nai-fabric-host` as its
+shared per-user runtime, verifies the signed host (SHA-256 + Authenticode
+signer thumbprint) before execution, and uses the same ledger, CAS and AAF for
+its AI apps, N-Pilot and shell surfaces.
+
+The NAI OS repository is being prepared for public release; the link above is
+the canonical destination. Integration notes: [docs/NAI-OS.md](docs/NAI-OS.md).
 
 ## Quick start
 
