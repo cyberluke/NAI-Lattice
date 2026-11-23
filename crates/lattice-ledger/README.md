@@ -4,6 +4,9 @@ Durable, replayable canonical event ledger: segments, BLAKE3 chains, crash recov
 
 Part of the [NAI Lattice](https://github.com/cyberluke/NAI-Lattice) workspace.
 
+**First production integration:** [NAI OS](https://github.com/cyberluke/NAI-OS)
+ships the NAI Lattice fabric host as its shared per-user runtime.
+
 ## Install
 
 ```toml

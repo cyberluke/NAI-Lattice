@@ -48,7 +48,7 @@ vendor locks your logs.
 - **Observability-first** — a live dashboard + SSE, and the fabric's own
   telemetry writes back into the same ledger it serves.
 
-## NAI OS
+## First production integration: NAI OS
 
 <p align="center">
   <a href="https://github.com/cyberluke/NAI-OS">
@@ -56,9 +56,24 @@ vendor locks your logs.
   </a>
 </p>
 
-[NAI OS](https://github.com/cyberluke/NAI-OS) is the first production product
-built on NAI Lattice. It runs `nai-fabric-host` as its per-user runtime and
-checks the host manifest before launch.
+**[NAI OS](https://github.com/cyberluke/NAI-OS)** is the first production-ready
+integration of NAI Lattice — an AI-native Windows desktop with a dock, launcher,
+window manager, widgets, themes, a curated store for AI and agentic apps
+(MCP + `SKILL.md`), and N-Pilot, its local agent.
+
+It runs `nai-fabric-host` as the per-user runtime and gives the shell one
+durable substrate:
+
+- **N-Pilot** keeps task, thread and relationship state in the canonical ledger
+  instead of an app-private database.
+- **Observability** is the host's live dashboard and event stream on
+  `127.0.0.1:8787`, backed by the same canonical ledger.
+- **App assets** can be federated through AAF and CAS instead of duplicated.
+- **Host lifecycle** follows the production path: versioned runtime,
+  `active.json`, supervised monitor/worker, live release swap and crash recovery.
+
+The host manifest records SHA-256 and the signer identity; releases are signed
+with the NAI sovereign chain — see [`SECURITY.md`](SECURITY.md).
 
 Integration notes: [docs/NAI-OS.md](docs/NAI-OS.md).
 

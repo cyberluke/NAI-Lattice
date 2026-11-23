@@ -4,6 +4,9 @@ NAF/1 protocol: handshake, frames, events, artifacts, queries (prost pb).
 
 Part of the [NAI Lattice](https://github.com/cyberluke/NAI-Lattice) workspace.
 
+**First production integration:** [NAI OS](https://github.com/cyberluke/NAI-OS)
+ships the NAI Lattice fabric host as its shared per-user runtime.
+
 ## Install
 
 ```toml
