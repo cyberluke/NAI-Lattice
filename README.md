@@ -50,7 +50,11 @@ vendor locks your logs.
 
 ## NAI OS
 
-[<img src="assets/nai-os-icon.png" alt="NAI OS" width="96" height="96" align="left" />](https://github.com/cyberluke/NAI-OS)
+<p align="center">
+  <a href="https://github.com/cyberluke/NAI-OS">
+    <img src="assets/nai-os-logo.png" alt="NAI OS" width="420" />
+  </a>
+</p>
 
 [NAI OS](https://github.com/cyberluke/NAI-OS) is the first production product
 built on NAI Lattice. It runs `nai-fabric-host` as its per-user runtime and

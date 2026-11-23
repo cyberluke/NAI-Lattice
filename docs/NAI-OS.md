@@ -1,6 +1,6 @@
 # NAI OS
 
-![NAI OS](../assets/nai-os-icon.png)
+<img src="../assets/nai-os-logo.png" alt="NAI OS" width="420" />
 
 [NAI OS](https://github.com/cyberluke/NAI-OS) is the first production product
 built on NAI Lattice.
