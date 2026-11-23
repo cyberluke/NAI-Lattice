@@ -2803,14 +2803,14 @@ mod tests {
             town_id: "t".into(),
             config: serde_json::json!({}),
             created_at: now(),
-            working_dir: Some("<workspace>/NAI-Lattice".into()),
+            working_dir: Some("D:/work/NAI-Lattice".into()),
             worktree_disk_budget_mib: Some(512),
             sparse_paths: vec!["src".into(), "crates/lattice-gastown".into()],
         };
         assert!(attached.is_attached());
         assert_eq!(
             attached.repo_base("fallback"),
-            "<workspace>/NAI-Lattice",
+            "D:/work/NAI-Lattice",
             "attach mode uses the working_dir as the repo base (no clone)"
         );
         let remote = Rig {

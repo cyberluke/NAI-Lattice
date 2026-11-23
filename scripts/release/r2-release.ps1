@@ -1,13 +1,13 @@
 # Copyright (c) NAI / NANOTRIK.AI
 # Licensed under the MIT OR Apache-2.0 license.
 #
-# r2-release.ps1 - publish NAI Lattice artifacts to the sovereign Cloudflare R2
-# bucket served at <release-host>.
+# r2-release.ps1 - publish NAI Lattice artifacts to an S3-compatible object
+# store.
 #
 # This is a LOCAL release step. There is no CI/CD, no GitHub Actions and no
 # GitHub Release: the operator runs this script on the release box.
 #
-# Layout (deliberately namespaced so it never collides with NAI OS):
+# Layout (namespaced):
 #   s3://<bucket>/nai-lattice/<version>/<asset>
 #   s3://<bucket>/nai-lattice/<version>/<asset>.sha256
 #   s3://<bucket>/nai-lattice/latest.json
@@ -35,7 +35,7 @@ param(
 
     [string]$Endpoint = $(if ($env:CLOUDFLARE_R2_ENDPOINT) { $env:CLOUDFLARE_R2_ENDPOINT } elseif ($env:R2_SERVER) { $env:R2_SERVER } else { '' }),
 
-    [string]$PublicBase = $(if ($env:R2_PUBLIC_URL) { $env:R2_PUBLIC_URL } else { '<release-host>' }),
+    [string]$PublicBase = $(if ($env:R2_PUBLIC_URL) { $env:R2_PUBLIC_URL } else { '' }),
 
     [string]$Prefix = $(if ($env:R2_FOLDER_PREFIX) { $env:R2_FOLDER_PREFIX } else { 'nai-lattice' }),
 
@@ -63,6 +63,9 @@ if (-not $env:AWS_DEFAULT_REGION) { $env:AWS_DEFAULT_REGION = 'auto' }
 if (-not $Bucket -or -not $Endpoint) {
     throw 'Set CLOUDFLARE_R2_BUCKET / CLOUDFLARE_R2_ENDPOINT or R2_BUCKET / R2_SERVER before running.'
 }
+if (-not $PublicBase) {
+    throw 'Set R2_PUBLIC_URL (public artifact base URL) before running.'
+}
 if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
     throw 'AWS CLI (aws) is required for R2 uploads.'
 }
@@ -81,7 +84,7 @@ if (-not $prefixName -or $prefixName -notmatch '^[0-9A-Za-z][0-9A-Za-z._/-]*$') 
 $prefix = "$prefixName/$version"
 $publicBase = $PublicBase.TrimEnd('/')
 # R2_PUBLIC_URL may already include the product prefix
-# (e.g. <release-host>/NAI-Lattice). Strip it so the public URI is
+# (e.g. https://<release-host>/NAI-Lattice). Strip it so the public URI is
 # always <root>/<prefix>/<version>/<asset>, never a doubled prefix.
 $publicSuffix = "/$prefixName"
 if ($publicBase.EndsWith($publicSuffix, [StringComparison]::OrdinalIgnoreCase)) {

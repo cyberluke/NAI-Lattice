@@ -29,10 +29,9 @@ that carries the leaf signature; it does not imply a public CA.
 Product leaves other than NAI Lattice are documented in their own product
 repositories and in the CA trust index.
 
-The private authority (root/intermediate keys + issuance runbook) is the
-internal `<private-ca-authority>` workspace. The public trust index is
-`<release-host>/NAI-CA/latest.json`; the public certificates here
-are byte-identical copies.
+The root and intermediate private keys and the issuance runbook are kept
+privately and are not part of this repository. The public certificates in
+[`certs/`](certs/) are the trust anchors.
 
 ### Verify a download
 

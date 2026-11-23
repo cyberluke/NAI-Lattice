@@ -107,7 +107,7 @@ materialized key instead of a pass over the whole event store.**
 
 - `cargo build --release -p nai-fabric-host` — ship profile (we deliver the
   release binary/MSIX only).
-- `cargo test -p lattice-ledger -p lattice-runtime` — command + projection
+- `cargo test -p nai-lattice-ledger -p nai-lattice-runtime` — command + projection
   suites, including the index benchmark.
 - Contracts referenced above (`LEDGER-*`, `CQRS-*`, `NAF-*`) are inline doc
   anchors in the source.

@@ -22,7 +22,7 @@ query without a cloud dependency.
   bypass.
 - **Windows is first-class.** The product targets modern Windows 11
   workstations. Keep builds green on `cargo build --release` (we ship a release
-  MSIX / binary only) and run `cargo test -p lattice-ledger -p lattice-runtime`.
+  MSIX / binary only) and run `cargo test -p nai-lattice-ledger -p nai-lattice-runtime`.
 
 ## Development flow
 

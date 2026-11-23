@@ -147,4 +147,4 @@ Every contribution helps. Thank you for your support! 🧪
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — process, contracts (`LEDGER-*`,
   `CQRS-*`, `NAF-*`), and the "SurrealKV stays authoritative" ground rule.
-- [LICENSE](LICENSE) — **Apache-2.0** (patent grant, enterprise-friendly).
+- [LICENSE](LICENSE) / [LICENSE-MIT](LICENSE-MIT) — **MIT OR Apache-2.0** (patent grant, enterprise-friendly).
