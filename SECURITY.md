@@ -13,8 +13,8 @@ Use GitHub's private vulnerability reporting on this repository, or email
 
 NAI Lattice Windows binaries (`nai-fabric-host.exe`, `nai-lattice-cli.exe`) are
 Authenticode-signed with the NAI sovereign code-signing chain. The public
-certificates are committed in [`certs/`](certs/); the private keys are not in
-this repository.
+certificates are distributed with each signed release; the private keys are not
+in this repository.
 
 This is a **private sovereign CA**: the trust anchor is our own root, not a
 public or commercial CA. "Authenticode" here is the Windows signature format
@@ -22,16 +22,16 @@ that carries the leaf signature; it does not imply a public CA.
 
 | Role | Subject | SHA-1 thumbprint | Validity |
 |---|---|---|---|
-| Root CA | `CN=NAI Sovereign Root CA, C=US` | `A9144C0CDBC440135DB7E95480DF374D52D565EA` | 2026-11-22 → 2046-11-22 |
-| Intermediate | `CN=NAI Code Signing CA, C=US` | `B6A32419C87FB0DA104EA815C117450A75027532` | 2026-11-22 → 2036-11-22 |
-| NAI Lattice leaf | `CN=NAI Lattice, C=US` | `9C6CBCF11016FD17ABCA7F7816A16E7ECBDE861D` | 2026-11-22 → 2029-11-22 |
+| Root CA | `CN=NAI Sovereign Root CA` | `A9144C0CDBC440135DB7E95480DF374D52D565EA` | 2026-11-22 → 2046-11-22 |
+| Intermediate | `CN=NAI Code Signing CA` | `B6A32419C87FB0DA104EA815C117450A75027532` | 2026-11-22 → 2036-11-22 |
+| NAI Lattice leaf | `CN=NAI Lattice` | `9C6CBCF11016FD17ABCA7F7816A16E7ECBDE861D` | 2026-11-22 → 2029-11-22 |
 
 Product leaves other than NAI Lattice are documented in their own product
 repositories and in the CA trust index.
 
 The root and intermediate private keys and the issuance runbook are kept
-privately and are not part of this repository. The public certificates in
-[`certs/`](certs/) are the trust anchors.
+privately and are not part of this repository. The public certificates
+distributed with each release are the trust anchors.
 
 ### Verify a download
 
@@ -52,8 +52,8 @@ Get-FileHash .\nai-fabric-host.exe -Algorithm SHA256
 ### Install the trust anchor (elevated)
 
 ```powershell
-Import-Certificate -FilePath certs\NAI-Sovereign-Root-CA.cer -CertStoreLocation Cert:\LocalMachine\Root
-Import-Certificate -FilePath certs\NAI-Code-Signing-CA.cer   -CertStoreLocation Cert:\LocalMachine\CA
+Import-Certificate -FilePath .\certs\NAI-Sovereign-Root-CA.cer -CertStoreLocation Cert:\LocalMachine\Root
+Import-Certificate -FilePath .\certs\NAI-Code-Signing-CA.cer   -CertStoreLocation Cert:\LocalMachine\CA
 ```
 
 The installer does the same two imports. A root rotation ships a new root and

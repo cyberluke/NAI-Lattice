@@ -30,9 +30,9 @@ param(
 
     [switch]$SkipTimestamp,
 
-    [string]$RootCert = 'certs/NAI-Sovereign-Root-CA.cer',
+    [string]$RootCert = '.cert/NAI-Sovereign-Root-CA.cer',
 
-    [string]$IntermediateCert = 'certs/NAI-Code-Signing-CA.cer',
+    [string]$IntermediateCert = '.cert/NAI-Code-Signing-CA.cer',
 
     # Install the sovereign root/intermediate into the current user's stores so
     # signtool/Get-AuthenticodeSignature can build the chain locally. The

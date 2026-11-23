@@ -17,8 +17,8 @@ registries.
 
 1. **One private root, one intermediate, per-product leaves.** The root and
    intermediate are operated privately by the NAI CA authority. This repository
-   consumes only the issued product leaf and the public certificates in
-   `certs/`.
+   consumes only the issued product leaf; the public certificates are
+   distributed with the release.
 2. **Never commit a private key.** PFX files, passwords and the root key live
    outside git (`.cert/*.pfx*` is ignored).
 3. **Sign before packaging.** The host manifest records the signed bytes; any
@@ -141,10 +141,13 @@ pwsh ./scripts/release/r2-release.ps1 `
   -Artifacts dist\nai-lattice\host\nai-fabric-host.exe,
              target\release\nai-lattice-cli.exe,
              dist\nai-lattice\host\host-manifest.json,
-             certs\NAI-Sovereign-Root-CA.cer,
-             certs\NAI-Code-Signing-CA.cer `
+             <private-certs>\NAI-Sovereign-Root-CA.cer,
+             <private-certs>\NAI-Code-Signing-CA.cer `
   -Latest
 ```
+
+Stage the public root and intermediate certificates from the private CA
+authority into `<private-certs>`; they are release artifacts, not source files.
 
 The script consumes `R2_BUCKET`, `R2_SERVER`, `R2_ACCESS_KEY`,
 `R2_SECRET_KEY`, `R2_FOLDER_PREFIX` and `R2_PUBLIC_URL` directly (the
