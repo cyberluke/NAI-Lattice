@@ -2,12 +2,7 @@
 
 Gas Town domain module inside NAI-Lattice (host/session registry, task epochs, review graph).
 
-Part of [NAI Lattice](https://github.com/cyberluke/NAI-Lattice): a local-first,
-event-sourced, multi-dimensional data fabric for Windows. This crate is one
-building block of the workspace.
-
-**First production integration:** [NAI OS](https://github.com/cyberluke/NAI-OS)
-ships the NAI Lattice fabric host as its shared per-user runtime.
+Part of the [NAI Lattice](https://github.com/cyberluke/NAI-Lattice) workspace.
 
 ## Install
 

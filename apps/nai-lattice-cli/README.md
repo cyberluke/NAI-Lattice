@@ -3,8 +3,6 @@
 Operator CLI for the local NAI Lattice runtime. It opens the same runtime as the
 fabric host and provides inspection, verification, recovery and log access.
 
-**First production integration:** [NAI OS](https://github.com/cyberluke/NAI-OS).
-
 ## Commands
 
 | Command | Purpose |

@@ -3,9 +3,6 @@
 MCP server for NAI-Lattice: read-only semantic search over the local Qdrant code
 index, plus the shared task ledger, mind-map feed and company policy.
 
-**First production integration:** [NAI OS](https://github.com/cyberluke/NAI-OS)
-ships the NAI Lattice fabric host as its shared per-user runtime.
-
 ## Install
 
 ```bash

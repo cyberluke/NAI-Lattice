@@ -4,9 +4,6 @@ Reusable TypeScript **NAF/1** client for NAI-Lattice: canonical framing and the
 Windows named-pipe transport. The protocol source of truth is
 `protos/naf/protocol.proto` in the NAI-Lattice repository.
 
-**First production integration:** [NAI OS](https://github.com/cyberluke/NAI-OS)
-ships the NAI Lattice fabric host as its shared per-user runtime.
-
 ## Install
 
 ```bash

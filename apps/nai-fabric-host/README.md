@@ -4,10 +4,7 @@ The per-user **NAI Ambient Fabric host**. It serves NAF/1 over a Windows named
 pipe and owns the local runtime: canonical ledger, hot store, CAS, AAF and the
 Gas Town domain service.
 
-## First production integration
-
-[NAI OS](https://github.com/cyberluke/NAI-OS) ships this host as its shared
-per-user runtime and verifies the signed host before execution.
+**Production consumer:** [NAI OS](https://github.com/cyberluke/NAI-OS).
 
 ## Architecture
 
