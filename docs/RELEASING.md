@@ -83,6 +83,12 @@ a new root and removes the old thumbprint.
 ## 2. Build
 
 ```powershell
+# Bump every manifest first (workspace + both npm packages)
+pwsh ./scripts/release/bump-version.ps1 `
+  -CargoVersion 0.1.1 `
+  -NpmClientVersion 0.2.1 `
+  -NpmMcpVersion 0.1.1
+
 # Rust release binaries (default host target; no --target triple)
 cargo build --release -p nai-fabric-host -p nai-lattice-cli
 # -> target\release\nai-fabric-host.exe and target\release\nai-lattice-cli.exe
@@ -137,7 +143,7 @@ verify SHA-256 **and** the signer thumbprint before executing.
 . ./scripts/release/load-env.ps1   # R2_* keys and endpoint from .env.local
 
 pwsh ./scripts/release/r2-release.ps1 `
-  -Version 0.1.0 `
+  -Version 0.1.1 `
   -Artifacts dist\nai-lattice\host\nai-fabric-host.exe,
              target\release\nai-lattice-cli.exe,
              dist\nai-lattice\host\host-manifest.json,
@@ -251,7 +257,8 @@ rotation live in the NAI OS repository and the private CA authority.
 
 ## 9. Release checklist
 
-- [ ] Version bumped in the Rust workspace and the two npm packages.
+- [ ] Version bumped in the Rust workspace and the two npm packages
+      (`bump-version.ps1`), and `Cargo.lock` committed.
 - [ ] `cargo check --workspace` passes.
 - [ ] `cargo test --workspace` passes.
 - [ ] `npm run build:ts` and `npm run test:ts` pass.

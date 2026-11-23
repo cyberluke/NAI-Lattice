@@ -11,7 +11,7 @@ readme = "README.md"
 build = "build.rs"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
 prost.workspace = true
 prost-types.workspace = true
 bytes.workspace = true

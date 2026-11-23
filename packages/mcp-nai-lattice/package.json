@@ -1,6 +1,6 @@
 {
   "name": "@cyberluke/mcp-nai-lattice",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NAI-Lattice MCP server: semantic code search over the local Qdrant index, plus the shared task ledger, mind-map feed and company policy.",
   "type": "module",
   "main": "./dist/index.js",
@@ -46,7 +46,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@cyberluke/nai-lattice-client": "^0.2.0",
+    "@cyberluke/nai-lattice-client": "^0.2.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0"
   },

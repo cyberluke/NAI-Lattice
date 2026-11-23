@@ -10,9 +10,9 @@ description = "NAI Lattice lakehouse: Parquet/Arrow ingest, immutable snapshot m
 readme = "README.md"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
-nai-lattice-aaf = { path = "../lattice-aaf", version = "0.1.0" }
-nai-lattice-cas = { path = "../lattice-cas", version = "0.1.0" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
+nai-lattice-aaf = { path = "../lattice-aaf", version = "0.1.1" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.1" }
 
 serde.workspace = true
 serde_json.workspace = true

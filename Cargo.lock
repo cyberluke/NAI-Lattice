@@ -1942,7 +1942,7 @@ checksum = "a8afc6df942f4c022d70c5725e18df1a705773870e5b7f96fde94ca0334ce77a"
 
 [[package]]
 name = "nai-fabric-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-aaf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-cas"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "nai-lattice-core",
@@ -1998,7 +1998,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "nai-lattice-cas",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2049,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-embeddings"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "nai-lattice-vector",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-gastown"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "chrono",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "serde",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-graph"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2103,7 +2103,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-hotstore"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "serde",
@@ -2114,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-hotstore-fjall"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fjall",
  "nai-lattice-hotstore",
@@ -2125,7 +2125,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-hotstore-surrealkv"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "nai-lattice-hotstore",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-lakehouse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrow",
  "blake3",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-ledger"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-observability"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-client",
  "nai-lattice-core",
@@ -2184,7 +2184,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -2203,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-provider-appcontent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-provider-filesystem"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-provider-opfs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-provider-windows-search"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-query"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "nai-lattice-core",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "nai-lattice-aaf",
@@ -2282,7 +2282,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-search"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2294,7 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-supervisor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nai-lattice-core",
  "serde",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "nai-lattice-vector"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "hnsw_rs",

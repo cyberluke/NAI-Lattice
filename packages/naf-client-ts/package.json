@@ -1,6 +1,6 @@
 {
   "name": "@cyberluke/nai-lattice-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Reusable TypeScript NAF/1 client for NAI-Lattice (canonical framing + Windows named-pipe transport). Protocol source of truth: protos/naf/protocol.proto.",
   "type": "module",
   "main": "./dist/index.js",

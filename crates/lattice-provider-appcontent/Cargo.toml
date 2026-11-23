@@ -10,7 +10,7 @@ description = "NAI Lattice lattice-provider-appcontent."
 readme = "README.md"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.0" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
