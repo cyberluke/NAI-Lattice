@@ -23,7 +23,6 @@ N-Pilot, its local agent.
 | Dashboard | live dashboard + SSE on `127.0.0.1:8787`, same ledger |
 | AI/agentic app store | durable app state; CAS/AAF for reusable assets |
 | Host lifecycle | versioned runtime, `active.json`, monitor/worker, live swap, crash recovery |
-| Release trust | host manifest SHA-256 + signer identity; sovereign-chain signatures |
 
 ## What it proves
 
@@ -32,13 +31,11 @@ crash recovery and long-running local state — in a shipping desktop product.
 
 ## Verification
 
-The installer checks the host-manifest SHA-256 before launch. The manifest also
-carries `signer_subject` and `signer_thumbprint`; wiring that signer gate into
-the NAI OS consumer is the remaining integration step. See
-[`SECURITY.md`](../SECURITY.md).
+The installer checks the host manifest before launch. Signing and trust are
+covered by the NAI OS security policy.
 
 ## References
 
 - NAI OS: <https://github.com/cyberluke/NAI-OS>
 - Host install/activation: [PRODUCT_BUNDLING.md](PRODUCT_BUNDLING.md)
-- Signing and trust: [SECURITY.md](../SECURITY.md)
+- Signing and trust: see the NAI OS repository security policy.

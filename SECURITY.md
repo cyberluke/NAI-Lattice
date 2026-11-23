@@ -25,12 +25,9 @@ that carries the leaf signature; it does not imply a public CA.
 | Root CA | `CN=NAI Sovereign Root CA, C=US` | `A9144C0CDBC440135DB7E95480DF374D52D565EA` | 2026-11-22 → 2046-11-22 |
 | Intermediate | `CN=NAI Code Signing CA, C=US` | `B6A32419C87FB0DA104EA815C117450A75027532` | 2026-11-22 → 2036-11-22 |
 | NAI Lattice leaf | `CN=NAI Lattice, C=US` | `9C6CBCF11016FD17ABCA7F7816A16E7ECBDE861D` | 2026-11-22 → 2029-11-22 |
-| NAI OS leaf | `CN=NAI OS` | `1FA3E6A536352A37342742CEBED4CA546944F5F7` | 2026-11-23 → 2029-11-23 |
 
-The NAI OS leaf uses the exact subject `CN=NAI OS` (it must match
-the MSIX `Publisher`) and is issued from the same intermediate. The old
-self-signed development leaf (`E038F41B…`) is retired; the next NAI OS build
-uses the sovereign leaf.
+Product leaves other than NAI Lattice are documented in their own product
+repositories and in the CA trust index.
 
 The private authority (root/intermediate keys + issuance runbook) is the
 internal `<private-ca-authority>` workspace. The public trust index is

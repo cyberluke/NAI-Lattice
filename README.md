@@ -72,9 +72,6 @@ durable substrate:
 - **Host lifecycle** follows the production path: versioned runtime,
   `active.json`, supervised monitor/worker, live release swap and crash recovery.
 
-The host manifest records SHA-256 and the signer identity; releases are signed
-with the NAI sovereign chain — see [`SECURITY.md`](SECURITY.md).
-
 Integration notes: [docs/NAI-OS.md](docs/NAI-OS.md).
 
 ## Quick start
