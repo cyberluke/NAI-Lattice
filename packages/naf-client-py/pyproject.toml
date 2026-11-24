@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nai-lattice-client"
+version = "0.2.1"
+description = "Reusable Python NAF/1 client for NAI-Lattice (canonical framing + Windows named-pipe transport). Protocol source of truth: protos/naf/protocol.proto."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+authors = [{ name = "NAI / NANOTRIK.AI" }]
+keywords = ["nai", "lattice", "naf", "ipc", "named-pipe", "protobuf"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Networking",
+  "Typing :: Typed",
+]
+dependencies = ["blake3==1.0.11"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/cyberluke/NAI-Lattice#readme"
+Repository = "https://github.com/cyberluke/NAI-Lattice"
+Issues = "https://github.com/cyberluke/NAI-Lattice/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nai_lattice_client = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

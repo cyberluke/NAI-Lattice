@@ -121,6 +121,13 @@ Every read model owns its own lock and its own durable cursor. The write path
 never serves reads; a slow reader can never slow a writer. Full detail in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Client libraries
+
+- TypeScript: [`packages/naf-client-ts`](packages/naf-client-ts)
+- Python: [`nai-lattice-client`](packages/naf-client-py) — install, quickstart,
+  endpoint discovery, and live-test notes in
+  [`docs/PYTHON_CLIENT.md`](docs/PYTHON_CLIENT.md)
+
 ## Status
 
 Active, production hardware in daily use for the NAI Ambient Fabric observability
