@@ -15,9 +15,8 @@ npm install -g @cyberluke/mcp-nai-lattice
 npm ci && npm run build -w @cyberluke/mcp-nai-lattice
 ```
 
-Version 0.2.0 adds the generic artifact tools. Until 0.2.0 is published to npm,
-run the built server from this workspace (`node packages/mcp-nai-lattice/dist/index.js`)
-or install 0.2.0 from a packed tarball.
+Version 0.2.0 adds the generic artifact tools and is published on npm as
+`@cyberluke/mcp-nai-lattice@0.2.0`.
 
 The server speaks MCP over stdio:
 
