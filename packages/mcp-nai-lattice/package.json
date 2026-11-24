@@ -1,6 +1,6 @@
 {
   "name": "@cyberluke/mcp-nai-lattice",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "NAI-Lattice MCP server: semantic code search over the local Qdrant index, plus the shared task ledger, mind-map feed and company policy.",
   "type": "module",
   "main": "./dist/index.js",

@@ -467,7 +467,7 @@ async function gpuRerankIfAvailable(query: string, hits: CodeHit[]): Promise<Arr
   return rr
 }
 
-const server = new McpServer({ name: "mcp-nai-lattice", version: "0.1.0" },{capabilities:{resources:{subscribe:true}}})
+const server = new McpServer({ name: "mcp-nai-lattice", version: "0.2.0" },{capabilities:{resources:{subscribe:true}}})
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const
 
 // Generic fabric artifact tools (BLAKE3 CAS): put / resolve / verify.
