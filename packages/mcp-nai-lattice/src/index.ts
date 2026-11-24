@@ -34,6 +34,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { fetchLogs, fetchStats } from "./fabric.js"
+import { registerArtifactTools } from "./artifacts.js"
 import {readCompanyPolicy} from './company-policy.js'
 import {
   readTodos, updateTask, newTask, doneCheck, persistTask, todoPath, owningGateOk, owningGateKey, gateKey, type Task,
@@ -468,6 +469,9 @@ async function gpuRerankIfAvailable(query: string, hits: CodeHit[]): Promise<Arr
 
 const server = new McpServer({ name: "mcp-nai-lattice", version: "0.1.0" },{capabilities:{resources:{subscribe:true}}})
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const
+
+// Generic fabric artifact tools (BLAKE3 CAS): put / resolve / verify.
+registerArtifactTools(server)
 
 server.registerTool('get_company_policy',{
   title:'Read canonical AAF company doctrine',
