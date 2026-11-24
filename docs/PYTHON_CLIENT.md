@@ -8,14 +8,15 @@ TypeScript client and the Rust host. Protocol source of truth:
 
 ## Install
 
-```bash
-python -m pip install nai-lattice-client
-```
-
-Or from a checkout:
+The 0.2.1 distribution is built and `twine check`-clean in this workspace, but
+it is not yet uploaded to the package index. Use the source install until it is
+published:
 
 ```bash
 python -m pip install -e "packages/naf-client-py[test]"
+
+# Published package, once available:
+python -m pip install nai-lattice-client
 ```
 
 Python 3.10+; `blake3==1.0.11` is pinned for byte-compatible frame integrity.

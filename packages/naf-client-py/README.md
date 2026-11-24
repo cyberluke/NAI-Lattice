@@ -15,14 +15,15 @@ Version `0.2.1` matches the sibling TypeScript client
 
 ## Install
 
-```bash
-python -m pip install nai-lattice-client
-```
-
-For a checkout or editable development install:
+The current source tree is installable; the 0.2.1 distribution is built and
+checked but not yet uploaded to the package index from this workspace.
 
 ```bash
+# Current source install (until the package is published):
 python -m pip install -e "packages/naf-client-py[test]"
+
+# Published package, once available:
+python -m pip install nai-lattice-client
 ```
 
 Requires Python 3.10+ and `blake3==1.0.11` (pinned for byte-compatible frame
