@@ -87,7 +87,7 @@ a new root and removes the old thumbprint.
 pwsh ./scripts/release/bump-version.ps1 `
   -CargoVersion 0.1.1 `
   -NpmClientVersion 0.2.1 `
-  -NpmMcpVersion 0.1.1
+  -NpmMcpVersion 0.2.0
 
 # Rust release binaries (default host target; no --target triple)
 cargo build --release -p nai-fabric-host -p nai-lattice-cli
@@ -267,6 +267,7 @@ rotation live in the NAI OS repository and the private CA authority.
       `sha256` matches the signed exe.
 - [ ] Versioned artifact URLs and `nai-lattice/latest.json` resolve.
 - [ ] `npm view @cyberluke/nai-lattice-client version` shows the new version.
+- [ ] `npm view @cyberluke/mcp-nai-lattice version` shows the new version.
 - [ ] `cargo search nai-lattice-core` shows the new version.
 - [ ] NAI OS starts against the published host and reports the expected version.
 - [ ] Working tree is clean; the release commit is tagged (optional).
