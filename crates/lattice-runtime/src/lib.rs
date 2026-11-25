@@ -5,20 +5,32 @@
 //! the NAF/1 minimum-capability dispatch used by both the named-pipe host and
 //! the in-process/test path.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use nai_lattice_aaf::AafResolver;
 use nai_lattice_cas::object::ObjectStore;
 use nai_lattice_core::{CanonicalEvent, Durability, EventId, GlobalId};
 use nai_lattice_hotstore::{HotKey, HotValue, HotStore};
 use nai_lattice_ledger::Ledger;
+use nai_lattice_storage::{
+    apply_prune_items, safe_prune_plan, storage_status, Paths as StoragePaths, PruneItem,
+    StorageConfig,
+};
 use tracing::info;
 use tracing::warn;
 
 pub mod collection;
+pub mod lifecycle;
 
 use collection::CollectionStore;
+use lifecycle::{
+    AcquireOutcome, LifecycleController, LockInspection, MaintenanceLock, ReleaseOutcome,
+    StateTransition,
+};
+// Ergonomic crate-root path for hosts: `nai_lattice_runtime::RuntimeState`.
+pub use lifecycle::RuntimeState;
 
 /// Number of recent ledger events the CQRS read model retains for tail/cursor
 /// reads. Matches the SSE/dashboard live-window so the hot queue covers it.
@@ -31,6 +43,16 @@ pub const READ_MODEL_TAIL_CAPACITY: usize = 2048;
 const RUNTIME_SERVED_CAPABILITIES: &[&str] = &[
     "runtime.health",
     "runtime.describe",
+    // Runtime lifecycle surface (NAIOS-002). `runtime.health`/`describe` also
+    // carry the lifecycle fields; these methods own the cross-process lease.
+    "runtime.maintenance.status",
+    "runtime.maintenance.acquire",
+    "runtime.maintenance.release",
+    "runtime.maintenance.extend",
+    // Shared storage lifecycle policy (NAIOS-006/009/010/011). Read-only status
+    // plus a safe prune whose default is a dry run.
+    "runtime.storage.status",
+    "runtime.maintenance.prune_safe",
     "capabilities.list",
     "event.append",
     "event.append_batch",
@@ -76,6 +98,17 @@ const RUNTIME_SERVED_CAPABILITIES: &[&str] = &[
     "query.search",
     "query.federated",
 ];
+
+/// Features this crate itself implements and advertises in
+/// `runtime.describe.features`. Host-owned feature names are merged in via
+/// [`LatticeRuntime::register_host_features`]. Only implemented capabilities
+/// belong here: no `compression`, no `activation` (NAIOS-001 is not implemented).
+pub const RUNTIME_OWNED_FEATURES: &[&str] = &["lifecycle_api", "maintenance_api", "storage_api"];
+
+/// Lease owner recorded by a host-owned maintenance window. `prune_safe`
+/// refuses only a live lease owned by someone else; the host never takes over
+/// another actor's lease.
+const HOST_LEASE_OWNER: &str = "nai-fabric-host";
 
 /// Runtime configuration.
 #[derive(Debug, Clone)]
@@ -127,6 +160,8 @@ pub enum RuntimeError {
     Vector(#[from] nai_lattice_vector::VectorError),
     #[error("search index: {0}")]
     Search(#[from] nai_lattice_search::SearchError),
+    #[error("lifecycle: {0}")]
+    Lifecycle(#[from] crate::lifecycle::LockError),
 }
 
 impl From<String> for RuntimeError {
@@ -161,6 +196,19 @@ pub struct LatticeRuntime {
     /// scanning the whole ledger. Read-side only, own lock (bulkhead), kept fresh
     /// by the same background projection worker as `read_model`.
     pub multi_dim_index: std::sync::Arc<nai_lattice_ledger::multi_dim::MultiDimIndex>,
+    /// Lifecycle state / detail / last error (NAIOS-002). Cloning the accessor
+    /// is cheap; all mutation is thread-safe and never blocks on I/O.
+    lifecycle: LifecycleController,
+    /// Cross-process maintenance lease at `<root>/maintenance.lock.json`.
+    maintenance: MaintenanceLock,
+    /// Monotonic process start used for `runtime.health.uptime_ms`.
+    opened_at: std::time::Instant,
+    /// Dashboard bundle version reported by `runtime.describe`. Set once by the
+    /// host at startup; remains null for runtimes that do not embed a dashboard.
+    dashboard_version: OnceLock<String>,
+    /// Host-owned feature names merged into `runtime.describe.features`. Sorted
+    /// on read so discovery output is deterministic.
+    host_features: Mutex<BTreeSet<String>>,
     /// Internal async executor owned by the runtime. Async work runs on this
     /// runtime from a dedicated thread so callers never see a runtime conflict.
     rt: tokio::runtime::Runtime,
@@ -208,6 +256,11 @@ impl LatticeRuntime {
 
         let instance_id = format!("nai-lattice-{}", uuid::Uuid::now_v7().simple());
 
+        // Lifecycle + maintenance lease live beside the ledger in the same root.
+        let lifecycle = LifecycleController::new();
+        let maintenance = MaintenanceLock::new(&local);
+        let opened_at = std::time::Instant::now();
+
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -233,9 +286,17 @@ impl LatticeRuntime {
                     local.join("multi-dim-index.json"),
                 ),
             ),
+            lifecycle,
+            maintenance,
+            opened_at,
+            dashboard_version: OnceLock::new(),
+            host_features: Mutex::new(BTreeSet::new()),
             rt,
         };
         this.start_projection_worker();
+        // Initialization is complete: the runtime can serve NAF. The host may
+        // override this to draining/maintenance/degraded as it progresses.
+        this.set_lifecycle_state(RuntimeState::Healthy, None);
         Ok(this)
     }
 
@@ -330,15 +391,215 @@ impl LatticeRuntime {
         self.on_rt(|| async { self.health_async().await })
     }
 
+    /// The controller this runtime drives. Prefer
+    /// [`Self::set_lifecycle_state`] / [`Self::lifecycle_json`] so transitions
+    /// also append `runtime.state` audit records.
+    pub fn lifecycle(&self) -> &LifecycleController {
+        &self.lifecycle
+    }
+
+    /// The cross-process maintenance lease for this runtime root.
+    pub fn maintenance(&self) -> &MaintenanceLock {
+        &self.maintenance
+    }
+
+    /// Cheap, thread-safe lifecycle transition (safe from a shutdown path).
+    ///
+    /// The controller is updated synchronously; the `runtime.state` ledger
+    /// record is appended best-effort on the runtime's own executor. An append
+    /// failure is recorded as `last_error` and never fails the transition.
+    pub fn set_lifecycle_state(&self, state: RuntimeState, detail: Option<String>) {
+        self.set_lifecycle_state_with_eta(state, detail, None);
+    }
+
+    /// [`Self::set_lifecycle_state`] with an optional caller-supplied ETA for
+    /// bounded transitions (draining). Unknown ETAs stay unknown; this crate
+    /// never invents one.
+    pub fn set_lifecycle_state_with_eta(
+        &self,
+        state: RuntimeState,
+        detail: Option<String>,
+        eta_ms: Option<u64>,
+    ) {
+        if let Some(transition) = self.lifecycle.set_state_with_eta(state, detail, eta_ms) {
+            self.spawn_state_event(transition);
+        }
+    }
+
+    /// Snapshot for the host's `/lattice/api/summary` health block. Cheap: one
+    /// controller read plus one small lock-file inspection, no ledger scan.
+    pub fn lifecycle_json(&self) -> serde_json::Value {
+        let status = self.effective_status();
+        serde_json::json!({
+            "state": status.state.as_str(),
+            "detail": status.detail,
+            "last_error": status.last_error,
+            "since_unix_ms": status.since_unix_ms,
+            "age_ms": status.age_ms,
+            "uptime_ms": status.uptime_ms,
+            "maintenance_lock": status.maintenance_lock,
+        })
+    }
+
+    /// Dashboard bundle version reported by `runtime.describe`. The host calls
+    /// [`Self::set_dashboard_version`] once at startup; unset stays null.
+    pub fn dashboard_version(&self) -> Option<&str> {
+        self.dashboard_version.get().map(String::as_str)
+    }
+
+    /// Set the dashboard bundle version once. A later, different value is
+    /// ignored (and logged) so provenance cannot silently drift mid-run.
+    pub fn set_dashboard_version(&self, version: &str) {
+        let version = version.trim();
+        if version.is_empty() {
+            warn!("set_dashboard_version ignored an empty version");
+            return;
+        }
+        if self.dashboard_version.set(version.to_string()).is_err() {
+            let current = self.dashboard_version.get().map(String::as_str).unwrap_or("");
+            if current != version {
+                warn!(
+                    current,
+                    proposed = version,
+                    "dashboard version already set; keeping the first value"
+                );
+            }
+        }
+    }
+
+    /// Register host-owned feature names (for example `shutdown_if_idle`),
+    /// merged with [`RUNTIME_OWNED_FEATURES`] into sorted discovery output.
+    /// Duplicates and blank names are ignored.
+    pub fn register_host_features(&self, features: &[&str]) {
+        let mut known = self
+            .host_features
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for feature in features {
+            let feature = feature.trim();
+            if feature.is_empty() {
+                continue;
+            }
+            if known.insert(feature.to_string()) {
+                info!(feature, "host-owned runtime feature registered");
+            }
+        }
+    }
+
+    /// Sorted union of runtime-owned and host-registered feature names.
+    pub fn features(&self) -> Vec<String> {
+        let mut features: BTreeSet<String> = RUNTIME_OWNED_FEATURES
+            .iter()
+            .map(|feature| (*feature).to_string())
+            .collect();
+        let host = self
+            .host_features
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        features.extend(host.iter().cloned());
+        features.into_iter().collect()
+    }
+
     async fn health_async(&self) -> serde_json::Value {
+        let status = self.effective_status();
         let last = self.ledger.last_sequence().await;
         serde_json::json!({
-            "state": "healthy",
+            "state": status.state.as_str(),
+            "detail": status.detail,
+            "last_error": status.last_error,
+            "since_unix_ms": status.since_unix_ms,
+            "uptime_ms": status.uptime_ms,
+            "maintenance_lock": status.maintenance_lock,
             "runtime_instance_id": self.instance_id,
             "ledger_high_water_mark": last,
             "provider_health": self.aaf.provider_health(),
             "hot_store": "surreal",
         })
+    }
+
+    /// Effective lifecycle view: `degraded` wins over everything; a live (or
+    /// unreadable, conservatively potentially live) maintenance lock forces
+    /// `maintenance` over every other controller state.
+    fn effective_status(&self) -> EffectiveStatus {
+        let snapshot = self.lifecycle.snapshot();
+        let inspection = self.maintenance.inspect();
+        let mut state = snapshot.state;
+        let mut detail = snapshot.detail;
+        let mut since_unix_ms = snapshot.since_unix_ms;
+        let mut age_ms = snapshot.age_ms;
+
+        if state != RuntimeState::Degraded
+            && (inspection.is_live() || inspection.is_unreadable())
+        {
+            state = RuntimeState::Maintenance;
+            if snapshot.state != RuntimeState::Maintenance {
+                match &inspection {
+                    LockInspection::Live(record) => {
+                        detail = Some(format!(
+                            "maintenance lock held by {} ({})",
+                            record.owner, record.reason
+                        ));
+                        since_unix_ms = record.acquired_at_unix_ms;
+                        age_ms = (now_ms() - record.acquired_at_unix_ms).max(0) as u64;
+                    }
+                    LockInspection::Unreadable {
+                        error,
+                        modified_at_unix_ms,
+                    } => {
+                        detail = Some(format!("maintenance lock unreadable: {error}"));
+                        if let Some(modified) = modified_at_unix_ms {
+                            since_unix_ms = *modified;
+                            age_ms = (now_ms() - *modified).max(0) as u64;
+                        }
+                    }
+                    LockInspection::Absent | LockInspection::Expired(_) => {}
+                }
+            }
+        }
+
+        EffectiveStatus {
+            state,
+            detail,
+            last_error: snapshot.last_error,
+            since_unix_ms,
+            age_ms,
+            uptime_ms: self.opened_at.elapsed().as_millis() as u64,
+            maintenance_lock: inspection.health_lock_json(),
+        }
+    }
+
+    fn spawn_state_event(&self, transition: StateTransition) {
+        let ledger = self.ledger.clone();
+        let lifecycle = self.lifecycle.clone();
+        let payload = lifecycle_event_payload(
+            transition.from,
+            transition.to,
+            transition.detail.as_deref(),
+            transition.eta_ms,
+        );
+        self.rt.spawn(async move {
+            if let Err(error) = append_runtime_state_event(ledger.as_ref(), &payload).await {
+                warn!(%error, "runtime.state lifecycle event append failed");
+                lifecycle.record_error(&format!("runtime.state event append failed: {error}"));
+            }
+        });
+    }
+
+    /// Awaitable variant used by dispatch paths, where ordering matters (the
+    /// lock mutation is already durable on disk when the event lands).
+    async fn append_state_event(
+        &self,
+        from: RuntimeState,
+        to: RuntimeState,
+        detail: Option<String>,
+        eta_ms: Option<u64>,
+    ) {
+        let payload = lifecycle_event_payload(from, to, detail.as_deref(), eta_ms);
+        if let Err(error) = append_runtime_state_event(self.ledger.as_ref(), &payload).await {
+            warn!(%error, "runtime.state lifecycle event append failed");
+            self.lifecycle
+                .record_error(&format!("runtime.state event append failed: {error}"));
+        }
     }
 
     /// The NAF/1 capabilities this runtime actually serves via `dispatch_async`.
@@ -357,9 +618,14 @@ impl LatticeRuntime {
     pub fn flush_hotstore(&self) {
         // Flush pending BatchedDurable ledger frames through the ledger's own
         // persistent writer (one authoritative write path) via the runtime's
-        // internal executor.
-        let _ = self.rt.block_on(self.ledger.flush_batched());
-        let _ = self.hot.flush();
+        // internal executor. Failures are logged: a caller on a shutdown path
+        // must not believe the durability boundary was reached silently.
+        if let Err(error) = self.rt.block_on(self.ledger.flush_batched()) {
+            warn!(%error, "ledger flush_batched failed during hot-store flush");
+        }
+        if let Err(error) = self.hot.flush() {
+            warn!(%error, "hot-store flush failed");
+        }
     }
 
     /// Dispatch one NAF method synchronously. Runs the async body on this
@@ -396,14 +662,38 @@ impl LatticeRuntime {
             })?;
         match method {
             "runtime.health" => Ok(serde_json::to_vec(&self.health_async().await).unwrap()),
-            "runtime.describe" => Ok(serde_json::to_vec(&serde_json::json!({
-                "name": "NAI Ambient Fabric",
-                "naf_version": 1,
-                "storage_schema_version": 1,
-                "runtime_instance_id": self.instance_id,
-                "root": self.config.root.display().to_string(),
-            }))
-            .unwrap()),
+            "runtime.describe" => {
+                let features = self.features();
+                Ok(serde_json::to_vec(&serde_json::json!({
+                    "name": "NAI Ambient Fabric",
+                    "naf_version": 1,
+                    "storage_schema_version": 1,
+                    "runtime_instance_id": self.instance_id,
+                    "root": self.config.root.display().to_string(),
+                    // Provenance (NAIOS-014): runtime artefact version, embedded
+                    // dashboard identity, and the NAF protocol range this build
+                    // actually speaks. `dashboard_version` is null when unset.
+                    "host_version": env!("CARGO_PKG_VERSION"),
+                    "dashboard_version": self.dashboard_version(),
+                    "protocol_min": 1,
+                    "protocol_max": 1,
+                    // Feature discovery (NAIOS-004): runtime-owned + host-registered,
+                    // sorted. Advertises only implemented capabilities.
+                    "features": features,
+                }))
+                .unwrap())
+            }
+            // Runtime lifecycle lease (NAIOS-002). Refusals are HTTP-success JSON
+            // `{ok:false, reason, holder}`, never a protocol error.
+            "runtime.maintenance.status" => self.on_maintenance_status(),
+            "runtime.maintenance.acquire" => self.on_maintenance_acquire(&args).await,
+            "runtime.maintenance.release" => self.on_maintenance_release(&args).await,
+            "runtime.maintenance.extend" => self.on_maintenance_extend(&args).await,
+            // Shared storage lifecycle (crates/lattice-storage): status is the
+            // frozen dashboard §1 payload; prune_safe is opt-in and dry by
+            // default.
+            "runtime.storage.status" => self.on_storage_status(),
+            "runtime.maintenance.prune_safe" => self.on_prune_safe(&args),
             "capabilities.list" => Ok(serde_json::to_vec(
                 &self.capabilities().iter().map(|s| *s).collect::<Vec<_>>(),
             )
@@ -1002,6 +1292,171 @@ impl LatticeRuntime {
         .unwrap())
     }
 
+    /// `runtime.maintenance.status {}` — inspect the cross-process lease.
+    /// Never exposes the holder's fencing token.
+    fn on_maintenance_status(&self) -> Result<Vec<u8>, RuntimeError> {
+        let now = now_ms();
+        let status = self.maintenance.inspect_at(now).status_json(now);
+        Ok(serde_json::to_vec(&status).unwrap())
+    }
+
+    /// `runtime.maintenance.acquire { owner, reason, ttl_ms }` — atomically take
+    /// the lease. Success returns the fencing token exactly once; a live foreign
+    /// lease refuses with `{ok:false, reason:"locked", holder:{...}}`.
+    async fn on_maintenance_acquire(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        const METHOD: &str = "runtime.maintenance.acquire";
+        let owner = required_str(args, METHOD, "owner")?;
+        let reason = required_str(args, METHOD, "reason")?;
+        let ttl_ms = required_u64(args, METHOD, "ttl_ms")?;
+
+        // Effective state before the lease exists (no lock can be live here, but
+        // degraded/draining are still meaningful `from` states).
+        let before = self.effective_status().state;
+        let outcome = self.maintenance.acquire(owner, reason, ttl_ms)?;
+        if let AcquireOutcome::Acquired {
+            lock,
+            reclaimed,
+            ..
+        } = &outcome
+        {
+            let after = self.effective_status().state;
+            let mut detail = format!(
+                "maintenance lock acquired by {} ({})",
+                lock.owner, lock.reason
+            );
+            if *reclaimed {
+                detail.push_str("; reclaimed an expired lock");
+            }
+            self.append_state_event(before, after, Some(detail), None)
+                .await;
+        }
+        Ok(serde_json::to_vec(&outcome.to_json()).unwrap())
+    }
+
+    /// `runtime.maintenance.release { token }` — release only with the exact
+    /// token. A foreign token is refused and the file is left untouched.
+    async fn on_maintenance_release(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        const METHOD: &str = "runtime.maintenance.release";
+        let token = required_str(args, METHOD, "token")?;
+        let before = self.effective_status().state;
+        let outcome = self.maintenance.release(token)?;
+        if let ReleaseOutcome::Released(holder) = &outcome {
+            let after = self.effective_status().state;
+            self.append_state_event(
+                before,
+                after,
+                Some(format!(
+                    "maintenance lock released by {} ({})",
+                    holder.owner, holder.reason
+                )),
+                None,
+            )
+            .await;
+        }
+        Ok(serde_json::to_vec(&outcome.to_json()).unwrap())
+    }
+
+    /// `runtime.maintenance.extend { token, ttl_ms }` — renew only with the
+    /// exact token. An expired lease cannot be renewed; re-acquire instead.
+    async fn on_maintenance_extend(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        const METHOD: &str = "runtime.maintenance.extend";
+        let token = required_str(args, METHOD, "token")?;
+        let ttl_ms = required_u64(args, METHOD, "ttl_ms")?;
+        let outcome = self.maintenance.extend(token, ttl_ms)?;
+        Ok(serde_json::to_vec(&outcome.to_json()).unwrap())
+    }
+
+    /// `runtime.storage.status {}` — the frozen `docs/DASHBOARD_API.md` §1
+    /// `storage` payload for this runtime root. Read-only: sizes are measured
+    /// from disk, missing classes are 0, and an unavailable free-space probe is
+    /// `null` + `"unknown"` pressure.
+    fn on_storage_status(&self) -> Result<Vec<u8>, RuntimeError> {
+        let paths = StoragePaths::from_root(self.config.root.clone());
+        let status = storage_status(&paths, &StorageConfig::default());
+        Ok(serde_json::to_vec(&status).unwrap())
+    }
+
+    /// `runtime.maintenance.prune_safe { apply?: bool }` — apply the shared safe
+    /// prune plan (stale logs/tmp, expired backups, audit rotation).
+    ///
+    /// The default is a DRY RUN; `apply` must be exactly `true` to delete.
+    /// Refused while a live maintenance lease is held by another actor (the host
+    /// must not prune inside someone else's maintenance window). Refusals are
+    /// successful NAF calls carrying `{ok:false, error, holder}` — never a
+    /// protocol error.
+    fn on_prune_safe(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
+        const METHOD: &str = "runtime.maintenance.prune_safe";
+        let inspection = self.maintenance.inspect();
+        let refusal = match &inspection {
+            LockInspection::Live(record)
+                if record.owner != HOST_LEASE_OWNER && record.owner != self.instance_id =>
+            {
+                Some(serde_json::json!({
+                    "schema": 1,
+                    "ok": false,
+                    "error": "maintenance_locked",
+                    "detail": format!(
+                        "the maintenance lease is held by {} ({})",
+                        record.owner, record.reason
+                    ),
+                    "holder": record.holder_json(),
+                }))
+            }
+            LockInspection::Unreadable { error, .. } => Some(serde_json::json!({
+                "schema": 1,
+                "ok": false,
+                "error": "maintenance_lock_unreadable",
+                "detail": format!("the maintenance lease cannot be trusted: {error}"),
+                "holder": serde_json::Value::Null,
+            })),
+            _ => None,
+        };
+        if let Some(refusal) = refusal {
+            return Ok(serde_json::to_vec(&refusal).unwrap());
+        }
+
+        // Exactly `true` applies; anything else (absent, false, a string) is a
+        // dry run so a sloppy caller can never delete by accident.
+        let apply = matches!(
+            args.get("apply").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        let paths = StoragePaths::from_root(self.config.root.clone());
+        let cfg = StorageConfig::default();
+        let plan = safe_prune_plan(&paths, &cfg);
+        let report = apply_prune_items(&paths, &cfg, &plan, !apply, None)
+            .map_err(|error| RuntimeError::Backend(format!("{METHOD}: {error}")))?;
+        let plan_json: Vec<serde_json::Value> = plan
+            .iter()
+            .map(|item: &PruneItem| {
+                serde_json::json!({
+                    "path": item.path.display().to_string(),
+                    "bytes": item.bytes,
+                    "reason": item.reason,
+                    "class": item.class,
+                })
+            })
+            .collect();
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "dry_run": report.dry_run,
+            "items": report.items,
+            "bytesFreed": report.bytes_freed,
+            "auditAppended": report.audit_appended,
+            "plan": plan_json,
+        }))
+        .unwrap())
+    }
+
     /// `lease.claim { lease_id, owner_id, ttl_ms, now_ms? }`.
     async fn on_lease_claim(&self, args: &serde_json::Value) -> Result<Vec<u8>, RuntimeError> {
         let lease_id = args.get("lease_id").and_then(|x| x.as_str()).ok_or_else(|| {
@@ -1264,6 +1719,103 @@ impl LatticeRuntime {
     }
 }
 
+/// Effective lifecycle view used by health (ledger-independent half).
+struct EffectiveStatus {
+    state: RuntimeState,
+    detail: Option<String>,
+    last_error: Option<String>,
+    since_unix_ms: i64,
+    age_ms: u64,
+    uptime_ms: u64,
+    maintenance_lock: Option<serde_json::Value>,
+}
+
+/// Payload of an `observability.log.v1` / `runtime.state` record.
+///
+/// Shape is documented in `docs/LIFECYCLE.md`; `eta_ms` is present only when a
+/// caller supplied a real estimate (never invented here).
+fn lifecycle_event_payload(
+    from: RuntimeState,
+    to: RuntimeState,
+    detail: Option<&str>,
+    eta_ms: Option<u64>,
+) -> serde_json::Value {
+    let mut extras = serde_json::Map::new();
+    extras.insert("event_type".into(), serde_json::json!("runtime.state"));
+    extras.insert("from".into(), serde_json::json!(from.as_str()));
+    extras.insert("to".into(), serde_json::json!(to.as_str()));
+    extras.insert("detail".into(), serde_json::json!(detail));
+    if let Some(eta_ms) = eta_ms {
+        extras.insert("eta_ms".into(), serde_json::json!(eta_ms));
+    }
+    serde_json::json!({
+        "level": "info",
+        "component": "lattice.runtime",
+        "message": format!("runtime.state {} -> {}", from.as_str(), to.as_str()),
+        "extras": serde_json::Value::Object(extras),
+    })
+}
+
+/// Append one lifecycle record through the runtime's canonical ledger path.
+///
+/// Uses `Durability::Durable`. The brief asked for a durable-batched record, but
+/// `lattice-ledger`'s `BatchedDurable` defers the physical write while advancing
+/// the logical tail hash; any later `Durable`/`ProjectionOnly` append from
+/// another producer is written first, so the deferred frame lands out of
+/// physical order and `segment::recover` stops at the broken hash chain
+/// (`frames` up to the break only). That would make lifecycle records — and
+/// anything appended after them — invisible to readers until segment rotation.
+/// State transitions are rare, so the per-transition fsync is proportional and
+/// preserves the chain. Fixing `BatchedDurable` itself is a ledger-layer change,
+/// outside this lane's ownership.
+///
+/// Best-effort at every call site — a failure is recorded as `last_error`, never
+/// propagated into the transition.
+async fn append_runtime_state_event(
+    ledger: &Ledger,
+    payload: &serde_json::Value,
+) -> Result<(), RuntimeError> {
+    let event = build_event_from_json(
+        &serde_json::json!({
+            "namespace": "observability.log.v1",
+            "event_type": "runtime.state",
+            "payload": payload,
+        }),
+        "nai.lattice.runtime",
+    )?;
+    ledger.append(event, Durability::Durable).await?;
+    Ok(())
+}
+
+fn required_str<'a>(
+    args: &'a serde_json::Value,
+    method: &str,
+    key: &str,
+) -> Result<&'a str, RuntimeError> {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RuntimeError::BadArgs {
+            method: method.to_string(),
+            detail: format!("missing {key}"),
+        })
+}
+
+fn required_u64(
+    args: &serde_json::Value,
+    method: &str,
+    key: &str,
+) -> Result<u64, RuntimeError> {
+    args.get(key)
+        .and_then(|value| value.as_u64())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| RuntimeError::BadArgs {
+            method: method.to_string(),
+            detail: format!("missing or zero {key}"),
+        })
+}
+
 /// Build a `CanonicalEvent` from NAF JSON event args.
 fn build_event_from_json(args: &serde_json::Value, producer: &str) -> Result<CanonicalEvent, RuntimeError> {
     let entity_id = args
@@ -1346,9 +1898,463 @@ mod tests {
         dir
     }
 
+    /// A runtime root nested under its own lifecycle base, matching the
+    /// canonical `<base>/v1` layout so audit/backups never land in the OS temp
+    /// directory itself.
+    fn isolated_root() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("v1");
+        std::fs::create_dir_all(&root).expect("create root");
+        (dir, root)
+    }
+
+    fn age_file(path: &std::path::Path, days: u64) {
+        let when = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(days * 86_400);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open for mtime");
+        file.set_modified(when).expect("set modified");
+    }
+
+    fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, &mut out);
+        out
+    }
+
+    fn dispatch_json(
+        rt: &LatticeRuntime,
+        method: &str,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        let raw = rt
+            .dispatch(
+                method,
+                &serde_json::to_vec(&args).unwrap(),
+                "lifecycle-test",
+                None,
+            )
+            .unwrap_or_else(|error| panic!("{method} failed: {error}"));
+        serde_json::from_slice(&raw).unwrap_or_else(|error| panic!("{method} json: {error}"))
+    }
+
+    /// Health keeps every pre-lifecycle field and adds the lifecycle surface;
+    /// describe exposes full provenance plus the sorted feature union.
+    #[test]
+    fn lifecycle_health_and_describe_surface() {
+        let root = temp_root("lifecycle_surface");
+        let rt = LatticeRuntime::open(RuntimeConfig {
+            root: root.clone(),
+            ledger_segment_bytes: 64 * 1024 * 1024,
+        })
+        .expect("open runtime");
+
+        let health = rt.health();
+        assert_eq!(health["state"], "healthy");
+        assert!(health["detail"].is_null());
+        assert!(health["last_error"].is_null());
+        assert!(health["since_unix_ms"].as_i64().unwrap() > 0);
+        assert!(health["uptime_ms"].is_u64());
+        assert!(health["maintenance_lock"].is_null());
+        // Existing fields are preserved.
+        assert!(health["runtime_instance_id"].is_string());
+        assert!(health["ledger_high_water_mark"].is_u64());
+        assert!(health["provider_health"].is_array());
+        assert_eq!(health["hot_store"], "surreal");
+
+        let describe = dispatch_json(&rt, "runtime.describe", serde_json::json!({}));
+        assert_eq!(describe["name"], "NAI Ambient Fabric");
+        assert_eq!(describe["naf_version"], 1);
+        assert_eq!(describe["host_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(describe["storage_schema_version"], 1);
+        assert_eq!(describe["protocol_min"], 1);
+        assert_eq!(describe["protocol_max"], 1);
+        assert!(describe["dashboard_version"].is_null());
+        assert!(describe["root"].is_string());
+        assert_eq!(
+            describe["features"],
+            serde_json::json!(["lifecycle_api", "maintenance_api", "storage_api"])
+        );
+
+        rt.set_dashboard_version("0.1.0");
+        rt.register_host_features(&["shutdown_if_idle", "lifecycle_api", "search_api"]);
+        rt.register_host_features(&["sse_resume", "search_api", "  "]);
+        let describe = dispatch_json(&rt, "runtime.describe", serde_json::json!({}));
+        assert_eq!(describe["dashboard_version"], "0.1.0");
+        assert_eq!(
+            describe["features"],
+            serde_json::json!([
+                "lifecycle_api",
+                "maintenance_api",
+                "search_api",
+                "shutdown_if_idle",
+                "sse_resume",
+                "storage_api"
+            ])
+        );
+        for method in [
+            "runtime.maintenance.status",
+            "runtime.maintenance.acquire",
+            "runtime.maintenance.release",
+            "runtime.maintenance.extend",
+            "runtime.storage.status",
+            "runtime.maintenance.prune_safe",
+        ] {
+            assert!(
+                rt.capabilities().contains(&method),
+                "capability list must advertise {method}"
+            );
+        }
+
+        rt.set_lifecycle_state(RuntimeState::Draining, Some("window closing".into()));
+        let draining = rt.health();
+        assert_eq!(draining["state"], "draining");
+        assert_eq!(draining["detail"], "window closing");
+        assert!(
+            draining["since_unix_ms"].as_i64().unwrap()
+                >= health["since_unix_ms"].as_i64().unwrap()
+        );
+
+        rt.set_lifecycle_state(RuntimeState::Degraded, Some("ledger stalled".into()));
+        rt.lifecycle().record_error("simulated ledger failure");
+        let degraded = rt.health();
+        assert_eq!(degraded["state"], "degraded");
+        assert_eq!(degraded["detail"], "ledger stalled");
+        assert_eq!(degraded["last_error"], "simulated ledger failure");
+        assert!(
+            degraded["since_unix_ms"].as_i64().unwrap()
+                >= draining["since_unix_ms"].as_i64().unwrap()
+        );
+
+        let lifecycle = rt.lifecycle_json();
+        assert_eq!(lifecycle["state"], "degraded");
+        assert_eq!(lifecycle["last_error"], "simulated ledger failure");
+        assert!(lifecycle["age_ms"].is_u64());
+        assert!(lifecycle["uptime_ms"].is_u64());
+        assert!(lifecycle["maintenance_lock"].is_null());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// NAF maintenance lease end-to-end: acquire/status/refuse/extend/release,
+    /// health override, and durable `runtime.state` audit records.
+    #[test]
+    fn maintenance_naf_surface_and_state_events() {
+        let root = temp_root("maintenance_naf");
+        let rt = LatticeRuntime::open(RuntimeConfig {
+            root: root.clone(),
+            ledger_segment_bytes: 64 * 1024 * 1024,
+        })
+        .expect("open runtime");
+
+        let status = dispatch_json(&rt, "runtime.maintenance.status", serde_json::json!({}));
+        assert_eq!(status["ok"], true);
+        assert_eq!(status["locked"], false);
+        assert!(status["holder"].is_null());
+
+        let acquired = dispatch_json(
+            &rt,
+            "runtime.maintenance.acquire",
+            serde_json::json!({"owner": "acceptance", "reason": "prune", "ttl_ms": 60_000}),
+        );
+        assert_eq!(acquired["ok"], true);
+        assert_eq!(acquired["reclaimed"], false);
+        let token = acquired["token"]
+            .as_str()
+            .expect("acquire returns the token")
+            .to_string();
+        assert!(!token.is_empty());
+        assert_eq!(acquired["lock"]["owner"], "acceptance");
+        assert!(
+            acquired["lock"].get("token").is_none(),
+            "holder JSON must not expose the token"
+        );
+
+        let status = dispatch_json(&rt, "runtime.maintenance.status", serde_json::json!({}));
+        assert_eq!(status["locked"], true);
+        assert_eq!(status["holder"]["owner"], "acceptance");
+        assert!(status["holder"].get("token").is_none());
+        assert!(status["expires_in_ms"].as_i64().unwrap() > 0);
+
+        // A live lock forces maintenance, even though the controller is healthy.
+        let health = rt.health();
+        assert_eq!(health["state"], "maintenance");
+        assert_eq!(health["maintenance_lock"]["owner"], "acceptance");
+
+        // Degraded wins over the lock, but the holder is still visible.
+        rt.set_lifecycle_state(RuntimeState::Degraded, Some("fault while locked".into()));
+        let degraded = rt.health();
+        assert_eq!(degraded["state"], "degraded");
+        assert_eq!(degraded["detail"], "fault while locked");
+        assert_eq!(degraded["maintenance_lock"]["owner"], "acceptance");
+        rt.set_lifecycle_state(RuntimeState::Healthy, None);
+
+        // Refusals are successful NAF calls carrying `{ok:false,...}`.
+        let refused = dispatch_json(
+            &rt,
+            "runtime.maintenance.acquire",
+            serde_json::json!({"owner": "intruder", "reason": "backup", "ttl_ms": 60_000}),
+        );
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["reason"], "locked");
+        assert_eq!(refused["holder"]["owner"], "acceptance");
+        assert!(refused["holder"].get("token").is_none());
+
+        let foreign_release = dispatch_json(
+            &rt,
+            "runtime.maintenance.release",
+            serde_json::json!({"token": "not-the-token"}),
+        );
+        assert_eq!(foreign_release["ok"], false);
+        assert_eq!(foreign_release["reason"], "not_owner");
+        assert!(matches!(
+            rt.maintenance().inspect(),
+            LockInspection::Live(_)
+        ));
+
+        let foreign_extend = dispatch_json(
+            &rt,
+            "runtime.maintenance.extend",
+            serde_json::json!({"token": "not-the-token", "ttl_ms": 120_000}),
+        );
+        assert_eq!(foreign_extend["ok"], false);
+        assert_eq!(foreign_extend["reason"], "not_owner");
+
+        let extended = dispatch_json(
+            &rt,
+            "runtime.maintenance.extend",
+            serde_json::json!({"token": token, "ttl_ms": 120_000}),
+        );
+        assert_eq!(extended["ok"], true);
+        assert!(
+            extended["lock"]["expires_at_unix_ms"].as_i64().unwrap()
+                >= acquired["lock"]["expires_at_unix_ms"].as_i64().unwrap()
+        );
+
+        let released = dispatch_json(
+            &rt,
+            "runtime.maintenance.release",
+            serde_json::json!({"token": token}),
+        );
+        assert_eq!(released["ok"], true);
+        assert_eq!(released["released"], true);
+        assert!(matches!(
+            rt.maintenance().inspect(),
+            LockInspection::Absent
+        ));
+        let health = rt.health();
+        assert_eq!(health["state"], "healthy");
+        assert!(health["maintenance_lock"].is_null());
+
+        // The lifecycle audit trail is durably visible and carries the documented
+        // payload shape (the append helper drains the group commit).
+        rt.flush_hotstore();
+        let events = dispatch_json(
+            &rt,
+            "event.read_range",
+            serde_json::json!({
+                "namespace": "observability.log.v1",
+                "event_type": "runtime.state",
+                "limit": 100,
+            }),
+        );
+        let events = events["events"].as_array().expect("events array");
+        assert!(
+            events.len() >= 2,
+            "expected lifecycle records, got {}",
+            events.len()
+        );
+        let acquire_event = events
+            .iter()
+            .find(|event| event["payload"]["message"] == "runtime.state healthy -> maintenance")
+            .expect("healthy -> maintenance record");
+        assert_eq!(acquire_event["payload"]["level"], "info");
+        assert_eq!(acquire_event["payload"]["component"], "lattice.runtime");
+        assert_eq!(
+            acquire_event["payload"]["extras"]["event_type"],
+            "runtime.state"
+        );
+        assert_eq!(acquire_event["payload"]["extras"]["from"], "healthy");
+        assert_eq!(acquire_event["payload"]["extras"]["to"], "maintenance");
+        assert!(acquire_event["payload"]["extras"]
+            .get("eta_ms")
+            .is_none());
+        let release_event = events
+            .iter()
+            .find(|event| event["payload"]["message"] == "runtime.state maintenance -> healthy")
+            .expect("maintenance -> healthy record");
+        assert_eq!(release_event["payload"]["extras"]["from"], "maintenance");
+        assert_eq!(release_event["payload"]["extras"]["to"], "healthy");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The shared storage payload is served verbatim over NAF and matches the
+    /// frozen dashboard §1 shape.
+    #[test]
+    fn storage_status_naf_surface_matches_the_contract() {
+        let (_dir, root) = isolated_root();
+        let rt = LatticeRuntime::open(RuntimeConfig {
+            root: root.clone(),
+            ledger_segment_bytes: 64 * 1024 * 1024,
+        })
+        .expect("open runtime");
+
+        let status = dispatch_json(&rt, "runtime.storage.status", serde_json::json!({}));
+        assert_eq!(status["schema"], 1);
+        assert_eq!(status["root"].as_str().unwrap(), root.display().to_string());
+        assert_eq!(
+            status["base"].as_str().unwrap(),
+            root.parent().unwrap().display().to_string()
+        );
+        for class in [
+            "ledger", "cas", "hot", "search", "vector", "readModels", "logs", "backups",
+            "audit",
+        ] {
+            assert!(
+                status["classes"][class].is_u64(),
+                "classes.{class} must be a measured number"
+            );
+        }
+        assert_eq!(status["retention"]["logsDays"], 30);
+        assert_eq!(status["retention"]["auditDays"], 90);
+        assert_eq!(status["retention"]["backupDays"], 14);
+        assert_eq!(status["retention"]["runtimeKeep"], 2);
+        assert!(status["usedBytes"].is_u64());
+        assert!(status["lastPrune"].is_null(), "no audit record exists yet");
+        match status["freeBytes"].as_u64() {
+            Some(free) => {
+                assert!(free > 0);
+                let reserve = status["reserveBytes"].as_u64().expect("reserve");
+                let budget = status["budgetBytes"].as_u64().expect("budget");
+                assert!(reserve >= 20 * 1024 * 1024 * 1024);
+                assert!(budget >= 512 * 1024 * 1024);
+                assert!(matches!(
+                    status["pressure"].as_str(),
+                    Some("normal" | "elevated" | "critical")
+                ));
+            }
+            None => {
+                assert!(status["budgetBytes"].is_null());
+                assert!(status["reserveBytes"].is_null());
+                assert_eq!(status["pressure"], "unknown");
+            }
+        }
+    }
+
+    /// `prune_safe` is a dry run unless `apply` is exactly `true`, refuses a
+    /// foreign maintenance lease, and a real apply frees only safe items.
+    #[test]
+    fn prune_safe_defaults_to_dry_run_and_apply_frees_only_safe_items() {
+        let (dir, root) = isolated_root();
+        let rt = LatticeRuntime::open(RuntimeConfig {
+            root: root.clone(),
+            ledger_segment_bytes: 64 * 1024 * 1024,
+        })
+        .expect("open runtime");
+        let old_log = root.join("old.log");
+        let live_log = root.join("host-restart.log");
+        std::fs::write(&old_log, b"stale").unwrap();
+        std::fs::write(&live_log, b"live").unwrap();
+        age_file(&old_log, 60);
+        let audit_path = dir.path().join("maintenance.audit.jsonl");
+        let ledger_before = files_under(&root.join("ledger"));
+        let cas_before = files_under(&root.join("cas"));
+
+        let dry = dispatch_json(&rt, "runtime.maintenance.prune_safe", serde_json::json!({}));
+        assert_eq!(dry["schema"], 1);
+        assert_eq!(dry["dry_run"], true);
+        assert_eq!(dry["auditAppended"], false);
+        let plan = dry["plan"].as_array().expect("plan array");
+        assert!(plan.iter().any(|item| item["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("old.log")));
+        assert!(
+            !plan.iter().any(|item| item["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("host-restart.log")),
+            "the newest log is the live log and must never be planned"
+        );
+        assert!(old_log.exists(), "a dry run deletes nothing");
+        assert!(!audit_path.exists(), "a dry run appends no audit record");
+
+        // Only a boolean `true` applies. A JSON string is not permission.
+        let string_apply = dispatch_json(
+            &rt,
+            "runtime.maintenance.prune_safe",
+            serde_json::json!({"apply": "true"}),
+        );
+        assert_eq!(string_apply["dry_run"], true);
+        assert!(old_log.exists());
+
+        // A live foreign lease blocks the operation with a JSON refusal.
+        let acquired = dispatch_json(
+            &rt,
+            "runtime.maintenance.acquire",
+            serde_json::json!({"owner": "nai-lattice-cli", "reason": "prune", "ttl_ms": 60_000}),
+        );
+        let token = acquired["token"].as_str().expect("token").to_string();
+        let refused = dispatch_json(
+            &rt,
+            "runtime.maintenance.prune_safe",
+            serde_json::json!({"apply": true}),
+        );
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["error"], "maintenance_locked");
+        assert_eq!(refused["holder"]["owner"], "nai-lattice-cli");
+        assert!(refused["holder"].get("token").is_none());
+        assert!(old_log.exists());
+        dispatch_json(
+            &rt,
+            "runtime.maintenance.release",
+            serde_json::json!({"token": token}),
+        );
+
+        let applied = dispatch_json(
+            &rt,
+            "runtime.maintenance.prune_safe",
+            serde_json::json!({"apply": true}),
+        );
+        assert_eq!(applied["schema"], 1);
+        assert_eq!(applied["dry_run"], false);
+        assert_eq!(applied["auditAppended"], true);
+        assert!(applied["items"].as_u64().unwrap() >= 1);
+        assert!(applied["bytesFreed"].as_u64().unwrap() >= 5);
+        assert!(!old_log.exists(), "the stale log is reclaimed");
+        assert!(live_log.exists(), "the live log is preserved");
+        for path in ledger_before.iter().chain(cas_before.iter()) {
+            assert!(path.exists(), "{} must be untouched", path.display());
+        }
+        assert!(audit_path.exists(), "apply appends the shared audit record");
+
+        let status = dispatch_json(&rt, "runtime.storage.status", serde_json::json!({}));
+        assert!(status["lastPrune"]["runUnixMs"].as_u64().unwrap() > 0);
+        assert!(
+            status["lastPrune"]["bytesFreed"].as_u64().unwrap()
+                >= applied["bytesFreed"].as_u64().unwrap()
+        );
+    }
+
     /// End-to-end: open a disposable runtime, append a canonical batch via the
-    /// public dispatch surface, let the projection worker catch up, then query the
-    /// materialized multi-dim index through `index.query` and assert real hits.
+    /// public dispatch surface, let the projection worker catch up, then query
+    /// the materialized multi-dim index through `index.query` and assert real hits.
     #[test]
     fn multi_dim_index_end_to_end() {
         let root = temp_root("multidim");
@@ -1376,17 +2382,32 @@ let batch = serde_json::json!({
             .dispatch("event.append_batch", &serde_json::to_vec(&batch).unwrap(), "e2e-test", None)
             .expect("append_batch");
 
-        // 2) Let the projection worker do at least a couple of 250ms ticks.
-        std::thread::sleep(std::time::Duration::from_millis(800));
-
-        // 3) Query the multi-dim index by namespace through the dispatcher.
-        let q = serde_json::json!({ "dim": "namespace", "value": "observability.log.v1", "limit": 10 });
-        let raw = rt
-            .dispatch("index.query", &serde_json::to_vec(&q).unwrap(), "e2e-test", None)
-            .expect("index.query");
-        let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        let hits = v.get("hits").and_then(|h| h.as_array()).cloned().unwrap_or_default();
-        assert!(!hits.is_empty(), "multi-dim index returned no hits for the appended namespace");
+        // 2) Let the projection worker catch up. Poll (bounded) instead of
+        //    assuming one fixed sleep is enough while the rest of the test
+        //    suite shares the CPU/disk.
+        //
+        // 3) Query the multi-dim index by producer through the dispatcher.
+        //    Scope to this producer: the runtime itself also writes lifecycle
+        //    (`runtime.state`) records into `observability.log.v1`, so a
+        //    namespace-only assertion would race with legitimate runtime events.
+        let q = serde_json::json!({ "dim": "producer", "value": "e2e-test", "limit": 10 });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let hits = loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let raw = rt
+                .dispatch("index.query", &serde_json::to_vec(&q).unwrap(), "e2e-test", None)
+                .expect("index.query");
+            let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            let hits = v.get("hits").and_then(|h| h.as_array()).cloned().unwrap_or_default();
+            if hits.len() >= 2 {
+                break hits;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "multi-dim index did not index both appended events in time (got {})",
+                hits.len()
+            );
+        };
         // Newest-first ordering is not guaranteed across async ticks, but the two
         // events we appended must BOTH be visible.
         assert_eq!(hits.len(), 2, "expected both appended events indexed, got {}", hits.len());

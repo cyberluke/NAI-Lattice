@@ -10,15 +10,16 @@ description = "NAI Lattice runtime: wires ledger + hotstore + CAS + AAF and disp
 readme = "README.md"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
-nai-lattice-protocol = { path = "../lattice-protocol", version = "0.1.1" }
-nai-lattice-ledger = { path = "../lattice-ledger", version = "0.1.1" }
-nai-lattice-cas = { path = "../lattice-cas", version = "0.1.1" }
-nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.1" }
-nai-lattice-hotstore-surrealkv = { path = "../lattice-hotstore-surrealkv", version = "0.1.1" }
-nai-lattice-aaf = { path = "../lattice-aaf", version = "0.1.1" }
-nai-lattice-vector = { path = "../lattice-vector", version = "0.1.1" }
-nai-lattice-search = { path = "../lattice-search", version = "0.1.1" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.4" }
+nai-lattice-protocol = { path = "../lattice-protocol", version = "0.1.4" }
+nai-lattice-ledger = { path = "../lattice-ledger", version = "0.1.4" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.4" }
+nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.4" }
+nai-lattice-hotstore-surrealkv = { path = "../lattice-hotstore-surrealkv", version = "0.1.4" }
+nai-lattice-aaf = { path = "../lattice-aaf", version = "0.1.4" }
+nai-lattice-vector = { path = "../lattice-vector", version = "0.1.4" }
+nai-lattice-search = { path = "../lattice-search", version = "0.1.4" }
+nai-lattice-storage = { path = "../lattice-storage", version = "0.1.4" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -10,7 +10,7 @@ description = "SurrealKV-backed HotStore adapter (production hot store)."
 readme = "README.md"
 
 [dependencies]
-nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.1" }
+nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.4" }
 surrealkv = "1.3.0"
 serde.workspace = true
 thiserror.workspace = true

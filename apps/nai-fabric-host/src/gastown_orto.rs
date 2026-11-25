@@ -2003,28 +2003,101 @@ pub(crate) fn start_control_server() {
                         let _ = stream.write_all(data);
                         return;
                     } else if path.split('?').next() == Some("/lattice") || path.split('?').next() == Some("/lattice/") {
-                        // Lattice observability dashboard (Bloomberg/ES style).
-                        // Embedded single-file HTML+JS, no external deps.
+                        // Default shell: the verified Vue/Dockview bundle embedded
+                        // at compile time. The legacy dashboard is the explicit
+                        // rollback at /lattice/legacy.
+                        if crate::lattice_assets::bundle_present() {
+                            crate::lattice_assets::serve(&mut stream, &path);
+                        } else {
+                            write_html(&mut stream, crate::lattice_dashboard::LATTICE_UI_HTML);
+                        }
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/legacy")
+                        || path.split('?').next() == Some("/lattice/legacy/")
+                    {
+                        // Explicit rollback path for the embedded vanilla dashboard.
                         write_html(&mut stream, crate::lattice_dashboard::LATTICE_UI_HTML);
+                        return;
+                    } else if path == "/lattice/next"
+                        || path == "/lattice/next/"
+                        || path.starts_with("/lattice/next/")
+                        || path.starts_with("/lattice/next?")
+                    {
+                        // Compatibility alias for the former preview URL. Canonical
+                        // is /lattice; assets keep their /lattice/ base.
+                        crate::lattice_assets::serve(&mut stream, &path);
                         return;
                     } else if path.split('?').next() == Some("/lattice/events") {
                         // SSE live stream of observability.log.v1 + periodic stats.
-                        // Resumes from the client's Last-Event-ID (runtime_sequence
-                        // cursor) so reconnects replay only the missed window.
+                        // Resume: `Last-Event-ID` wins (a reconnect's authoritative
+                        // cursor), then `?after=<seq>` for a first connect. Every
+                        // connection is served by the ONE shared scan broker
+                        // (contract §4), not by a per-connection ledger scanner.
                         let last = last_event_id_from_headers(&req)
                             .trim()
                             .parse::<u64>()
-                            .ok();
+                            .ok()
+                            .or_else(|| crate::lattice_query::query_param_u64(&path, "after"));
                         crate::lattice_dashboard::lattice_sse(&mut stream, last);
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/api/summary") {
+                        // Compact NAI OS / shell summary (DASHBOARD_API §1).
+                        write_lattice_json(&mut stream, &crate::lattice_dashboard::summary());
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/api/query") {
+                        // Server-side historical query (DASHBOARD_API §2).
+                        let opts = crate::lattice_query::parse_query_opts(&path);
+                        write_lattice_json(&mut stream, &crate::lattice_query::query(&opts));
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/api/traces") {
+                        // Real request→response correlation (DASHBOARD_API §3).
+                        // `?trace=<id>` (percent-decoded by the shared query
+                        // helper) serves exactly that trace even when it is
+                        // older than the requested window.
+                        let opts = crate::lattice_query::parse_trace_opts(&path);
+                        let trace = crate::lattice_query::query_param(&path, "trace");
+                        write_lattice_json(
+                            &mut stream,
+                            &crate::lattice_query::traces(&opts, trace.as_deref()),
+                        );
+                        return;
+                    } else if let Some(trace_id) =
+                        crate::lattice_trace_graph::trace_id_from_graph_path(&path)
+                    {
+                        // Execution-chain graph (gap audit §2.4): a CONSUMER of
+                        // explicit span records only. Legacy point events never
+                        // become nodes or edges.
+                        write_lattice_json(
+                            &mut stream,
+                            &crate::lattice_trace_graph::graph(&trace_id),
+                        );
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/api/host-metrics") {
+                        // Host telemetry (DASHBOARD_API §8): real CPU/memory/GPU
+                        // values, one sampler cached for at most 2 s.
+                        write_lattice_json(&mut stream, &crate::host_metrics::host_metrics());
+                        return;
+                    } else if path.split('?').next() == Some("/lattice/api/topology") {
+                        // Component topology from real trace spans (contract §9).
+                        let opts = crate::topology::parse_topology_opts(&path);
+                        write_lattice_json(&mut stream, &crate::topology::topology(&opts));
                         return;
                     } else if path.split('?').next() == Some("/lattice/api") {
                         // JSON search / stats for the dashboard fetch + MCP reuse.
+                        // Byte-compatible legacy body (contract §5).
                         let opts = crate::lattice_dashboard::parse_lattice_search_opts(&path);
                         let mut out = crate::lattice_dashboard::search(&opts);
-                        if let Some(mut o) = out.as_object_mut() {
+                        if let Some(o) = out.as_object_mut() {
                             o.insert("stats".into(), crate::lattice_dashboard::stats());
                         }
-                        write_resp_status(&mut stream, 200, &out);
+                        write_lattice_json(&mut stream, &out);
+                        return;
+                    } else if path.starts_with("/lattice/assets/")
+                        || path.split('?').next() == Some("/lattice/popout.html")
+                    {
+                        // Embedded shell assets and the Dockview popout document.
+                        // Only verified manifest entries resolve (no traversal).
+                        crate::lattice_assets::serve(&mut stream, &path);
                         return;
                     } else if path.starts_with("/recall") {
                         // Recall: pin an existing Kilo session and surface its
@@ -2525,6 +2598,23 @@ fn write_resp_status<W: std::io::Write>(w: &mut W, status: u16, value: &serde_js
     let reason = match status { 200=>"OK", 401=>"Unauthorized", 403=>"Forbidden", 400=>"Bad Request", 500=>"Internal Server Error", _=>"OK" };
     let resp = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = w.write_all(resp.as_bytes());
+}
+
+/// Write a `no-store` JSON HTTP/1.1 response and close.
+///
+/// Used by the frozen Lattice API (`docs/DASHBOARD_API.md` §0). The body
+/// formatting matches [`write_resp_status`] exactly so the legacy
+/// `GET /lattice/api` payload stays byte-compatible; only the cache directive
+/// is added.
+fn write_lattice_json<W: std::io::Write>(w: &mut W, value: &serde_json::Value) {
+    use std::io::Write as _;
+    let body = serde_json::to_string_pretty(value).unwrap_or_default();
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );

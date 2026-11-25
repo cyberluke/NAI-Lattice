@@ -10,8 +10,8 @@ description = "NAF/1 IPC client: connect to the per-user runtime, handshake, dis
 readme = "README.md"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
-nai-lattice-protocol = { path = "../lattice-protocol", version = "0.1.1" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.4" }
+nai-lattice-protocol = { path = "../lattice-protocol", version = "0.1.4" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

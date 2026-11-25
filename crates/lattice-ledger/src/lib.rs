@@ -16,6 +16,8 @@
 //! first/last sequence, first/last timestamp, event_count, byte_count,
 //! aggregate BLAKE3 root, segment_hash, format_version.
 
+pub mod audit;
+pub mod compression;
 pub mod durability;
 pub mod multi_dim;
 pub mod read_model;
@@ -66,16 +68,49 @@ pub struct EventScanFilter {
     pub correlation_id: Option<String>,
 }
 
-/// List `.segment` files in a (sealed) directory, oldest-first by filename.
-fn list_segment_files(dir: &Path) -> Result<Vec<PathBuf>, LedgerError> {
-    let mut files: Vec<_> = std::fs::read_dir(dir)?
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|e| e == "segment").unwrap_or(false))
-        .collect();
-    files.sort();
-    Ok(files)
+/// Maximum depth walked under `<root>/ledger/sealed` (`YYYY/MM/DD` is 3).
+const MAX_SEALED_DEPTH: usize = 8;
+
+/// Collect `.segment` files under a sealed directory, oldest-first by path.
+///
+/// The writer uses `sealed/<YYYY>/<MM>/<DD>/<file>.segment`; scanning only the
+/// first level silently skipped every canonical sealed segment (and therefore
+/// every compressed one). Junction/symlink entries are never traversed.
+fn collect_segment_files(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), LedgerError> {
+    if depth > MAX_SEALED_DEPTH {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if is_reparse_point(&metadata) {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_segment_files(&path, depth + 1, out)?;
+        } else if path.extension().map(|ext| ext == "segment").unwrap_or(false) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
 }
 
 /// Config for the ledger.
@@ -219,24 +254,20 @@ impl Ledger {
         let after = filter.after;
         let sealed_dir = self.config.root.join("ledger").join("sealed");
         if sealed_dir.exists() {
-            let mut day_dirs: Vec<_> = std::fs::read_dir(&sealed_dir)?
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect();
-            day_dirs.sort();
-            for day in day_dirs {
-                for path in list_segment_files(&day)? {
-                    // Cheap footer peek: if this sealed segment ends at/before
-                    // the cursor, it can't contribute post-`after` events.
-                    if let Some(hwm) = segment::read_footer_hwm(&path)? {
-                        if after.is_some_and(|a| hwm <= a) {
-                            continue;
-                        }
+            let mut files = Vec::new();
+            collect_segment_files(&sealed_dir, 0, &mut files)?;
+            files.sort();
+            for path in files {
+                // Cheap footer peek: if this sealed segment ends at/before the
+                // cursor, it can't contribute post-`after` events. Works for
+                // plain footers and NAIZ envelopes (synthetic source footer).
+                if let Some(hwm) = segment::read_footer_hwm(&path)? {
+                    if after.is_some_and(|a| hwm <= a) {
+                        continue;
                     }
-                    let (frames, _tail, _hwm, _trunc) = segment::recover(&path)?;
-                    collected.extend(frames.into_iter().map(|f| (f.runtime_sequence, f)));
                 }
+                let (frames, _tail, _hwm, _trunc) = segment::recover(&path)?;
+                collected.extend(frames.into_iter().map(|f| (f.runtime_sequence, f)));
             }
         }
         // 2) Active segment (read-side concern; no write-side index leaked here).
@@ -315,6 +346,12 @@ impl Ledger {
 
         match requested {
             Durability::Durable => {
+                // Physical order must equal logical order. A pending group-commit
+                // frame already owns an earlier runtime_sequence and its hash is
+                // THIS frame's `previous_hash`, so it must land on disk first.
+                // Skipping this drain lets a direct append overtake a queued frame
+                // and breaks `segment::recover`'s hash chain.
+                Self::drain_batched_locked(&self.batched, &mut active)?;
                 active.writer.append(&frame)?;
                 active.writer.flush_durable()?; // durability boundary + sync
                 active.tail_hash = Some(frame_hash);
@@ -328,11 +365,39 @@ impl Ledger {
                 active.tail_hash = Some(frame_hash);
             }
             Durability::ProjectionOnly => {
+                Self::drain_batched_locked(&self.batched, &mut active)?;
                 active.writer.append(&frame)?;
                 active.writer.flush()?; // no durability boundary
+                // A ProjectionOnly frame IS physically written now, so it is part
+                // of the hash chain. Advancing the tail is mandatory: without it
+                // the next append chains to a stale parent and crash recovery
+                // truncates every later record.
+                active.tail_hash = Some(frame_hash);
             }
         }
         Ok(event.event_id)
+    }
+
+    /// Append every queued `BatchedDurable` frame through the SAME persistent
+    /// writer, while the caller already holds the active-writer lock.
+    ///
+    /// Group commit is only sound if the physical order matches the sequence
+    /// order the frames were built in. Any direct append therefore drains the
+    /// queue first (see [`Self::append`]); `flush_batched` is the explicit
+    /// latency-boundary path and does the same work.
+    fn drain_batched_locked(
+        batched: &durability::BatchedDurableWriter,
+        active: &mut ActiveWriter,
+    ) -> Result<(), LedgerError> {
+        if !batched.is_pending() {
+            return Ok(());
+        }
+        batched.drain_with(|body| {
+            let frame: pb::Frame = prost::Message::decode(body).map_err(LedgerError::Decode)?;
+            active.writer.append(&frame)?;
+            active.writer.flush_durable()?; // durability boundary + sync
+            Ok(())
+        })
     }
 
     /// Flush any pending BatchedDurable frames to the durability boundary through
@@ -344,13 +409,7 @@ impl Ledger {
             return Ok(());
         }
         let mut active = self.active.lock().await;
-        self.batched.drain_with(|body| {
-            let frame: pb::Frame = prost::Message::decode(body)
-                .map_err(|e| LedgerError::Decode(e))?;
-            active.writer.append(&frame)?;
-            active.writer.flush_durable()?; // durability boundary + sync
-            Ok(())
-        })
+        Self::drain_batched_locked(&self.batched, &mut active)
     }
 
     /// Seal the active segment and start a fresh one.
@@ -562,6 +621,67 @@ mod tests {
         // The batched frame must be visibly durable: reopen shows seq 1 and 2.
         let (_frames, _t, hwm2, _tr) = segment::recover(&active).unwrap();
         assert_eq!(hwm2, 2, "batched frame must be physically persisted after flush");
+    }
+
+    #[tokio::test]
+    async fn projection_only_appends_advance_the_hash_chain() {
+        // Regression: ProjectionOnly frames are physically written immediately,
+        // so they must also advance the tail hash. Skipping that made the next
+        // append chain to a stale parent; `segment::recover` then treated the
+        // third frame as a torn tail and truncated every later record.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LedgerConfig {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let active = dir.path().join("ledger/active/active.segment");
+        let ledger = Ledger::open(cfg.clone()).unwrap();
+        ledger.append(event(0, 1), Durability::Durable).await.unwrap();
+        ledger.append(event(1, 2), Durability::ProjectionOnly).await.unwrap();
+        ledger.append(event(2, 3), Durability::ProjectionOnly).await.unwrap();
+
+        let (frames, _tail, hwm, truncate) = segment::recover(&active).unwrap();
+        assert_eq!(truncate, None, "projection-only appends must not break the chain");
+        assert_eq!(frames.len(), 3);
+        assert_eq!(hwm, 3);
+
+        let reopened = Ledger::open(cfg).unwrap();
+        assert_eq!(reopened.last_sequence().await, 3);
+        let scanned = reopened.scan_events(&EventScanFilter::default()).unwrap();
+        assert_eq!(scanned.len(), 3, "every appended record must survive reopen");
+    }
+
+    #[tokio::test]
+    async fn direct_append_drains_a_pending_batched_frame_first() {
+        // Regression: a queued BatchedDurable frame already owns the earlier
+        // sequence. A direct append that overtakes it writes the newer frame
+        // first, so recovery sees a broken parent hash and truncates.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LedgerConfig {
+            root: dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let active = dir.path().join("ledger/active/active.segment");
+        let ledger = Ledger::open(cfg.clone()).unwrap();
+        ledger.append(event(0, 1), Durability::BatchedDurable).await.unwrap();
+        // Deliberately no flush_batched(): the next direct append must preserve
+        // physical order by draining the queued frame first.
+        ledger.append(event(1, 2), Durability::Durable).await.unwrap();
+
+        let (frames, _tail, hwm, truncate) = segment::recover(&active).unwrap();
+        assert_eq!(truncate, None, "a direct append must not overtake a batched frame");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(hwm, 2);
+
+        let reopened = Ledger::open(cfg).unwrap();
+        assert_eq!(reopened.last_sequence().await, 2);
+        let scanned = reopened.scan_events(&EventScanFilter::default()).unwrap();
+        assert_eq!(scanned.len(), 2);
+        // Sequence order, not insertion order, is what readers observe.
+        assert_eq!(
+            scanned.iter().map(|e| e.runtime_sequence).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 
     #[tokio::test]

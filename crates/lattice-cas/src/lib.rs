@@ -13,11 +13,13 @@
 
 pub mod manifest;
 pub mod object;
+pub mod report;
 
 use std::path::PathBuf;
 
 pub use crate::manifest::ManifestStore;
 pub use crate::object::ObjectStore;
+pub use crate::report::{cas_report, CasReport, CorruptIndexEntry, CAS_REPORT_SCHEMA};
 
 /// Error raised by the CAS.
 #[derive(Debug, thiserror::Error)]

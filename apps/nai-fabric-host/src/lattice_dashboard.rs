@@ -3,37 +3,52 @@
 //!
 //! Served by the fabric host control server on `GET /lattice` (embedded HTML),
 //! `GET /lattice/events` (SSE live stream of `observability.log.v1` records + a
-//! periodic `stats` line), and `GET /lattice/api` (JSON tail / search / by-trace /
-//! component-breakdown for the dashboard's fetch calls and for the mcp-nai-lattice
-//! log methods).
+//! periodic `stats` line), `GET /lattice/api` (legacy JSON tail / search /
+//! by-trace / component-breakdown for the dashboard's fetch calls and for the
+//! mcp-nai-lattice log methods), and the frozen v1 endpoints in
+//! `docs/DASHBOARD_API.md`: `GET /lattice/api/summary` (here),
+//! `GET /lattice/api/query` + `/lattice/api/traces` (`lattice_query.rs`).
 //!
-//! Deliberately NON-BLOCKING for the host: it reads the ledger via a bounded
-//! `event.read_range` scan on a short cadence (1s SSE push) and computes stats
-//! from a bounded window — never buffers the whole ledger, never spins CPU, and
-//! each SSE connection is its own thread (mirrors `notify_sse`).
+//! Deliberately NON-BLOCKING for the host: the ONLY continuous ledger reader is
+//! the shared scan broker (`lattice_broker.rs`) — one bounded read per ~1.25 s
+//! for every SSE connection, not one scanner thread per connection. One-shot
+//! JSON reads (`/lattice/api`, `/summary`) stay bounded recent windows.
+//!
+//! The embedded HTML below remains the rollback path until the Vue shell passes
+//! its acceptance gate; its wire shape (`search`/`log`/`stats` SSE events and
+//! the legacy JSON keys) is kept compatible.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use serde_json::Value;
 
 /// The Lattice dashboard icon (optimized 256px copy of "Neon Glass Network Hub").
 /// Embedded so the installed host always serves it regardless of repo path.
 pub(crate) const LATTICE_ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/lattice-hub-256.png");
 pub(crate) const LATTICE_ICON_MIME: &str = "image/png";
 
-/// Simple connection counter used to decorate the dashboard.
+/// Successful SSE data-event writes (the existing `SSE PUSHES` contract).
 static LIVE_PUSHES: AtomicUsize = AtomicUsize::new(0);
+/// Established `/lattice/events` connections.
 static ACTIVE_SSE: AtomicUsize = AtomicUsize::new(0);
-const MAX_SSE_CLIENTS: usize = 6;
+/// Connections are capped by the shared broker (one SSE connection = one
+/// subscriber). Reported as `maxSseClients` for compatibility.
+const MAX_SSE_CLIENTS: usize = crate::lattice_broker::MAX_SUBSCRIBERS;
+
+/// Counts one live SSE connection for the dashboard; the broker enforces the
+/// hard subscriber cap and answers `503 + Retry-After` over it.
 struct SseLease;
 impl SseLease {
-    fn acquire() -> Option<Self> {
-        ACTIVE_SSE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            (n < MAX_SSE_CLIENTS).then_some(n + 1)
-        }).ok().map(|_| Self)
+    fn acquire() -> Self {
+        ACTIVE_SSE.fetch_add(1, Ordering::AcqRel);
+        Self
     }
 }
 impl Drop for SseLease {
-    fn drop(&mut self) { ACTIVE_SSE.fetch_sub(1, Ordering::AcqRel); }
+    fn drop(&mut self) {
+        ACTIVE_SSE.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Esimated per-minute push cadence for the "traffic" illusion isn't fabricated:
@@ -42,23 +57,8 @@ pub(crate) fn push_count() -> usize {
     LIVE_PUSHES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Read the latest `observability.log.v1` records from the shared runtime,
-/// newest-first, bounded. Returns the raw list of `LogRecord`-shaped payloads.
-pub(crate) fn latest_logs(limit: usize) -> Vec<serde_json::Value> {
-    read_logs(limit, None, true)
-}
-
-/// Durable cursor pagination is essential: fetching only "most recent 240"
-/// once per second silently skips records during bursts. Every emitted cursor
-/// advances to the LAST ACTUALLY DELIVERED record; the next tick catches up.
-fn logs_after(after: u64, limit: usize) -> Vec<serde_json::Value> {
-    read_logs(limit, Some(after), false)
-}
-
-fn read_logs(limit: usize, after: Option<u64>, tail: bool) -> Vec<serde_json::Value> {
-    let Some(rt) = crate::gastown_orto::RUNTIME.get() else {
-        return Vec::new();
-    };
+/// Testable core of the bounded newest-window read against an explicit runtime.
+pub(crate) fn latest_logs_on(rt: &nai_lattice_runtime::LatticeRuntime, limit: usize) -> Vec<Value> {
     // IMPORTANT: do NOT constrain `event_type` here. The CQRS read model's fast
     // tail path only triggers for an UNFILTERED event.read_range (all types). If
     // we hard-filter `log.record`, the runtime falls back to the slow scan path
@@ -83,8 +83,7 @@ fn read_logs(limit: usize, after: Option<u64>, tail: bool) -> Vec<serde_json::Va
         let args = serde_json::json!({
             "namespace": ns,
             "limit": limit.min(4096),
-            "tail": tail,
-            "after": after,
+            "tail": true,
         });
         let raw = rt.dispatch(
             "event.read_range",
@@ -123,17 +122,26 @@ fn read_logs(limit: usize, after: Option<u64>, tail: bool) -> Vec<serde_json::Va
     out
 }
 
-/// Aggregate counters for the traffic/health panel, from a bounded recent scan.
-pub(crate) fn stats() -> serde_json::Value {
-    let logs = latest_logs(2000);
-    let mut by_level: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    let mut by_component: std::collections::BTreeMap<String, usize> =
+/// Aggregates computed from ONE bounded window.
+struct WindowAggregate {
+    window: usize,
+    levels: std::collections::BTreeMap<String, usize>,
+    components: std::collections::BTreeMap<String, usize>,
+    distinct_trace_ids: usize,
+    errors: usize,
+    /// Newest measured in-process NAI OS emitter health record (never faked).
+    emitter: Option<(u64, Value)>,
+}
+
+fn aggregate_window(logs: &[Value]) -> WindowAggregate {
+    let mut levels: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut components: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     let mut trace_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Measured from the latest in-process NAI OS emitter health record.
     // Absent means UNKNOWN, never synthesize zero backpressure.
     let mut newest_emitter: Option<(u64, serde_json::Value)> = None;
-    for l in &logs {
+    for l in logs {
         if l.get("component").and_then(|x| x.as_str()) == Some("nai-os.observability") {
             if let Some(metrics) = l.pointer("/extras/emitter") {
                 let ts = l.get("ts_ms").and_then(|x| x.as_u64()).unwrap_or(0);
@@ -143,10 +151,10 @@ pub(crate) fn stats() -> serde_json::Value {
             }
         }
         if let Some(lv) = l.get("level").and_then(|x| x.as_str()) {
-            *by_level.entry(lv.to_string()).or_insert(0) += 1;
+            *levels.entry(lv.to_string()).or_insert(0) += 1;
         }
         if let Some(c) = l.get("component").and_then(|x| x.as_str()) {
-            *by_component.entry(c.to_string()).or_insert(0) += 1;
+            *components.entry(c.to_string()).or_insert(0) += 1;
         }
         if let Some(t) = l.get("trace_id").and_then(|x| x.as_str()) {
             if !t.is_empty() {
@@ -154,19 +162,66 @@ pub(crate) fn stats() -> serde_json::Value {
             }
         }
     }
-    let errors = by_level.get("error").copied().unwrap_or(0)
-        + by_level.get("warn").copied().unwrap_or(0);
+    let errors = levels.get("error").copied().unwrap_or(0)
+        + levels.get("warn").copied().unwrap_or(0);
+    WindowAggregate {
+        window: logs.len(),
+        levels,
+        components,
+        distinct_trace_ids: trace_ids.len(),
+        errors,
+        emitter: newest_emitter,
+    }
+}
+
+/// Stream/broker counters shared by `stats()` and `summary()`.
+pub(crate) fn stream_stats() -> Value {
+    let b = crate::lattice_broker::snapshot_stats();
+    serde_json::json!({
+        "activeSseClients": ACTIVE_SSE.load(Ordering::Relaxed),
+        "maxSseClients": MAX_SSE_CLIENTS,
+        "pushTotal": push_count(),
+        "subscribers": b.subscribers,
+        "brokerScansTotal": b.scans,
+        "lastScanUnixMs": b.last_scan_unix_ms,
+        "droppedTotal": b.dropped_total,
+    })
+}
+
+/// Aggregate counters for the traffic/health panel, from a bounded recent scan.
+pub(crate) fn stats() -> Value {
+    match crate::gastown_orto::RUNTIME.get() {
+        Some(rt) => stats_on(rt),
+        None => stats_from(&WindowAggregate {
+            window: 0,
+            levels: Default::default(),
+            components: Default::default(),
+            distinct_trace_ids: 0,
+            errors: 0,
+            emitter: None,
+        }),
+    }
+}
+
+/// Testable core of [`stats`] against an explicit runtime.
+pub(crate) fn stats_on(rt: &nai_lattice_runtime::LatticeRuntime) -> Value {
+    let logs = latest_logs_on(rt, 2000);
+    stats_from(&aggregate_window(&logs))
+}
+
+fn stats_from(agg: &WindowAggregate) -> Value {
     serde_json::json!({
         "schema": 1,
-        "window": logs.len(),
-        "levels": by_level,
-        "errors": errors,
-        "components": by_component,
-        "distinctTraceIds": trace_ids.len(),
+        "window": agg.window,
+        "levels": agg.levels,
+        "errors": agg.errors,
+        "components": agg.components,
+        "distinctTraceIds": agg.distinct_trace_ids,
         "livePushes": push_count(),
         "activeSseClients": ACTIVE_SSE.load(Ordering::Relaxed),
         "maxSseClients": MAX_SSE_CLIENTS,
-        "emitter": newest_emitter.map(|(ts, metrics)| serde_json::json!({
+        "stream": stream_stats(),
+        "emitter": agg.emitter.as_ref().map(|(ts, metrics)| serde_json::json!({
             "observedAt": ts,
             "metrics": metrics,
         })),
@@ -176,8 +231,19 @@ pub(crate) fn stats() -> serde_json::Value {
 
 /// Search / tail JSON for the dashboard fetch API and the MCP log methods.
 /// Filters are applied in-process over the bounded recent window (newest-first).
-pub(crate) fn search(opts: &SearchOpts) -> serde_json::Value {
-    let mut logs = latest_logs(6000);
+pub(crate) fn search(opts: &SearchOpts) -> Value {
+    match crate::gastown_orto::RUNTIME.get() {
+        Some(rt) => search_on(rt, opts),
+        None => search_over(Vec::new(), opts),
+    }
+}
+
+/// Testable core of [`search`] against an explicit runtime.
+pub(crate) fn search_on(rt: &nai_lattice_runtime::LatticeRuntime, opts: &SearchOpts) -> Value {
+    search_over(latest_logs_on(rt, 6000), opts)
+}
+
+fn search_over(mut logs: Vec<Value>, opts: &SearchOpts) -> Value {
     logs.retain(|l| {
         let level = l.get("level").and_then(|x| x.as_str()).unwrap_or("");
         if let Some(min) = &opts.level_min {
@@ -215,7 +281,7 @@ pub(crate) fn search(opts: &SearchOpts) -> serde_json::Value {
     })
 }
 
-fn level_at_least(level: &str, min: &str) -> bool {
+pub(crate) fn level_at_least(level: &str, min: &str) -> bool {
     const ORDER: &[&str] = &["trace", "debug", "info", "warn", "error"];
     let a = ORDER.iter().position(|l| *l == level).unwrap_or(2);
     let b = ORDER.iter().position(|l| *l == min).unwrap_or(2);
@@ -253,7 +319,7 @@ pub(crate) fn parse_lattice_search_opts(path: &str) -> SearchOpts {
 }
 
 /// Minimal percent-decode (`%XX` → byte; `+` → space).
-fn percent_decode(v: &str) -> Option<String> {
+pub(crate) fn percent_decode(v: &str) -> Option<String> {
     // Percent decoding is BYTE-based: building chars from %C5%99 separately
     // corrupts Czech/Vietnamese UTF-8 text and silently breaks log searches.
     let raw = v.as_bytes();
@@ -274,65 +340,241 @@ fn percent_decode(v: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// Bounded, cursor-resumable SSE. Exactly one connection consumes one lease.
-/// A dead browser releases its worker on the first failed write; a healthy
-/// client reconnects after 55s using the last actual runtime_sequence.
-pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
-    let Some(_lease) = SseLease::acquire() else {
-        let _ = w.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: 3\r\nConnection: close\r\n\r\n");
-        return;
+// ===========================================================================
+// GET /lattice/api/summary (contract §1)
+// ===========================================================================
+
+/// The single host-owned feature list: Lattice API surfaces that exist in THIS
+/// binary. `main.rs` registers exactly this list on the runtime and
+/// [`features_summary`] merges it into `/lattice/api/summary`, so
+/// `runtime.describe.features` and `summary.features` cannot drift. It is never
+/// a claim about unimplemented work; runtime-owned features (lifecycle,
+/// maintenance, shared storage) are advertised by the runtime itself.
+pub(crate) const HOST_FEATURES: &[&str] = &[
+    // DASHBOARD_API §8: served by this binary for every host (GPU presence is a
+    // separate, truthfully conditional `gpu_metrics` advertisement in main.rs).
+    "host_metrics",
+    "search_api",
+    "sse_resume",
+    "shutdown_if_idle",
+    "summary_api",
+    // DASHBOARD_API §9: derived from the same bounded trace window.
+    "topology_api",
+    "traces_api",
+    // Gap audit §2.4: truthful v2 execution-chain graph (explicit spans only).
+    "execution_chain_api",
+];
+
+fn health_summary(health: &Value) -> Value {
+    let pick = |keys: &[&str]| -> Value {
+        keys.iter()
+            .find_map(|k| health.get(*k).cloned())
+            .unwrap_or(Value::Null)
     };
-    if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache, no-transform\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\n\r\n").is_err() {
-        return;
-    }
-    let mut cursor = after.unwrap_or(0);
-    // Initial tail, or missing records on reconnect. Never reset the browser's
-    // Last-Event-ID to zero (that used to trigger duplicate replay storms).
-    let mut initial = if after.is_some() { logs_after(cursor, 4096) } else { latest_logs(200) };
-    initial.sort_by_key(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0));
-    cursor = initial.iter()
-        .filter_map(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()))
-        .max().unwrap_or(cursor).max(cursor);
-    let payload = serde_json::to_string(&initial).unwrap_or_else(|_| "[]".into());
-    let id = if cursor > 0 { format!("id: {cursor}\r\n") } else { String::new() };
-    if w.write_all(format!("{id}event: search\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err()
-        || w.flush().is_err() {
-        return;
-    }
-    LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
-    let started = std::time::Instant::now();
-    let mut tick = 0usize;
-    while started.elapsed() < std::time::Duration::from_secs(55) {
-        std::thread::sleep(std::time::Duration::from_millis(1250));
-        let mut recent = logs_after(cursor, 4096);
-        recent.sort_by_key(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()).unwrap_or(0));
-        if !recent.is_empty() {
-            cursor = recent.iter()
-                .filter_map(|r| r.get("runtime_sequence").and_then(|s| s.as_u64()))
-                .max().unwrap_or(cursor).max(cursor);
-            let payload = serde_json::to_string(&serde_json::json!({"hits":recent}))
-                .unwrap_or_else(|_| "{\"hits\":[]}".into());
-            if w.write_all(format!("id: {cursor}\r\nevent: log\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err() {
-                break;
+    serde_json::json!({
+        "state": pick(&["state"]),
+        "detail": pick(&["detail"]),
+        "lastError": pick(&["lastError", "last_error"]),
+        "sinceUnixMs": pick(&["sinceUnixMs", "since_unix_ms"]),
+        "uptimeMs": pick(&["uptimeMs", "uptime_ms"]),
+    })
+}
+
+fn version_summary() -> Value {
+    serde_json::json!({
+        "host": env!("CARGO_PKG_VERSION"),
+        "dashboard": crate::lattice_assets::bundle_version(),
+        "protocolMin": 1,
+        "protocolMax": 1,
+        "storageSchema": 1,
+    })
+}
+
+/// Features advertised by THIS host: runtime capabilities from
+/// `runtime.describe` (authoritative, passed through verbatim) plus
+/// [`HOST_FEATURES`]. Every entry is a real capability — nothing is invented;
+/// if `describe` has no `features` array (an older runtime) the host list
+/// stands alone.
+fn features_summary(rt: Option<&nai_lattice_runtime::LatticeRuntime>) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    if let Some(rt) = rt {
+        if let Ok(raw) = rt.dispatch("runtime.describe", b"{}", "lattice-summary", None) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&raw) {
+                if let Some(arr) = v.get("features").and_then(Value::as_array) {
+                    out.extend(arr.iter().cloned());
+                }
             }
         }
-        tick += 1;
-        if tick % 4 == 0 {
-            let payload = serde_json::to_string(&stats()).unwrap_or_default();
-            if w.write_all(format!("event: stats\r\ndata: {payload}\r\n\r\n").as_bytes()).is_err() {
-                break;
-            }
-        } else if recent_is_empty_tick(tick) {
-            // SSE comment heartbeat detects dead peers without ledger scans.
-            if w.write_all(b": heartbeat\r\n\r\n").is_err() { break; }
+    }
+    for feature in HOST_FEATURES {
+        if !out.iter().any(|v| v.as_str() == Some(feature)) {
+            out.push(Value::from(*feature));
         }
-        if w.flush().is_err() { break; }
-        LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+    }
+    Value::Array(out)
+}
+
+/// Contract §1 `storage`: produced by the runtime's shared storage policy
+/// (`runtime.storage.status`), passed through verbatim. Omitted only when the
+/// method fails, so an older runtime degrades to the previous summary shape
+/// instead of inventing numbers.
+fn storage_summary(rt: Option<&nai_lattice_runtime::LatticeRuntime>) -> Option<Value> {
+    let rt = rt?;
+    let raw = rt
+        .dispatch("runtime.storage.status", b"{}", "lattice-summary", None)
+        .ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
+fn summary_from(
+    agg: &WindowAggregate,
+    health: Value,
+    features: Value,
+    storage: Option<Value>,
+) -> Value {
+    let mut out = serde_json::json!({
+        "schema": 1,
+        "generatedAt": crate::now_unix_ms(),
+        "window": agg.window,
+        "levels": agg.levels,
+        "errors": agg.errors,
+        "components": agg.components,
+        "distinctTraceIds": agg.distinct_trace_ids,
+        "stream": stream_stats(),
+        "health": health,
+        "version": version_summary(),
+        "features": features,
+    });
+    if let Some(storage) = storage {
+        if let Some(object) = out.as_object_mut() {
+            object.insert("storage".to_string(), storage);
+        }
+    }
+    out
+}
+
+/// Compact summary for the NAI OS toolbar / shell header. Bounded recent
+/// window only; every count is measured, every unknown is `null`.
+pub(crate) fn summary() -> Value {
+    match crate::gastown_orto::RUNTIME.get() {
+        Some(rt) => summary_on(rt),
+        None => summary_from(
+            &aggregate_window(&[]),
+            health_summary(&Value::Null),
+            features_summary(None),
+            None,
+        ),
     }
 }
 
-/// Heartbeats are cheap and ensure idle clients get disconnect detection.
-fn recent_is_empty_tick(tick: usize) -> bool { tick % 2 == 0 }
+/// Testable core of [`summary`] against an explicit runtime.
+pub(crate) fn summary_on(rt: &nai_lattice_runtime::LatticeRuntime) -> Value {
+    let logs = latest_logs_on(rt, 2000);
+    let agg = aggregate_window(&logs);
+    summary_from(
+        &agg,
+        health_summary(&rt.health()),
+        features_summary(Some(rt)),
+        storage_summary(Some(rt)),
+    )
+}
+
+// ===========================================================================
+// SSE (shared broker)
+// ===========================================================================
+
+/// Broker-backed, cursor-resumable SSE for `/lattice/events`.
+///
+/// Every connection is one logical subscriber of the single shared scan pump;
+/// the route signature is unchanged. Over the subscriber cap the broker refuses
+/// with `503 + Retry-After: 3` — never a silently dead stream.
+pub(crate) fn lattice_sse<W: Write>(w: &mut W, after: Option<u64>) {
+    let sub = match crate::lattice_broker::broker().subscribe(after) {
+        Ok(sub) => sub,
+        Err(crate::lattice_broker::SubscribeError::AtCapacity) => {
+            let _ = w.write_all(
+                format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nRetry-After: {}\r\nConnection: close\r\n\r\n",
+                    crate::lattice_broker::RETRY_AFTER_SECS
+                )
+                .as_bytes(),
+            );
+            return;
+        }
+    };
+    let _lease = SseLease::acquire();
+    if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache, no-transform\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\n\r\n").is_err() {
+        return;
+    }
+    // Emitted exactly once at stream open (contract §4).
+    if w.write_all(b"retry: 3000\r\n\r\n").is_err() || w.flush().is_err() {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let lifetime = crate::lattice_broker::stream_lifetime();
+    while started.elapsed() < lifetime {
+        match sub.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(msg) => {
+                if write_broker_msg(w, msg).is_err() {
+                    break;
+                }
+                if w.flush().is_err() {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    // Dropping `sub` unregisters the subscriber from the shared pump.
+}
+
+fn write_broker_msg<W: Write>(
+    w: &mut W,
+    msg: crate::lattice_broker::BrokerMsg,
+) -> std::io::Result<()> {
+    use crate::lattice_broker::BrokerMsg;
+    match msg {
+        BrokerMsg::Search { id, payload } => {
+            let id = id.map(|i| format!("id: {i}\r\n")).unwrap_or_default();
+            write!(w, "{id}event: search\r\ndata: {payload}\r\n\r\n")?;
+            LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+        }
+        BrokerMsg::Log { id, payload } => {
+            write!(w, "id: {id}\r\nevent: log\r\ndata: {payload}\r\n\r\n")?;
+            LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+        }
+        BrokerMsg::Stats(payload) => {
+            write!(w, "event: stats\r\ndata: {payload}\r\n\r\n")?;
+            LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+        }
+        BrokerMsg::State(payload) => {
+            write!(w, "event: state\r\ndata: {payload}\r\n\r\n")?;
+            LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+        }
+        BrokerMsg::Status {
+            cursor,
+            subscribers,
+            dropped_total,
+            broker_scans,
+        } => {
+            let data = serde_json::to_string(&serde_json::json!({
+                "cursor": cursor,
+                "subscribers": subscribers,
+                "droppedTotal": dropped_total,
+                "brokerScans": broker_scans,
+            }))
+            .unwrap_or_default();
+            write!(w, "event: status\r\ndata: {data}\r\n\r\n")?;
+            LIVE_PUSHES.fetch_add(1, Ordering::Relaxed);
+        }
+        // Comments are not "pushes": they carry no data and advance no cursor.
+        BrokerMsg::Heartbeat => {
+            write!(w, ": heartbeat\r\n\r\n")?;
+        }
+    }
+    Ok(())
+}
 
 /// Embedded Bloomberg/ES-admin style HTML dashboard. Dark, dense, monospace;
 /// real data only. Panels: header (live stats ticker), a traffic/health strip,
@@ -613,6 +855,8 @@ refresh();
 #[cfg(test)]
 mod dashboard_parser_tests {
     use super::*;
+    use nai_lattice_runtime::RuntimeConfig;
+
     #[test]
     fn percent_decoder_preserves_utf8_and_plus() {
         assert_eq!(percent_decode("Praha+%C5%99%C3%ADjen"), Some("Praha říjen".into()));
@@ -624,5 +868,270 @@ mod dashboard_parser_tests {
         let opts = parse_lattice_search_opts("/lattice/api?limit=9999999&contains=GPU%20hot");
         assert_eq!(opts.limit, Some(500));
         assert_eq!(opts.contains.as_deref(), Some("GPU hot"));
+    }
+
+    fn open_runtime() -> (tempfile::TempDir, nai_lattice_runtime::LatticeRuntime) {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = nai_lattice_runtime::LatticeRuntime::open(RuntimeConfig {
+            root: dir.path().to_path_buf(),
+            ledger_segment_bytes: 64 * 1024 * 1024,
+            ..Default::default()
+        })
+        .expect("open isolated runtime");
+        // The runtime appends its open-time lifecycle record asynchronously;
+        // wait for it so window counts are deterministic fixture setup.
+        let mut prev = latest_logs_on(&rt, 200).len();
+        for _ in 0..80 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let now = latest_logs_on(&rt, 200).len();
+            if now == prev {
+                break;
+            }
+            prev = now;
+        }
+        (dir, rt)
+    }
+
+    fn append(rt: &nai_lattice_runtime::LatticeRuntime, level: &str, component: &str, message: &str) {
+        let args = serde_json::json!({
+            "namespace": "observability.log.v1",
+            "event_type": "log.record",
+            "durability": "durable",
+            "payload": {
+                "ts_ms": 1_764_000_000_000u64,
+                "level": level,
+                "component": component,
+                "message": message,
+                "extras": {},
+            },
+        });
+        rt.dispatch(
+            "event.append",
+            &serde_json::to_vec(&args).unwrap(),
+            "dashboard-test",
+            None,
+        )
+        .expect("append");
+    }
+
+    #[test]
+    fn sse_writer_emits_contract_event_shapes() {
+        use crate::lattice_broker::BrokerMsg;
+
+        fn render(msg: BrokerMsg) -> String {
+            let mut buf: Vec<u8> = Vec::new();
+            write_broker_msg(&mut buf, msg).expect("write");
+            String::from_utf8(buf).expect("utf8")
+        }
+
+        let search = render(BrokerMsg::Search {
+            id: Some(7),
+            payload: std::sync::Arc::from("[{\"runtime_sequence\":7}]"),
+        });
+        assert!(search.starts_with("id: 7\r\nevent: search\r\ndata: "), "{search}");
+        assert!(search.ends_with("\r\n\r\n"), "event terminator");
+
+        let log = render(BrokerMsg::Log {
+            id: 8,
+            payload: std::sync::Arc::from("{\"hits\":[]}"),
+        });
+        assert!(log.starts_with("id: 8\r\nevent: log\r\ndata: "), "{log}");
+
+        let stats = render(BrokerMsg::Stats(std::sync::Arc::from("{}")));
+        assert!(stats.starts_with("event: stats\r\ndata: "), "{stats}");
+        assert!(!stats.contains("id:"), "stats must not advance a cursor");
+
+        let state = render(BrokerMsg::State(std::sync::Arc::from(
+            "{\"state\":\"draining\"}",
+        )));
+        assert!(state.starts_with("event: state\r\ndata: "), "{state}");
+        assert!(!state.contains("id:"));
+
+        let status = render(BrokerMsg::Status {
+            cursor: 42,
+            subscribers: 2,
+            dropped_total: 1,
+            broker_scans: 9,
+        });
+        assert!(status.starts_with("event: status\r\ndata: "), "{status}");
+        assert!(!status.contains("id:"));
+        let body = status
+            .split("data: ")
+            .nth(1)
+            .unwrap_or_default()
+            .trim();
+        let v: Value = serde_json::from_str(body).expect("status json");
+        assert_eq!(v["cursor"], 42);
+        assert_eq!(v["subscribers"], 2);
+        assert_eq!(v["droppedTotal"], 1);
+        assert_eq!(v["brokerScans"], 9);
+
+        assert_eq!(render(BrokerMsg::Heartbeat), ": heartbeat\r\n\r\n");
+    }
+
+    #[test]
+    fn legacy_search_shape_is_unchanged_and_newest_first() {
+        let (_dir, rt) = open_runtime();
+        let baseline = latest_logs_on(&rt, 200).len();
+        append(&rt, "info", "alpha", "one");
+        append(&rt, "warn", "alpha", "two");
+        append(&rt, "error", "beta", "three");
+
+        let out = search_on(&rt, &SearchOpts { limit: Some(2), ..Default::default() });
+        let obj = out.as_object().expect("legacy response is an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["count", "generatedAt", "hits", "schema"]);
+        assert_eq!(out["schema"], 1);
+        assert_eq!(out["count"], 2);
+        let hits = out["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 2);
+        let seq: Vec<u64> = hits
+            .iter()
+            .map(|h| h["runtime_sequence"].as_u64().unwrap())
+            .collect();
+        assert!(seq[0] > seq[1], "legacy /lattice/api stays newest-first");
+        for hit in hits {
+            for key in ["runtime_sequence", "timestamp_utc_ms", "level", "component", "message"] {
+                assert!(hit.get(key).is_some(), "legacy hit keeps {key}");
+            }
+        }
+
+        // Filters keep their exact legacy semantics.
+        let filtered = search_on(
+            &rt,
+            &SearchOpts { component: Some("beta".into()), limit: Some(50), ..Default::default() },
+        );
+        assert_eq!(filtered["count"], 1);
+        let stats = stats_on(&rt);
+        for key in [
+            "schema",
+            "window",
+            "levels",
+            "errors",
+            "components",
+            "distinctTraceIds",
+            "livePushes",
+            "activeSseClients",
+            "maxSseClients",
+            "emitter",
+            "generatedAt",
+        ] {
+            assert!(stats.get(key).is_some(), "legacy stats keeps {key}");
+        }
+        let stream = stats["stream"].as_object().expect("stream object");
+        for key in [
+            "activeSseClients",
+            "maxSseClients",
+            "pushTotal",
+            "subscribers",
+            "brokerScansTotal",
+            "lastScanUnixMs",
+            "droppedTotal",
+        ] {
+            assert!(stream.contains_key(key), "stream reports {key}");
+        }
+        assert_eq!(stats["window"], 3 + baseline);
+    }
+
+    #[test]
+    fn summary_reports_contract_keys_and_runtime_health() {
+        let (_dir, rt) = open_runtime();
+        let baseline = latest_logs_on(&rt, 200).len();
+        append(&rt, "info", "alpha", "one");
+        append(&rt, "error", "beta", "boom");
+        let out = summary_on(&rt);
+        for key in [
+            "schema",
+            "generatedAt",
+            "window",
+            "levels",
+            "errors",
+            "components",
+            "distinctTraceIds",
+            "stream",
+            "health",
+            "version",
+            "features",
+            "storage",
+        ] {
+            assert!(out.get(key).is_some(), "summary exposes {key}");
+        }
+        assert_eq!(out["schema"], 1);
+        assert_eq!(out["window"], 2 + baseline);
+        assert_eq!(out["errors"], 1, "warn+error count over the window");
+        assert_eq!(out["health"]["state"], "healthy");
+        for key in ["state", "detail", "lastError", "sinceUnixMs", "uptimeMs"] {
+            assert!(out["health"].get(key).is_some(), "health exposes {key}");
+        }
+        assert_eq!(out["version"]["host"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(out["version"]["protocolMin"], 1);
+        assert_eq!(out["version"]["protocolMax"], 1);
+        assert_eq!(out["version"]["storageSchema"], 1);
+        assert!(out["version"]["dashboard"].is_string());
+        // `features` is the runtime's own advertisement plus the host API
+        // surfaces this binary really serves; nothing is invented.
+        let describe: Value = serde_json::from_slice(
+            &rt.dispatch("runtime.describe", b"{}", "summary-test", None)
+                .expect("describe"),
+        )
+        .expect("describe json");
+        let advertised = out["features"].as_array().expect("features array");
+        if let Some(runtime_features) = describe.get("features").and_then(Value::as_array) {
+            for f in runtime_features {
+                assert!(
+                    advertised.contains(f),
+                    "runtime feature {f} must be passed through"
+                );
+            }
+        }
+        for host_feature in HOST_FEATURES {
+            assert!(
+                advertised.iter().any(|v| v == host_feature),
+                "host-served feature {host_feature} must be advertised"
+            );
+        }
+        // `storage` is the shared policy payload (contract §1), produced by
+        // `runtime.storage.status` and passed through verbatim.
+        let storage = out.get("storage").expect("summary exposes storage");
+        assert_eq!(storage["schema"], 1);
+        for class in [
+            "ledger", "cas", "hot", "search", "vector", "readModels", "logs", "backups",
+            "audit",
+        ] {
+            assert!(
+                storage["classes"].get(class).is_some(),
+                "storage.classes exposes {class}"
+            );
+        }
+        assert_eq!(storage["retention"]["logsDays"], 30);
+        assert_eq!(storage["retention"]["auditDays"], 90);
+        assert_eq!(storage["retention"]["backupDays"], 14);
+        assert_eq!(storage["retention"]["runtimeKeep"], 2);
+        assert!(storage["root"].is_string());
+        assert!(storage["base"].is_string());
+    }
+
+    #[test]
+    fn summary_and_runtime_describe_share_the_same_host_feature_set() {
+        let (_dir, rt) = open_runtime();
+        rt.register_host_features(HOST_FEATURES);
+        let describe: Value = serde_json::from_slice(
+            &rt.dispatch("runtime.describe", b"{}", "feature-test", None)
+                .expect("describe"),
+        )
+        .expect("describe json");
+        let advertised = describe["features"].as_array().expect("features array");
+        for feature in HOST_FEATURES {
+            assert!(
+                advertised.iter().any(|v| v.as_str() == Some(feature)),
+                "runtime.describe must advertise the host feature {feature}"
+            );
+        }
+        let summary = summary_on(&rt);
+        assert_eq!(
+            summary["features"], describe["features"],
+            "summary.features and runtime.describe.features must be the same host set"
+        );
     }
 }

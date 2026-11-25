@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 nai-lattice-runtime = { path = "../../crates/lattice-runtime" }
+nai-lattice-storage = { path = "../../crates/lattice-storage" }
 nai-lattice-ledger = { path = "../../crates/lattice-ledger" }
 nai-lattice-cas = { path = "../../crates/lattice-cas" }
 nai-lattice-gastown = { path = "../../crates/lattice-gastown" }
@@ -27,3 +28,6 @@ blake3.workspace = true
 rusqlite = { version = "0.31", features = ["bundled"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+crc32c.workspace = true

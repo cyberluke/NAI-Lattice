@@ -3,11 +3,17 @@
 //! Commands:
 //!   inspect                print runtime health/describe (opens the runtime)
 //!   verify-ledger          run ledger crash recovery + report high-water mark
+//!   verify-chain [--json]  strictly read-only ledger chain audit (0 ok, 4 broken, 5 I/O)
 //!   rebuild --projection hot-state
 //!                          rebuild the hot-store from canonical ledger manifests
 //!   verify --artifact <hash>   verify a CAS object's whole-object identity
 //!   gastown [health|hosts|sessions|jobs|queue|verify-ledger|migration-status]
 //!                          Gas Town domain diagnostics (spec §13)
+//!   maintenance <status|stop|start|prune|purge|backup|restore|audit|config|
+//!                pin|unpin|pins|compress>
+//!                          enterprise lifecycle: retention, purge, backup/restore,
+//!                          cooperative host stop/start, runtime pins, sealed
+//!                          segment compression and the audit ledger
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -15,6 +21,9 @@ use std::path::PathBuf;
 
 use nai_lattice_gastown::GastownService;
 use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
+
+mod maintenance;
+mod verify_chain;
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt().with_env_filter("error").init();
@@ -61,6 +70,7 @@ fn main() -> ExitCode {
             println!("{}", serde_json::to_string_pretty(&hwm).unwrap());
             ExitCode::SUCCESS
         }
+        "verify-chain" => ExitCode::from(verify_chain::run(&args[2..])),
         "gastown" => {
             let sub = args.get(2).map(|s| s.as_str()).unwrap_or("health");
             if sub == "migrate-legacy" {
@@ -113,9 +123,10 @@ fn main() -> ExitCode {
             cli_log(&args);
             ExitCode::SUCCESS
         }
+        "maintenance" => ExitCode::from(maintenance::run(&args[2..])),
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: nai-lattice-cli [inspect|verify-ledger|rebuild [--projection hot-state]|verify <hash>|gastown <sub>|log <sub>]");
+            eprintln!("usage: nai-lattice-cli [inspect|verify-ledger|verify-chain [--json]|rebuild [--projection hot-state]|verify <hash>|gastown <sub>|log <sub>|maintenance <sub>]");
             ExitCode::from(2)
         }
     }

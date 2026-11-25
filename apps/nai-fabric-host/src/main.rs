@@ -18,6 +18,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::BytesMut;
@@ -27,15 +28,23 @@ use nai_lattice_gastown::events::{EventKind, GastownEvent};
 use nai_lattice_gastown::host_registry::{AttachState, HostRecord};
 use nai_lattice_gastown::GastownService;
 use nai_lattice_protocol::pb;
-use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig};
+use nai_lattice_runtime::lifecycle::{LockInspection, MaintenanceLock};
+use nai_lattice_runtime::{LatticeRuntime, RuntimeConfig, RuntimeState};
 
 mod naf_server;
 mod naf_json_bridge;
 mod win_acl;
 mod endpoints;
+mod activation;
 mod gastown_orto;
 mod dashboard_ui;
 mod lattice_dashboard;
+mod lattice_assets;
+mod lattice_broker;
+mod lattice_query;
+mod host_metrics;
+mod topology;
+mod lattice_trace_graph;
 mod notifications;
 mod release;
 mod convoy_a;
@@ -46,6 +55,199 @@ mod project;
 /// Canonical Lattice runtime root, set once at startup (GATE 2: production
 /// migration manifests + endpoint publication live here).
 pub(crate) static RUNTIME_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// In-flight NAF dispatches (all connections). `runtime.shutdown_if_idle` is
+/// only accepted when this is 1 (the shutdown request itself), so a cooperative
+/// stop never interrupts an append, query, or Gas Town operation.
+static IN_FLIGHT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Latched once a cooperative stop is accepted; further stop requests receive
+/// `already_stopping` instead of scheduling a second exit.
+static SHUTDOWN_ACCEPTED: AtomicBool = AtomicBool::new(false);
+
+/// Upper bound on how long the exit thread waits for already-admitted
+/// dispatches to finish before flushing and exiting anyway.
+const SHUTDOWN_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Time reserved for the accepted shutdown response to reach the client.
+const SHUTDOWN_RESPONSE_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Dispatch admission after the shutdown latch. Read-only discovery methods
+/// stay available so widgets can keep observing `draining`; everything else is
+/// refused instead of racing the exit.
+#[derive(Debug, PartialEq, Eq)]
+enum DispatchAdmission {
+    Admit,
+    Draining,
+}
+
+fn dispatch_admission(method: &str, shutdown_accepted: bool) -> DispatchAdmission {
+    if shutdown_accepted && !matches!(method, "runtime.health" | "runtime.describe") {
+        DispatchAdmission::Draining
+    } else {
+        DispatchAdmission::Admit
+    }
+}
+
+/// True when only the shutdown request itself remains in flight.
+fn shutdown_drained(in_flight: usize) -> bool {
+    in_flight <= 1
+}
+
+/// Pure stop gate: accept only when this is the sole in-flight request and no
+/// stop is already latched. Kept separate from the exit path so it is testable.
+#[derive(Debug, PartialEq, Eq)]
+enum ShutdownDecision {
+    Accept,
+    AlreadyStopping,
+    Busy(usize),
+}
+
+fn shutdown_decision(in_flight: usize, accepted: bool) -> ShutdownDecision {
+    if accepted {
+        ShutdownDecision::AlreadyStopping
+    } else if in_flight > 1 {
+        ShutdownDecision::Busy(in_flight - 1)
+    } else {
+        ShutdownDecision::Accept
+    }
+}
+
+/// Worker startup gate for the cross-process maintenance lease (NAIOS-006).
+/// A live (or unreadable = fail-closed) lock means the store belongs to a
+/// maintenance actor right now; opening it would race that actor.
+#[derive(Debug, PartialEq, Eq)]
+enum StartDecision {
+    Start,
+    Refuse(String),
+}
+
+/// Pure startup lease decision. Live -> refuse with owner/reason/expiry;
+/// Unreadable -> refuse with an actionable message (fail closed); Absent or
+/// Expired -> start.
+fn startup_lock_decision(inspection: &LockInspection) -> StartDecision {
+    match inspection {
+        LockInspection::Absent | LockInspection::Expired(_) => StartDecision::Start,
+        LockInspection::Live(record) => StartDecision::Refuse(format!(
+            "maintenance window is live (owner={} reason={} pid={} expires_at_unix_ms={}); \
+             refusing to open the store (NAIOS-006)",
+            record.owner, record.reason, record.pid, record.expires_at_unix_ms
+        )),
+        LockInspection::Unreadable {
+            error,
+            modified_at_unix_ms,
+        } => {
+            let modified = modified_at_unix_ms
+                .map(|ms| format!(" modified_at_unix_ms={ms}"))
+                .unwrap_or_default();
+            StartDecision::Refuse(format!(
+                "maintenance.lock.json is unreadable ({error};{modified}); failing closed instead \
+                 of opening the store: repair or remove the lock file and retry (NAIOS-006)"
+            ))
+        }
+    }
+}
+
+/// What the monitor does after the supervised worker exits.
+#[derive(Debug, PartialEq, Eq)]
+enum MonitorAction {
+    /// Clean exit (stop requested): end the monitor.
+    CleanExit,
+    /// Cooperative release swap: re-arm the cancel flag and respawn now.
+    RespawnAfterSwap,
+    /// Worker refused startup because a maintenance lease holds the store:
+    /// the monitor must end with the SAME code and must not respawn.
+    MaintenanceExit,
+    /// Any other non-clean exit: bounded backoff, then respawn.
+    CrashRetry,
+}
+
+fn monitor_action(exit: &nai_lattice_supervisor::ExitStatus) -> MonitorAction {
+    use nai_lattice_supervisor::ExitStatus;
+    match exit {
+        ExitStatus::Success => MonitorAction::CleanExit,
+        ExitStatus::Cancelled => MonitorAction::RespawnAfterSwap,
+        ExitStatus::ExitCode(75) => MonitorAction::MaintenanceExit,
+        _ => MonitorAction::CrashRetry,
+    }
+}
+
+/// Cooperative stop: latch draining, acknowledge, drain already-admitted work,
+/// flush the hot store, then exit the worker with code 0. The monitor treats a
+/// clean worker exit as "stop requested" (`ExitStatus::Success` -> monitor
+/// ends), so the whole host tree stops and never respawns into a maintenance
+/// window.
+fn host_shutdown_if_idle(rt: &Arc<LatticeRuntime>) -> (u32, Vec<u8>, String) {
+    let decision = shutdown_decision(
+        IN_FLIGHT_REQUESTS.load(Ordering::SeqCst),
+        SHUTDOWN_ACCEPTED.load(Ordering::SeqCst),
+    );
+    match decision {
+        ShutdownDecision::AlreadyStopping => {
+            let body = serde_json::json!({"accepted": false, "reason": "already_stopping"});
+            (
+                409,
+                serde_json::to_vec(&body).unwrap_or_default(),
+                "already stopping".to_string(),
+            )
+        }
+        ShutdownDecision::Busy(in_flight) => {
+            let body = serde_json::json!({
+                "accepted": false,
+                "reason": "busy",
+                "in_flight": in_flight,
+            });
+            (
+                409,
+                serde_json::to_vec(&body).unwrap_or_default(),
+                format!("busy: {in_flight} dispatches in flight"),
+            )
+        }
+        ShutdownDecision::Accept => {
+            SHUTDOWN_ACCEPTED.store(true, Ordering::SeqCst);
+            // Publish the transition BEFORE the flush so NAI OS widgets can pause
+            // polling on `draining` instead of logging transport errors, and the
+            // transition lands in the durable lifecycle trail.
+            rt.set_lifecycle_state_with_eta(
+                RuntimeState::Draining,
+                Some("runtime.shutdown_if_idle".to_string()),
+                Some(SHUTDOWN_RESPONSE_GRACE.as_millis() as u64),
+            );
+            let pid = std::process::id();
+            let rt = Arc::clone(rt);
+            std::thread::spawn(move || {
+                // Drain already-admitted dispatches BEFORE the durability flush:
+                // the old fixed 300 ms sleep could exit while an append/query
+                // was still running. The wait is bounded so a leaked request can
+                // never keep the host alive forever.
+                let deadline = std::time::Instant::now() + SHUTDOWN_DRAIN_DEADLINE;
+                while !shutdown_drained(IN_FLIGHT_REQUESTS.load(Ordering::SeqCst)) {
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!(
+                            in_flight = IN_FLIGHT_REQUESTS.load(Ordering::SeqCst),
+                            "runtime.shutdown_if_idle drain deadline elapsed; flushing and exiting"
+                        );
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                rt.flush_hotstore();
+                // Let the accepted response reach the client before the process ends.
+                std::thread::sleep(SHUTDOWN_RESPONSE_GRACE);
+                tracing::info!(pid, "runtime.shutdown_if_idle accepted; clean host stop");
+                std::process::exit(0);
+            });
+            let body = serde_json::json!({
+                "accepted": true,
+                "grace_ms": SHUTDOWN_RESPONSE_GRACE.as_millis() as u64,
+                "pid": pid,
+            });
+            // NAF success status is 0. Returning 200 here made every client
+            // report "rpc failure: status 200" even though the stop succeeded.
+            (0, serde_json::to_vec(&body).unwrap_or_default(), String::new())
+        }
+    }
+}
 
 fn main() {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -130,54 +332,119 @@ fn main() {
 /// of Kilo, VS Code, or any shell. Uses `nai_lattice_supervisor` (CREATE_NO_WINDOW,
 /// no console flash). A CLEAN exit (code 0, e.g. `stop`) ends the monitor.
 ///
-/// Live self-update: a background watcher polls `releases/current.json`. When a
-/// newer release is activated while this monitor is running, the running worker
-/// is torn down cooperatively and the monitor immediately respawns the worker
-/// from the newest artifact. No reboot and no manual relaunch required — the
-/// host continuously follows the release ladder (`current.json` is the single
-/// authority, written atomically by `helldesk-release install`).
+/// The monitor also owns R01 / NAIOS-001 activation (`activation.rs`): it polls
+/// the file handshake, drains the worker over NAF, starts the staged candidate
+/// through the SAME supervised spawn path, verifies the new endpoint, and
+/// commits the shared `active.json` pointer. The worker therefore never owns the
+/// swap operation or its response.
 fn run_monitor_main() {
-    use nai_lattice_supervisor::{ExitStatus, ProcessSpec, WorkerLimits};
+    use nai_lattice_supervisor::{ProcessSpec, WorkerLimits};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     // tracing already initialized in main(); do NOT re-init (would panic).
     let self_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("nai-fabric-host.exe"));
-    let restart_log = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
-        .join("NAI").join("Lattice").join("v1").join("host-restart.log");
 
     // Cooperative-stop flag shared by the watcher (writer) and the supervise
     // loop (reader). Reset to a fresh `false` before each supervised run.
     let cancel_flag = Arc::new(AtomicBool::new(false));
 
     // The version currently running as the supervised worker. The watcher sets
-    // the cancel flag only when `current.json` differs from THIS live value, so
-    // a swap is a one-shot event (no retrigger loop) and subsequent swaps keep
-    // working as releases advance.
+    // the cancel flag only when the active version differs from THIS live value,
+    // so a swap is a one-shot event (no retrigger loop).
     let running_version = Arc::new(std::sync::Mutex::new(
         release::current_version().unwrap_or_else(|| "unknown".to_string()),
     ));
 
-    // Background release watcher: when the active version differs from the one
-    // currently running, request the worker be torn down so the main loop
-    // respawns it from the newest artifact.
+    // Activation handshake (R01 / NAIOS-001). Disabled only when the environment
+    // cannot host it safely (for example an isolated instance without a scratch
+    // NAI_LATTICE_ROOT); the monitor still supervises the worker without it.
+    let isolated = std::env::var_os("NAI_LATTICE_INSTANCE").is_some();
+    let mut recovered_worker = None;
+    let activation = match activation::monitor_context(Arc::clone(&running_version)) {
+        Ok(ctx) => {
+            match activation::recover_on_start(&ctx) {
+                Ok(activation::RecoveryOutcome::Adopt(worker)) => {
+                    tracing::warn!(
+                        pid = worker.pid,
+                        version = %worker.version,
+                        "activation recovery found a live worker; it will be adopted"
+                    );
+                    recovered_worker = Some(worker);
+                }
+                Ok(activation::RecoveryOutcome::Nothing) => {}
+                Err(e) => tracing::warn!(error = %e, "activation journal recovery failed"),
+            }
+            activation::spawn_request_watcher(Arc::clone(&ctx));
+            // The worker advertises `activation` only when this monitor actually
+            // owns the handshake (feature discovery must never claim a disabled
+            // capability). The child inherits this marker.
+            std::env::set_var("NAI_LATTICE_ACTIVATION", "1");
+            Some(ctx)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "activation handshake disabled");
+            None
+        }
+    };
+
+    // Restart audit log. Keep it under the activation base so an isolated QA
+    // instance never appends to the production LOG; production keeps the legacy
+    // v1 path.
+    let restart_log = activation
+        .as_ref()
+        .map(|ctx| ctx.base.join("host-restart.log"))
+        .unwrap_or_else(|| {
+            if isolated {
+                std::env::temp_dir()
+                    .join("NAI")
+                    .join("Lattice")
+                    .join("host-restart.log")
+            } else {
+                std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("NAI")
+                    .join("Lattice")
+                    .join("v1")
+                    .join("host-restart.log")
+            }
+        });
+
+    // Background active-version watcher: when the shared `active.json` (or the
+    // legacy release pointer for a non-isolated monitor) differs from the worker
+    // currently running, request a cooperative teardown so the main loop
+    // respawns from the newest artifact.
     {
         let cancel_flag = Arc::clone(&cancel_flag);
         let running_version = Arc::clone(&running_version);
+        let activation = activation.clone();
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(2));
             if cancel_flag.load(Ordering::Relaxed) {
-                // Already swapping; wait for the main loop to re-arm.
                 continue;
             }
-            let Some(current) = release::current_version() else { continue };
+            // Never let the version watcher tear down a worker that the
+            // activation handshake is already swapping; the journal/status own
+            // that lifecycle until it is terminal.
+            if activation
+                .as_ref()
+                .map(|ctx| activation::activation_pending(ctx))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let current = activation
+                .as_ref()
+                .and_then(|ctx| activation::active_version(&ctx.base))
+                .or_else(|| if isolated { None } else { release::current_version() });
+            let Some(current) = current else { continue };
             let running = running_version.lock().map(|g| g.clone()).unwrap_or_default();
             if current != running {
-                tracing::info!(from = %running, to = %current, "release change detected; swapping worker");
+                tracing::info!(from = %running, to = %current, "active version changed; swapping worker");
                 cancel_flag.store(true, Ordering::Relaxed);
             }
         });
@@ -186,75 +453,258 @@ fn run_monitor_main() {
     let limits_base = WorkerLimits { timeout: Duration::from_secs(60 * 60 * 24 * 7), idle_timeout: None, cancel_flag: Some(Arc::clone(&cancel_flag)), ..Default::default() };
     let mut attempt = 0u32;
     loop {
-        // Resolve the worker binary from `current.json` so every spawn follows
-        // the newest activated release; fall back to this monitor's own exe.
-        let exe = release::current_artifact_exe().unwrap_or_else(|| self_exe.clone());
-        // Publish the version this spawn uses so the watcher compares against
-        // the live worker, not a stale launch-time snapshot.
-        if let Some(ver) = release::current_version() {
-            if let Ok(mut g) = running_version.lock() {
-                *g = ver;
+        let adopted = match (activation.as_ref(), recovered_worker.take()) {
+            (Some(ctx), Some(worker)) => {
+                let exe = worker.exe.clone();
+                let outcome = activation::supervise_adopted(ctx, worker, &cancel_flag);
+                Some((exe, outcome))
+            }
+            _ => None,
+        };
+        let (exe, outcome) = if let Some(pair) = adopted {
+            pair
+        } else {
+            // Resolve the worker binary from the shared `active.json` first (the
+            // canonical activation contract), then the legacy release pointer for
+            // non-isolated production, then this monitor's own executable.
+            let exe = activation
+                .as_ref()
+                .and_then(|ctx| activation::active_artifact_exe(&ctx.base))
+                .or_else(|| if isolated { None } else { release::current_artifact_exe() })
+                .unwrap_or_else(|| self_exe.clone());
+            // Publish the version this spawn uses so the watcher compares against
+            // the live worker, not a stale launch-time snapshot.
+            let resolved_version = activation
+                .as_ref()
+                .and_then(|ctx| activation::version_for_exe(&ctx.base, &exe))
+                .or_else(|| if isolated { None } else { release::current_version() })
+                .unwrap_or_else(|| "unknown".to_string());
+            if let Ok(mut guard) = running_version.lock() {
+                *guard = resolved_version;
+            }
+            let limits = WorkerLimits { cancel_flag: Some(Arc::clone(&cancel_flag)), ..limits_base.clone() };
+            let spec = ProcessSpec {
+                program: exe.clone(),
+                args: vec!["--child".to_string()],
+                cwd: None,
+                env: BTreeMap::new(), // inherit env
+                no_console: true,
+                no_capture: true, // worker output is unlogged; keeps live swap prompt
+            };
+            let outcome = match nai_lattice_supervisor::child::run(&spec, &limits) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("monitor: failed to spawn worker: {e}; retrying in 2s");
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            };
+            (exe, outcome)
+        };
+        log_worker_exit(&restart_log, &outcome);
+
+        // Activation: a journal (or an accepted request) owns this exit. Never
+        // treat a clean exit as "stop" while the operation is unresolved.
+        let mut respawn_override = false;
+        let mut swap_outcome: Option<(PathBuf, nai_lattice_supervisor::WorkerOutcome)> = None;
+        if let Some(ctx) = &activation {
+            if activation::activation_pending(ctx) {
+                match activation::run_swap(
+                    ctx,
+                    exe.clone(),
+                    outcome.clone(),
+                    &limits_base,
+                    &cancel_flag,
+                ) {
+                    activation::SwapOutcome::Supervised {
+                        exe: swapped_exe,
+                        outcome: swapped_outcome,
+                        respawn_override: override_clean,
+                    } => {
+                        log_worker_exit(&restart_log, &swapped_outcome);
+                        respawn_override = override_clean;
+                        swap_outcome = Some((swapped_exe, swapped_outcome));
+                    }
+                    activation::SwapOutcome::Retry { detail } => {
+                        tracing::warn!(%detail, "activation swap needs a retry; respawning active artifact");
+                        cancel_flag.store(false, Ordering::Relaxed);
+                        attempt = attempt.saturating_add(1);
+                        std::thread::sleep(Duration::from_millis(
+                            500u64 * (2u64.pow(attempt.min(5))),
+                        ));
+                        continue;
+                    }
+                }
             }
         }
-        let limits = WorkerLimits { cancel_flag: Some(Arc::clone(&cancel_flag)), ..limits_base.clone() };
-        let spec = ProcessSpec {
-            program: exe.clone(),
-            args: vec!["--child".to_string()],
-            cwd: None,
-            env: BTreeMap::new(), // inherit env
-            no_console: true,
-            no_capture: true, // worker output is unlogged; keeps live swap prompt
+        let exited_outcome = match swap_outcome {
+            Some((_swapped_exe, swapped_outcome)) => swapped_outcome,
+            None => outcome,
         };
-        let outcome = match nai_lattice_supervisor::child::run(&spec, &limits) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("monitor: failed to spawn worker: {e}; retrying in 2s");
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
+        let pending_now = activation
+            .as_ref()
+            .map(|ctx| activation::activation_pending(ctx))
+            .unwrap_or(false);
+        let decision = monitor_next(
+            &exited_outcome,
+            respawn_override || pending_now,
+            &mut attempt,
+        );
+        match decision {
+            MonitorNext::Exit(code) => {
+                if code == 0 {
+                    tracing::info!(pid = exited_outcome.pid, "worker exited cleanly; monitor ending");
+                } else {
+                    tracing::warn!(
+                        pid = exited_outcome.pid,
+                        exit = format!("{:?}", exited_outcome.exit_status),
+                        code,
+                        "monitor exiting with the worker's refusal code"
+                    );
+                }
+                std::process::exit(code);
             }
-        };
-        // Log the exit so restart/recovery is auditable.
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let line = format!("{ts} worker_pid={} exit={:?} wall_ms={} was_timeout={}\n", outcome.pid, outcome.exit_status, outcome.wall_ms, outcome.was_timed_out);
-        let _ = std::fs::OpenOptions::new().create(true).append(true).open(&restart_log).and_then(|mut f| { use std::io::Write as _; f.write_all(line.as_bytes()) });
-
-        match outcome.exit_status {
-            ExitStatus::Success => {
-                // Clean shutdown (e.g. requested stop): end the monitor.
-                tracing::info!(pid = outcome.pid, "worker exited cleanly; monitor ending");
-                std::process::exit(0);
-            }
-            ExitStatus::Cancelled => {
-                // Cooperative stop requested by the release watcher: the worker is
-                // being swapped to a newer release. Re-arm the flag, log the swap,
-                // and immediately respawn (no crash backoff).
-                cancel_flag.store(false, Ordering::Relaxed);
-                let next = release::current_version().unwrap_or_else(|| "unknown".to_string());
-                tracing::info!(pid = outcome.pid, to = %next, "worker swapped; respawning on newest release");
-                attempt = 0;
-            }
-            _ => {
-                // Crash: restart with bounded backoff.
-                attempt = attempt.saturating_add(1);
-                let backoff_ms = 500u64 * (2u64.pow(attempt.min(5))); // 0.5s..16s cap
-                tracing::warn!(
-                    pid = outcome.pid,
-                    exit = format!("{:?}", outcome.exit_status),
-                    attempt,
-                    "worker crashed; restarting",
-                );
-                std::thread::sleep(Duration::from_millis(backoff_ms));
+            MonitorNext::Continue { backoff, reset_cancel } => {
+                if reset_cancel {
+                    cancel_flag.store(false, Ordering::Relaxed);
+                }
+                if !backoff.is_zero() {
+                    std::thread::sleep(backoff);
+                }
             }
         }
     }
 }
 
-/// The actual singleton worker: open the runtime, enforce singleton, publish
-/// endpoints, register the domain service, rehydrate migration, serve NAF/1.
+fn log_worker_exit(restart_log: &std::path::Path, outcome: &nai_lattice_supervisor::WorkerOutcome) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!(
+        "{ts} worker_pid={} exit={:?} wall_ms={} was_timeout={}\n",
+        outcome.pid, outcome.exit_status, outcome.wall_ms, outcome.was_timed_out
+    );
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(restart_log)
+        .and_then(|mut f| {
+            use std::io::Write as _;
+            f.write_all(line.as_bytes())
+        });
+}
+
+enum MonitorNext {
+    Continue {
+        backoff: std::time::Duration,
+        reset_cancel: bool,
+    },
+    Exit(i32),
+}
+
+/// Apply the existing monitor semantics, with one addition: a clean exit caused
+/// by a failed/aborted activation (`keep_alive`) respawns the restored artifact
+/// instead of ending the monitor.
+fn monitor_next(
+    outcome: &nai_lattice_supervisor::WorkerOutcome,
+    keep_alive: bool,
+    attempt: &mut u32,
+) -> MonitorNext {
+    match monitor_action(&outcome.exit_status) {
+        MonitorAction::CleanExit if keep_alive => {
+            tracing::warn!(
+                pid = outcome.pid,
+                "clean worker exit belongs to an activation handover; respawning"
+            );
+            *attempt = 0;
+            MonitorNext::Continue {
+                backoff: std::time::Duration::ZERO,
+                reset_cancel: true,
+            }
+        }
+        MonitorAction::CleanExit => MonitorNext::Exit(0),
+        MonitorAction::RespawnAfterSwap => {
+            let next = release::current_version().unwrap_or_else(|| "unknown".to_string());
+            tracing::info!(pid = outcome.pid, to = %next, "worker swapped; respawning on newest release");
+            *attempt = 0;
+            MonitorNext::Continue {
+                backoff: std::time::Duration::ZERO,
+                reset_cancel: true,
+            }
+        }
+        MonitorAction::MaintenanceExit => {
+            tracing::warn!(
+                pid = outcome.pid,
+                exit = format!("{:?}", outcome.exit_status),
+                "worker refused startup: maintenance lease held (exit 75); monitor exiting without respawn",
+            );
+            MonitorNext::Exit(75)
+        }
+        MonitorAction::CrashRetry => {
+            *attempt = attempt.saturating_add(1);
+            let backoff_ms = 500u64 * (2u64.pow((*attempt).min(5))); // 0.5s..16s cap
+            tracing::warn!(
+                pid = outcome.pid,
+                exit = format!("{:?}", outcome.exit_status),
+                attempt = *attempt,
+                "worker crashed; restarting",
+            );
+            MonitorNext::Continue {
+                backoff: std::time::Duration::from_millis(backoff_ms),
+                reset_cancel: false,
+            }
+        }
+    }
+}
+
+/// The actual singleton worker: enforce the (per-identity) singleton, refuse to
+/// start under a live maintenance lease, open the runtime, publish endpoints,
+/// register the domain service, rehydrate migration, serve NAF/1.
 fn run_worker_main() {
     let config = RuntimeConfig::default();
     let runtime_root = config.root.clone();
     let _ = RUNTIME_ROOT.set(config.root.to_string_lossy().into_owned());
+
+    // Isolated QA endpoint identity (DASHBOARD_API §6.1). Parsed BEFORE any
+    // shared resource is touched: an invalid NAI_LATTICE_INSTANCE must fail
+    // startup, not silently fall back to the production identity.
+    let endpoints = match endpoints::Endpoints::discover() {
+        Ok(ep) => ep,
+        Err(e) => {
+            eprintln!("fatal: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // Per-user (or per-QA-instance) singleton enforcement (GATE 5): exactly one
+    // persistent host per identity. Held for the whole worker lifetime, before
+    // the store is touched.
+    let Some(mutex) = win_acl::acquire_singleton(endpoints.instance.as_deref()) else {
+        let instance = endpoints
+            .instance
+            .as_deref()
+            .map(|name| format!(" (instance {name})"))
+            .unwrap_or_default();
+        eprintln!("another nai-fabric-host singleton is already running{instance}; exiting");
+        std::process::exit(0);
+    };
+    let _guard = win_acl::SingletonGuard(mutex);
+    tracing::info!(instance = ?endpoints.instance, "singleton acquired");
+
+    // NAIOS-006: a maintenance window owns the store. Inspect the cross-process
+    // lease AFTER winning the singleton and BEFORE opening the runtime, so we
+    // never race the maintenance actor for the ledger. Live -> exit 75 with the
+    // holder; Unreadable -> exit 75 (fail closed). The monitor treats 75 as
+    // terminal and does not respawn.
+    let lock_inspection = MaintenanceLock::new(&config.root).inspect();
+    if let StartDecision::Refuse(reason) = startup_lock_decision(&lock_inspection) {
+        tracing::warn!(%reason, "refusing to start worker");
+        eprintln!("fatal: {reason}");
+        std::process::exit(75);
+    }
+
     let rt = match LatticeRuntime::open(config) {
         Ok(rt) => Arc::new(rt),
         Err(e) => {
@@ -264,25 +714,36 @@ fn run_worker_main() {
     };
     tracing::info!(instance = %rt.instance_id, "NAI fabric host ready");
 
-    // Per-user singleton enforcement (GATE 5): exactly one persistent host.
-    if let Some(mutex) = win_acl::acquire_singleton() {
-        let _guard = win_acl::SingletonGuard(mutex);
-        tracing::info!("singleton acquired");
-        // Register the unpackaged toast identity (AUMID) so Gas Town can surface
-        // native Windows notifications for completed convoys / failures / etc.
-        #[cfg(windows)]
-        {
-            let reg = crate::notifications::register_native_toast_identity();
-            tracing::info!(aumid_registered = reg, "Gas Town toast identity");
-        }
-    } else {
-        eprintln!("another nai-fabric-host singleton is already running; exiting");
-        std::process::exit(0);
+    // Truthful discovery: the runtime is the single feature/version surface NAI OS
+    // gates on. `HOST_FEATURES` is the ONE host-owned list (also merged into
+    // `/lattice/api/summary`), so `runtime.describe.features` and the summary can
+    // never disagree. Dashboard provenance comes from the embedded bundle.
+    let mut host_features: Vec<&str> = crate::lattice_dashboard::HOST_FEATURES.to_vec();
+    if std::env::var("NAI_LATTICE_ACTIVATION").ok().as_deref() == Some("1") {
+        host_features.push("activation");
+    }
+    // DASHBOARD_API §8: `gpu_metrics` is a real capability only when a GPU was
+    // actually observed at startup. An absent/failed probe leaves it out; the
+    // endpoint still serves `host_metrics` with `gpu: null`, `source: "none"`.
+    if crate::host_metrics::gpu_available() {
+        host_features.push("gpu_metrics");
+    }
+    rt.register_host_features(&host_features);
+    if crate::lattice_assets::bundle_present() {
+        rt.set_dashboard_version(crate::lattice_assets::bundle_version());
+    }
+
+    // Register the unpackaged toast identity (AUMID) so Gas Town can surface
+    // native Windows notifications for completed convoys / failures / etc.
+    #[cfg(windows)]
+    {
+        let reg = crate::notifications::register_native_toast_identity();
+        tracing::info!(aumid_registered = reg, "Gas Town toast identity");
     }
 
     // Canonical per-user endpoint + legacy alias (same singleton, same dispatcher).
-    let endpoints = endpoints::Endpoints::discover();
-    tracing::info!(canonical = %endpoints.canonical, alias = %endpoints.legacy_alias, sid = %endpoints.user_sid, "endpoint identity");
+    // Isolated QA instances serve one suffixed pipe and no username alias.
+    tracing::info!(canonical = %endpoints.canonical, alias = %endpoints.legacy_alias, sid = %endpoints.user_sid, instance = ?endpoints.instance, "endpoint identity");
 
     // Atomically publish the endpoint manifest into the Lattice runtime root so
     // @nai-lattice/client discovers the canonical pipe without manual config.
@@ -405,25 +866,50 @@ pub(crate) fn handle_connection<S: Read + Write>(
             _ => break,
         };
 
-        // Gas Town domain methods are dispatched to the owned GastownService.
-        let (status, body, error) = if method.starts_with("gastown.") {
-            dispatch_gastown(&method, &args, &producer, idem.as_deref(), rt, gastown, now_unix_ms())
-        } else if method == "event.append" || method == "event.append_batch" {
-            // Canonical append through the runtime, then replay into the
-            // Gas Town projection when the producer is the Gas Town host.
-            let result = rt.dispatch(&method, &args, &producer, idem.as_deref());
-            match result {
-                Ok(body) => {
-                    maybe_replay_gastown(&args, &producer, rt, gastown);
-                    (0, body, String::new())
-                }
-                Err(e) => (500, Vec::new(), e.to_string()),
+        // After the shutdown latch only read-only discovery is admitted. Every
+        // other dispatch is refused with a draining error so it cannot race the
+        // exit path; in-flight counting covers admitted work only.
+        let (status, body, error) = match dispatch_admission(
+            &method,
+            SHUTDOWN_ACCEPTED.load(Ordering::SeqCst),
+        ) {
+            DispatchAdmission::Draining => {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "ok": false,
+                    "reason": "draining",
+                }))
+                .unwrap_or_default();
+                (503, body, "draining: runtime is shutting down".to_string())
             }
-        } else {
-            let result = rt.dispatch(&method, &args, &producer, idem.as_deref());
-            match result {
-                Ok(body) => (0, body, String::new()),
-                Err(e) => (500, Vec::new(), e.to_string()),
+            DispatchAdmission::Admit => {
+                // Count in-flight dispatches so `runtime.shutdown_if_idle` only
+                // lands when no other NAF work is executing (busy -> 409, no stop).
+                IN_FLIGHT_REQUESTS.fetch_add(1, Ordering::SeqCst);
+                // Gas Town domain methods are dispatched to the owned GastownService.
+                let result = if method == "runtime.shutdown_if_idle" {
+                    host_shutdown_if_idle(rt)
+                } else if method.starts_with("gastown.") {
+                    dispatch_gastown(&method, &args, &producer, idem.as_deref(), rt, gastown, now_unix_ms())
+                } else if method == "event.append" || method == "event.append_batch" {
+                    // Canonical append through the runtime, then replay into the
+                    // Gas Town projection when the producer is the Gas Town host.
+                    let result = rt.dispatch(&method, &args, &producer, idem.as_deref());
+                    match result {
+                        Ok(body) => {
+                            maybe_replay_gastown(&args, &producer, rt, gastown);
+                            (0, body, String::new())
+                        }
+                        Err(e) => (500, Vec::new(), e.to_string()),
+                    }
+                } else {
+                    let result = rt.dispatch(&method, &args, &producer, idem.as_deref());
+                    match result {
+                        Ok(body) => (0, body, String::new()),
+                        Err(e) => (500, Vec::new(), e.to_string()),
+                    }
+                };
+                IN_FLIGHT_REQUESTS.fetch_sub(1, Ordering::SeqCst);
+                result
             }
         };
         let resp_env = pb::Envelope {
@@ -1151,6 +1637,11 @@ fn build_handshake_response(
 
     // The runtime's capabilities PLUS any owned subsystems (Gas Town domain).
     let mut offered: Vec<&str> = rt.capabilities();
+    // Host-level control capability: served by `handle_connection`, not by
+    // `LatticeRuntime::dispatch`, so it must be advertised here explicitly.
+    if !offered.contains(&"runtime.shutdown_if_idle") {
+        offered.push("runtime.shutdown_if_idle");
+    }
     for c in extra_caps {
         if !offered.contains(c) {
             offered.push(c);
@@ -1164,7 +1655,7 @@ fn build_handshake_response(
     }
 
     Ok(pb::HandshakeResponse {
-        runtime_version: "0.1.0".to_string(),
+        runtime_version: env!("CARGO_PKG_VERSION").to_string(),
         runtime_build_sha: "dev".to_string(),
         selected_naf_version: selected,
         capabilities: offered
@@ -1177,10 +1668,23 @@ fn build_handshake_response(
             .collect(),
         runtime_instance_id: rt.instance_id.clone(),
         storage_schema_version: 1,
-        health: Some(pb::Health {
-            state: "healthy".to_string(),
-            detail: String::new(),
-            lanes: Vec::new(),
+        health: Some({
+            // Truthful state: NAI OS must never see a hardcoded "healthy" while
+            // the runtime is draining, degraded or in maintenance (NAIOS-017).
+            let snapshot = rt.lifecycle_json();
+            pb::Health {
+                state: snapshot
+                    .get("state")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                detail: snapshot
+                    .get("detail")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                lanes: Vec::new(),
+            }
         }),
     })
 }
@@ -1191,6 +1695,146 @@ mod tests {
     use std::collections::VecDeque;
     use std::io::{Read, Write};
     use prost::Message;
+
+    #[test]
+    fn shutdown_gate_only_accepts_when_idle() {
+        assert_eq!(shutdown_decision(1, false), ShutdownDecision::Accept);
+        assert_eq!(shutdown_decision(2, false), ShutdownDecision::Busy(1));
+        assert_eq!(shutdown_decision(9, false), ShutdownDecision::Busy(8));
+        assert_eq!(shutdown_decision(1, true), ShutdownDecision::AlreadyStopping);
+        assert_eq!(shutdown_decision(3, true), ShutdownDecision::AlreadyStopping);
+    }
+
+    #[test]
+    fn shutdown_admission_refuses_work_but_keeps_discovery_readable() {
+        // Before the latch everything is admitted.
+        assert_eq!(
+            dispatch_admission("event.append", false),
+            DispatchAdmission::Admit
+        );
+        assert_eq!(
+            dispatch_admission("runtime.health", false),
+            DispatchAdmission::Admit
+        );
+        // After the latch only the read-only discovery methods survive so a
+        // widget can observe `draining`.
+        assert_eq!(
+            dispatch_admission("runtime.health", true),
+            DispatchAdmission::Admit
+        );
+        assert_eq!(
+            dispatch_admission("runtime.describe", true),
+            DispatchAdmission::Admit
+        );
+        for method in [
+            "event.append",
+            "event.read_range",
+            "gastown.admin.health",
+            "runtime.shutdown_if_idle",
+            "runtime.maintenance.acquire",
+        ] {
+            assert_eq!(
+                dispatch_admission(method, true),
+                DispatchAdmission::Draining,
+                "{method} must be refused after the shutdown latch"
+            );
+        }
+    }
+
+    #[test]
+    fn shutdown_drain_waits_for_other_requests_only() {
+        // 1 = the shutdown request itself, 0 = it already returned.
+        assert!(shutdown_drained(1));
+        assert!(shutdown_drained(0));
+        assert!(!shutdown_drained(2));
+        assert!(!shutdown_drained(8));
+    }
+
+    fn lock_record(expires_at_unix_ms: i64) -> nai_lattice_runtime::lifecycle::MaintenanceLockRecord {
+        nai_lattice_runtime::lifecycle::MaintenanceLockRecord {
+            schema: nai_lattice_runtime::lifecycle::MAINTENANCE_LOCK_SCHEMA,
+            owner: "nai-os".into(),
+            reason: "prune".into(),
+            token: "token-never-logged".into(),
+            pid: 4242,
+            acquired_at_unix_ms: 1_764_000_000_000,
+            expires_at_unix_ms,
+        }
+    }
+
+    #[test]
+    fn startup_lock_decision_blocks_live_and_unreadable_and_allows_absent_expired() {
+        use nai_lattice_runtime::lifecycle::LockInspection;
+
+        match startup_lock_decision(&LockInspection::Live(lock_record(9_999_999_999_999))) {
+            StartDecision::Refuse(message) => {
+                assert!(message.contains("owner=nai-os"), "owner missing: {message}");
+                assert!(message.contains("reason=prune"), "reason missing: {message}");
+                assert!(
+                    message.contains("9999999999999"),
+                    "expiry missing: {message}"
+                );
+                assert!(
+                    !message.contains("token-never-logged"),
+                    "the fencing token must never be logged: {message}"
+                );
+            }
+            other => panic!("live lock must refuse startup, got {other:?}"),
+        }
+
+        match startup_lock_decision(&LockInspection::Unreadable {
+            error: "torn write".into(),
+            modified_at_unix_ms: Some(1_764_000_000_123),
+        }) {
+            StartDecision::Refuse(message) => {
+                assert!(message.contains("unreadable"), "not actionable: {message}");
+                assert!(message.contains("torn write"), "cause missing: {message}");
+                assert!(
+                    message.contains("repair or remove"),
+                    "must tell the operator what to do: {message}"
+                );
+            }
+            other => panic!("unreadable lock must fail closed, got {other:?}"),
+        }
+
+        assert_eq!(
+            startup_lock_decision(&LockInspection::Absent),
+            StartDecision::Start
+        );
+        assert_eq!(
+            startup_lock_decision(&LockInspection::Expired(lock_record(1))),
+            StartDecision::Start,
+            "an expired lease is reclaimable and must not block startup"
+        );
+    }
+
+    #[test]
+    fn monitor_ends_on_maintenance_exit_and_preserves_other_semantics() {
+        use nai_lattice_supervisor::ExitStatus;
+        assert_eq!(
+            monitor_action(&ExitStatus::ExitCode(75)),
+            MonitorAction::MaintenanceExit,
+            "a worker that refuses startup under a maintenance lease must not respawn"
+        );
+        assert_eq!(monitor_action(&ExitStatus::Success), MonitorAction::CleanExit);
+        assert_eq!(
+            monitor_action(&ExitStatus::Cancelled),
+            MonitorAction::RespawnAfterSwap,
+            "release swaps must still respawn immediately"
+        );
+        for crash in [
+            ExitStatus::ExitCode(1),
+            ExitStatus::Terminated,
+            ExitStatus::TimedOut,
+            ExitStatus::SpawnFailed("boom".into()),
+        ] {
+            assert_eq!(
+                monitor_action(&crash),
+                MonitorAction::CrashRetry,
+                "{crash:?} must keep the bounded-backoff restart path"
+            );
+        }
+    }
 
     /// Minimal synchronous duplex: reads from `incoming`, writes to `outgoing`.
     struct TestDuplex {

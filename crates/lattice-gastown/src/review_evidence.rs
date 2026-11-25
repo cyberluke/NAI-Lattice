@@ -210,14 +210,14 @@ mod tests {
 
     #[test]
     fn snippet_outside_cited_range_is_unverified() {
-        // `acquire_singleton()` genuinely appears at main.rs line 142.
-        // Citing lines 1..10 with that snippet: the snippet IS in the file but
-        // NOT within the cited range => must be UNVERIFIED (not Verified).
+        // `run_worker_main()` genuinely appears in main.rs. Citing lines 1..10
+        // with that snippet: the snippet IS in the file but NOT within the cited
+        // range => must be UNVERIFIED (not Verified).
         let idx = sample_index();
         let ev = CitedEvidence {
             path: "apps/nai-fabric-host/src/main.rs".into(),
             lines: Some((1, 10)),
-            snippet: Some("win_acl::acquire_singleton()".into()),
+            snippet: Some("fn run_worker_main()".into()),
         };
         assert_eq!(idx.verify(&ev, &[]), EvidenceVerdict::Unverified,
             "snippet exists in file but outside the cited line range => not Verified");
@@ -226,14 +226,14 @@ mod tests {
     #[test]
     fn snippet_in_cited_range_is_verified_even_if_also_elsewhere() {
         let idx = sample_index();
-        // Locate the actual line where `acquire_singleton()` appears in main.rs
+        // Locate the actual line where `run_worker_main()` appears in main.rs
         // so this test is robust to unrelated edits that shift line numbers (the
         // semantic is "snippet present within the cited range => Verified").
-        let line = line_containing("apps/nai-fabric-host/src/main.rs", "win_acl::acquire_singleton()");
+        let line = line_containing("apps/nai-fabric-host/src/main.rs", "fn run_worker_main()");
         let ev = CitedEvidence {
             path: "apps/nai-fabric-host/src/main.rs".into(),
             lines: Some((line, line)),
-            snippet: Some("win_acl::acquire_singleton()".into()),
+            snippet: Some("fn run_worker_main()".into()),
         };
         assert_eq!(idx.verify(&ev, &[]), EvidenceVerdict::Verified,
             "snippet present within the cited line range => Verified (existence only)");
@@ -256,11 +256,11 @@ mod tests {
     #[test]
     fn real_file_valid_range_snippet_is_verified() {
         let idx = sample_index();
-        let line = line_containing("apps/nai-fabric-host/src/main.rs", "win_acl::acquire_singleton()");
+        let line = line_containing("apps/nai-fabric-host/src/main.rs", "fn run_worker_main()");
         let ev = CitedEvidence {
             path: "apps/nai-fabric-host/src/main.rs".into(),
             lines: Some((line, line)),
-            snippet: Some("win_acl::acquire_singleton()".into()),
+            snippet: Some("fn run_worker_main()".into()),
         };
         assert_eq!(idx.verify(&ev, &[]), EvidenceVerdict::Verified);
     }

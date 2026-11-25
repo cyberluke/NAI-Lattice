@@ -1,0 +1,122 @@
+/*
+ * dockview-theme-nai: interaction geometry inherited from Dockview, colors
+ * from the NAI palette. Radius is zero everywhere; hairlines use the shared
+ * token so high-DPI screens render one device pixel.
+ */
+.dockview-theme-nai {
+  --dv-group-view-background-color: var(--nai-panel);
+  --dv-tabs-and-actions-container-background-color: var(--nai-panel-2);
+  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-font-size: var(--nai-font-size-sm);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--nai-panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--nai-panel-2);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--nai-panel);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--nai-panel-2);
+  --dv-activegroup-visiblepanel-tab-color: var(--nai-fg);
+  --dv-activegroup-hiddenpanel-tab-color: var(--nai-muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--nai-muted);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--nai-dim);
+  --dv-tab-divider-color: var(--nai-line);
+  --dv-separator-border: var(--nai-line);
+  --dv-paneview-header-border-color: var(--nai-line);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--nai-accent);
+  --dv-active-sash-transition-duration: 0.12s;
+  --dv-drag-over-background-color: rgba(25, 194, 216, 0.14);
+  --dv-drag-over-border: 1px solid var(--nai-accent);
+  --dv-drag-over-border-color: var(--nai-accent);
+  --dv-edge-dock-indicator-color: var(--nai-accent);
+  --dv-edge-drop-strip-size: 6px;
+  --dv-icon-hover-background-color: rgba(25, 194, 216, 0.12);
+  --dv-tabs-container-scrollbar-color: var(--nai-scrollbar-thumb);
+  --dv-floating-box-shadow: var(--nai-shadow);
+  --dv-floating-border: var(--nai-hairline) solid var(--nai-line-strong);
+  --dv-floating-titlebar-background-color: var(--nai-panel-2);
+  --dv-floating-titlebar-border-bottom: var(--nai-hairline) solid var(--nai-line);
+  --dv-floating-titlebar-height: 22px;
+  --dv-overlay-z-index: 30;
+  --dv-tab-font-size: var(--nai-font-size-sm);
+  --dv-tab-group-chip-border-radius: 0px;
+  --dv-tab-group-chip-padding: 4px 8px;
+  --dv-border-radius: 0px;
+  --dv-tab-border-radius: 0px;
+  --dv-sash-border-radius: 0px;
+  --dv-dropdown-border-radius: 0px;
+  --dv-tab-margin: 0;
+  --dv-spacing-padding: 0;
+  --dv-transition-duration: 120ms;
+  --dv-floating-group-border: var(--nai-hairline) solid var(--nai-line-strong);
+  --dv-floating-group-dragging-opacity: 0.72;
+}
+
+.dockview-theme-nai .dv-tabs-and-actions-container {
+  border-bottom: var(--nai-hairline) solid var(--nai-line);
+}
+
+/* The panel root owns the scroll pane; Dockview must never add a second
+   scrollbar or let a tab body exceed the group's content box. */
+.dockview-theme-nai .dv-content-container,
+.dockview-theme-nai .dv-vue-part {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dockview-theme-nai .dv-tab {
+  padding: 0 10px;
+  border-right: var(--nai-hairline) solid var(--nai-line);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  gap: 6px;
+}
+
+.dockview-theme-nai .dv-tab.dv-active-tab {
+  color: var(--nai-accent);
+  box-shadow: inset 0 -1px 0 var(--nai-accent);
+}
+
+.dockview-theme-nai .dv-tab:focus-visible,
+.dockview-theme-nai .dv-sash:focus-visible,
+.dockview-theme-nai .dv-floating-titlebar:focus-visible {
+  outline: 1px solid var(--nai-focus);
+  outline-offset: -1px;
+}
+
+.dockview-theme-nai .dv-void-container {
+  cursor: default;
+}
+
+.dockview-theme-nai .dv-sash {
+  transition-duration: var(--dv-transition-duration);
+}
+
+.dockview-theme-nai .dv-resize-container {
+  border-radius: 0;
+}
+
+.dockview-theme-nai .dv-floating-titlebar {
+  cursor: move;
+  border-radius: 0;
+}
+
+.dockview-theme-nai .dv-groupview {
+  border-radius: 0;
+}
+
+.dockview-theme-nai .dv-scrollbar {
+  border-radius: 0;
+}
+
+.dockview-theme-nai .dv-watermark {
+  color: var(--nai-muted);
+  font-family: var(--nai-font-ui);
+  font-size: var(--nai-font-size);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dockview-theme-nai {
+    --dv-transition-duration: 0ms;
+    --dv-active-sash-transition-duration: 0s;
+  }
+}

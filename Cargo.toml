@@ -21,6 +21,7 @@ members = [
   "crates/lattice-provider-filesystem",
   "crates/lattice-observability",
   "crates/lattice-runtime",
+  "crates/lattice-storage",
   "crates/lattice-client",
   "crates/lattice-testkit",
   "crates/lattice-supervisor",
@@ -31,7 +32,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cyberluke/NAI-Lattice"
@@ -72,6 +73,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # ── observability ─────────────────────────────────────────────────────────
 tracing-appender = "0.2"
+# ── sealed-segment compression (S03 / NAIOS-011/012) ──────────────────────
+zstd = { version = "0.13", features = ["zdict_builder"] }
 
 [profile.release]
 lto = "thin"

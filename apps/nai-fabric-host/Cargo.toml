@@ -22,7 +22,11 @@ nai-lattice-runtime = { path = "../../crates/lattice-runtime" }
 nai-lattice-gastown = { path = "../../crates/lattice-gastown" }
 nai-lattice-ledger = { path = "../../crates/lattice-ledger" }
 nai-lattice-supervisor = { path = "../../crates/lattice-supervisor" }
+nai-lattice-client = { path = "../../crates/lattice-client" }
 rusqlite = { version = "0.31", features = ["bundled"] }
+sha2 = "0.10"
+tokio.workspace = true
+uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -33,9 +37,13 @@ blake3.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true }
 
+[build-dependencies]
+# Verifies the compiled dashboard bundle (size + BLAKE3) before embedding it.
+blake3.workspace = true
+serde_json.workspace = true
+
 [dev-dependencies]
 tempfile = "3"
-nai-lattice-client = { path = "../../crates/lattice-client" }
 nai-lattice-hotstore = { path = "../../crates/lattice-hotstore" }
 blake3.workspace = true
 tokio = { workspace = true, features = ["full"] }
@@ -47,6 +55,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Pipes",
     "Win32_System_IO",
     "Win32_System_Threading",
+    "Win32_System_SystemInformation",
     "Win32_Storage_FileSystem",
     "Win32_Security_Authorization",
     "Win32_UI_Notifications",

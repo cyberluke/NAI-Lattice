@@ -1,0 +1,69 @@
+/*
+ * Single source of truth for NAI Lattice visual tokens.
+ * Dark, dense, monospace, cyan/graphite. Radius 0. State color only.
+ */
+:root {
+  --nai-bg: #0a0d12;
+  --nai-panel: #11151c;
+  --nai-panel-2: #0d1117;
+  --nai-panel-3: #151b24;
+  --nai-line: #1f2630;
+  --nai-line-strong: #2a3542;
+  --nai-fg: #e6edf3;
+  --nai-muted: #8b98a5;
+  --nai-dim: #6a7480;
+  --nai-accent: #19c2d8;
+  --nai-accent-strong: #52e0ef;
+  --nai-ok: #26de81;
+  --nai-warn: #ffce54;
+  --nai-bad: #ff6b6b;
+  --nai-search: #f7b731;
+
+  --nai-hover: rgba(25, 194, 216, 0.08);
+  --nai-selected: rgba(25, 194, 216, 0.16);
+  --nai-focus: #52e0ef;
+  --nai-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+
+  --nai-scrollbar-thumb: #33404d;
+  --nai-kpi-border: #23505a;
+  --nai-kpi-bg-end: #0a1720;
+  --nai-row-line: #141a22;
+  --nai-warn-bg: #15130c;
+  --nai-accent-bg: #0a1519;
+  --nai-bar-track: #1a222c;
+  --nai-bar-start: #147f8e;
+  --nai-fg-soft: #9fb2c2;
+
+  --nai-font-ui: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas,
+    "SFMono-Regular", Menlo, monospace;
+  --nai-font-size: 12px;
+  --nai-font-size-sm: 11px;
+  --nai-font-size-xs: 10px;
+  --nai-line-height: 1.45;
+  --nai-tabular: tabular-nums;
+
+  --nai-space-1: 2px;
+  --nai-space-2: 4px;
+  --nai-space-3: 6px;
+  --nai-space-4: 8px;
+  --nai-space-5: 12px;
+  --nai-space-6: 16px;
+
+  --nai-hairline: 1px;
+  --nai-header-h: 38px;
+  --nai-kpi-h: 54px;
+  --nai-toolbar-h: 32px;
+  --nai-row-h: 22px;
+  --nai-radius: 0px;
+
+  --nai-header-bg: linear-gradient(180deg, #121821 0%, #0d1219 100%);
+  --nai-accent-glow: 0 0 14px rgba(25, 194, 216, 0.32);
+
+  color-scheme: dark;
+}
+
+@media (min-resolution: 2dppx) {
+  :root {
+    --nai-hairline: 0.5px;
+  }
+}

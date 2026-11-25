@@ -15,6 +15,26 @@ fabric host and provides inspection, verification, recovery and log access.
 | `verify <hash>` | Verify an artifact in the CAS |
 | `gastown <sub>` | Gas Town operations (sessions, tasks, reviews) |
 | `log <sub>` | Tail or query the observability log over the fabric pipe |
+| `maintenance <sub>` | Enterprise lifecycle: status/stop/start, `prune`, `purge`, `backup`/`restore`, `audit`, `config` |
+
+## Maintenance lifecycle
+
+`maintenance` is the single owner of the per-user fabric lifecycle — retention,
+purge, backup/restore, cooperative host stop/start and the audit ledger. Full
+policy: [`docs/MAINTENANCE.md`](../../docs/MAINTENANCE.md).
+
+```powershell
+target\release\nai-lattice-cli.exe maintenance status
+target\release\nai-lattice-cli.exe maintenance prune --dry-run
+target\release\nai-lattice-cli.exe maintenance prune --yes --stop
+target\release\nai-lattice-cli.exe maintenance purge --scope all --yes --stop
+```
+
+`prune` is the bounded scheduled housekeeping (logs, audit, backups; opt-in
+superseded runtimes). `purge --scope derived|all|legacy` is the explicit reset;
+`all` backs up by default and `restore --from` is the undo path. Every accepted
+action is appended to `<base>\maintenance.audit.jsonl`. See
+`scripts/register-maintenance-task.ps1` for the daily schedule.
 
 ## Build
 

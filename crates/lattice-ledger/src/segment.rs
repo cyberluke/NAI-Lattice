@@ -44,7 +44,7 @@ pub enum RecoveryError {
 }
 
 /// Sealed-segment footer (self-describing).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SegmentFooter {
     pub first_sequence: u64,
     pub last_sequence: u64,
@@ -75,6 +75,15 @@ impl SegmentWriter {
     pub fn open(path: &Path) -> Result<Self, LedgerError> {
         if !path.exists() {
             return Self::create_empty(path);
+        }
+        // A sealed NAIZ envelope is immutable by construction: appending to it
+        // would invalidate the block table and whole-file hash.
+        if crate::compression::is_compressed_file(path)? {
+            return Err(RecoveryError::Corrupt(
+                0,
+                "compressed sealed segment cannot be appended".into(),
+            )
+            .into());
         }
         // Rebuild counters from current complete frames (idempotent).
         let (frames, _tail, _seq, _trunc) = recover(path)?;
@@ -204,30 +213,52 @@ impl SegmentWriter {
     }
 
     /// Read a sealed segment's footer, verifying its self-blake3.
+    ///
+    /// A `NAIZ` sealed-segment envelope (crate::compression) keeps the source
+    /// footer fields in its header, so this returns the same manifest for a
+    /// compressed segment. That keeps `verify-chain`/`read_footer_hwm`
+    /// transparent over both formats.
     pub fn read_footer(path: &Path) -> Result<SegmentFooter, LedgerError> {
         let mut f = std::fs::File::open(path)?;
         let mut all = Vec::new();
         f.read_to_end(&mut all)?;
-        let n = all.len();
-        if n < FOOTER_PAYLOAD_LEN + 4 + 32 {
-            return Err(RecoveryError::Corrupt(0, "file too small for footer".into()).into());
+        if crate::compression::has_envelope_magic(&all) {
+            return crate::compression::read_source_footer(&all).map_err(Into::into);
         }
-        let footer_len =
-            u32::from_le_bytes(all[n - 36..n - 32].try_into().expect("4 bytes")) as usize;
-        let stored_hash = &all[n - 32..];
-        let body = &all[n - 36 - footer_len..n - 36];
-        if blake3::hash(body).as_bytes() != stored_hash {
-            return Err(RecoveryError::Corrupt(0, "footer blake3 mismatch".into()).into());
-        }
-        if body.len() < FOOTER_PAYLOAD_LEN {
-            return Err(RecoveryError::Corrupt(0, "footer too short".into()).into());
-        }
-        let magic = u32::from_le_bytes(body[0..4].try_into().expect("4"));
-        if magic != FOOTER_MAGIC {
-            return Err(RecoveryError::Corrupt(0, "bad footer magic".into()).into());
-        }
-        let rd = |o: usize| u64::from_le_bytes(body[o..o + 8].try_into().expect("8"));
-        Ok(SegmentFooter {
+        Ok(footer_from_bytes(&all)?.0)
+    }
+}
+
+/// Parse and self-verify the plain segment footer in `all`.
+///
+/// Returns the footer and the offset where it starts (the frame region is
+/// `all[..start]`).
+pub(crate) fn footer_from_bytes(all: &[u8]) -> Result<(SegmentFooter, usize), RecoveryError> {
+    let n = all.len();
+    if n < FOOTER_PAYLOAD_LEN + 4 + 32 {
+        return Err(RecoveryError::Corrupt(0, "file too small for footer".into()));
+    }
+    let footer_len =
+        u32::from_le_bytes(all[n - 36..n - 32].try_into().expect("4 bytes")) as usize;
+    if n < 36 + footer_len {
+        return Err(RecoveryError::Corrupt(0, "footer length exceeds file".into()));
+    }
+    let start = n - 36 - footer_len;
+    let stored_hash = &all[n - 32..];
+    let body = &all[start..n - 36];
+    if blake3::hash(body).as_bytes() != stored_hash {
+        return Err(RecoveryError::Corrupt(0, "footer blake3 mismatch".into()));
+    }
+    if body.len() < FOOTER_PAYLOAD_LEN {
+        return Err(RecoveryError::Corrupt(0, "footer too short".into()));
+    }
+    let magic = u32::from_le_bytes(body[0..4].try_into().expect("4"));
+    if magic != FOOTER_MAGIC {
+        return Err(RecoveryError::Corrupt(0, "bad footer magic".into()));
+    }
+    let rd = |o: usize| u64::from_le_bytes(body[o..o + 8].try_into().expect("8"));
+    Ok((
+        SegmentFooter {
             first_sequence: rd(4),
             last_sequence: rd(12),
             first_timestamp: rd(20) as i64,
@@ -237,8 +268,9 @@ impl SegmentWriter {
             aggregate_blake3: body[52..84].try_into().expect("32"),
             segment_hash: body[84..116].try_into().expect("32"),
             format_version: u32::from_le_bytes(body[116..120].try_into().expect("4")),
-        })
-    }
+        },
+        start,
+    ))
 }
 
 /// Cheap high-water mark of a SEALED segment: its footer's `last_sequence`.
@@ -250,10 +282,18 @@ pub fn read_footer_hwm(path: &Path) -> Result<Option<u64>, RecoveryError> {
     if !path.exists() {
         return Ok(None);
     }
-    match SegmentWriter::read_footer(path) {
-        Ok(f) => Ok(Some(f.last_sequence)),
-        Err(_) => Ok(None),
+    let mut f = std::fs::File::open(path)?;
+    let mut all = Vec::new();
+    f.read_to_end(&mut all)?;
+    if crate::compression::has_envelope_magic(&all) {
+        // Trust the metadata only after the whole-envelope digest and table
+        // bounds verify; otherwise fall back to a full recover (which reports
+        // the hard error instead of silently skipping a corrupt segment).
+        return Ok(crate::compression::envelope_hwm(&all).ok());
     }
+    Ok(footer_from_bytes(&all)
+        .ok()
+        .map(|(footer, _start)| footer.last_sequence))
 }
 
 /// Crash recovery over a segment file. Returns `(frames, tail_hash,
@@ -268,6 +308,14 @@ pub fn recover(
     let mut f = std::fs::File::open(path)?;
     let mut all = Vec::new();
     f.read_to_end(&mut all)?;
+
+    // Sealed-segment envelope (NAIZ): the transparent reader decodes and
+    // verifies every block before the plain frame/chain path is reused. A
+    // corrupt envelope is a hard error, never a silent skip.
+    if crate::compression::has_envelope_magic(&all) {
+        let decoded = crate::compression::decode_envelope_for_path(path, &all)?;
+        return Ok((decoded.frames, decoded.tail_hash, decoded.last_sequence, None));
+    }
 
     let mut frames = Vec::new();
     let mut offset = 0usize;

@@ -10,11 +10,11 @@ description = "NAI Lattice lattice-query: structural SQL-over-Parquet, hybrid re
 readme = "README.md"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
-nai-lattice-lakehouse = { path = "../lattice-lakehouse", version = "0.1.1" }
-nai-lattice-search = { path = "../lattice-search", version = "0.1.1" }
-nai-lattice-vector = { path = "../lattice-vector", version = "0.1.1" }
-nai-lattice-embeddings = { path = "../lattice-embeddings", version = "0.1.1" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.4" }
+nai-lattice-lakehouse = { path = "../lattice-lakehouse", version = "0.1.4" }
+nai-lattice-search = { path = "../lattice-search", version = "0.1.4" }
+nai-lattice-vector = { path = "../lattice-vector", version = "0.1.4" }
+nai-lattice-embeddings = { path = "../lattice-embeddings", version = "0.1.4" }
 
 serde.workspace = true
 serde_json.workspace = true

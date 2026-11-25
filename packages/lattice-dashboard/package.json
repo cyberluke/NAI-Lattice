@@ -1,0 +1,35 @@
+{
+  "name": "lattice-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "NAI Lattice observability terminal (Vue 3 + Dockview + FDC3). Embedded preview bundle for /lattice/next/.",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "build": "vite build && node scripts/seal-bundle.mjs",
+    "verify:manifest": "node scripts/verify-manifest.mjs"
+  },
+  "dependencies": {
+    "@finos/fdc3": "3.0.0",
+    "dockview-core": "8.9.1",
+    "dockview-vue": "8.9.1",
+    "echarts": "6.1.0",
+    "vue": "3.5.46"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.11",
+    "@vue/test-utils": "2.6.0",
+    "hash-wasm": "4.13.0",
+    "jsdom": "31.0.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.8",
+    "vitest": "5.1.1",
+    "vue-tsc": "3.3.14"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

@@ -10,7 +10,7 @@ description = "Fjall-backed HotStore adapter (behind feature; API lock-in preven
 readme = "README.md"
 
 [dependencies]
-nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.1" }
+nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.4" }
 fjall = "3.1.13"
 serde.workspace = true
 thiserror.workspace = true

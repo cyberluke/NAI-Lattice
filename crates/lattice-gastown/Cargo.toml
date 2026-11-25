@@ -11,12 +11,12 @@ description = "Gas Town domain module inside NAI-Lattice (host/session registry,
 readme = "README.md"
 
 [dependencies]
-nai-lattice-core = { path = "../lattice-core", version = "0.1.1" }
-nai-lattice-ledger = { path = "../lattice-ledger", version = "0.1.1" }
-nai-lattice-cas = { path = "../lattice-cas", version = "0.1.1" }
-nai-lattice-git = { path = "../lattice-git", version = "0.1.1" }
-nai-lattice-supervisor = { path = "../lattice-supervisor", version = "0.1.1" }
-nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.1" }
+nai-lattice-core = { path = "../lattice-core", version = "0.1.4" }
+nai-lattice-ledger = { path = "../lattice-ledger", version = "0.1.4" }
+nai-lattice-cas = { path = "../lattice-cas", version = "0.1.4" }
+nai-lattice-git = { path = "../lattice-git", version = "0.1.4" }
+nai-lattice-supervisor = { path = "../lattice-supervisor", version = "0.1.4" }
+nai-lattice-hotstore = { path = "../lattice-hotstore", version = "0.1.4" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
