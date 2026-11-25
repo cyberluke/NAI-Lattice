@@ -103,34 +103,54 @@ The host binary name is fixed by the product contract:
 
 ---
 
-## 3. Sign, then package the host
+## 3. Build, sign, then stage the host
 
-Sign the exact bytes first; the manifest must describe the signed binary.
+Build the host, sign the exact bytes, and stage the signed exe with a
+regenerated manifest. Every release stages the versioned path
+`dist\<version>\host\nai-fabric-host.exe` + `host-manifest.json`.
+**Never reuse `dist\nai-lattice\host`**; that legacy path is read-only and may
+contain a stale package host.
 
 ```powershell
-$hostExe = 'target\release\nai-fabric-host.exe'
+$version = '0.1.4'
+$hostExe = 'target\x86_64-pc-windows-msvc\release\nai-fabric-host.exe'
 $cliExe  = 'target\release\nai-lattice-cli.exe'
+
+cargo build --release -p nai-fabric-host --target x86_64-pc-windows-msvc
 
 pwsh ./scripts/release/sign-release.ps1 `
   -Files $hostExe,$cliExe `
+  -RootCert <ca>\certs\NAI-Sovereign-Root-CA.cer `
+  -IntermediateCert <ca>\certs\NAI-Code-Signing-CA.cer `
   -TrustChain
 
 pwsh ./packaging/bundle-host-for-product.ps1 `
-  -OutDir dist\nai-lattice\host `
+  -OutDir "dist\$version\host" `
   -SkipBuild `
   -HostExe $hostExe `
   -RequireSignature
+
+Copy-Item $cliExe "dist\$version\cli\nai-lattice-cli.exe" -Force
 ```
+
+The canonical host build is the **triple-target** exe. Do not sign the plain
+`target\release\nai-fabric-host.exe` and then stage a different profile.
 
 `-TrustChain` installs the sovereign root/intermediate into the **current
 user's** stores so `signtool verify` and `Get-AuthenticodeSignature` can build
-the chain on the release box. The installer does the machine-wide equivalent.
+the chain on the release box. The installer does the machine-wide equivalent;
+pass the public CA certs explicitly if `.cert` does not carry them.
 
 `-SkipBuild` is mandatory here: without it the bundler would rebuild and
 replace the signed binary. It copies the signed host, reads its Authenticode
-status, and writes `host-manifest.json` with `sha256`, `signature_status`,
-`signer_subject` and `signer_thumbprint`. `-RequireSignature` fails the bundle
-when the exe is not Authenticode-`Valid`.
+status, and writes `host-manifest.json` with `sha256`, `signature_status`
+(`"Signed"`; legacy `"Valid"` is accepted), `signer_subject` and
+`signer_thumbprint`. `-RequireSignature` fails the bundle when the exe is not
+Authenticode-`Valid`.
+
+Regenerate `SHA256SUMS` and `DELIVERY.json` from the staged files. Never
+publish a delivery whose host hash or signature status disagrees with
+`host-manifest.json`.
 
 Products consume the manifest per [`PRODUCT_BUNDLING.md`](PRODUCT_BUNDLING.md):
 verify SHA-256 **and** the signer thumbprint before executing.
@@ -142,11 +162,12 @@ verify SHA-256 **and** the signer thumbprint before executing.
 ```powershell
 . ./scripts/release/load-env.ps1   # R2_* keys and endpoint from .env.local
 
+$version = '0.1.4'
 pwsh ./scripts/release/r2-release.ps1 `
-  -Version 0.1.1 `
-  -Artifacts dist\nai-lattice\host\nai-fabric-host.exe,
-             target\release\nai-lattice-cli.exe,
-             dist\nai-lattice\host\host-manifest.json,
+  -Version $version `
+  -Artifacts "dist\$version\host\nai-fabric-host.exe",
+             "dist\$version\cli\nai-lattice-cli.exe",
+             "dist\$version\host\host-manifest.json",
              <private-certs>\NAI-Sovereign-Root-CA.cer,
              <private-certs>\NAI-Code-Signing-CA.cer `
   -Latest

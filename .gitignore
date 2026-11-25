@@ -21,6 +21,7 @@ node_modules/
 **/node_modules/
 packages/naf-client-ts/dist/
 packages/mcp-nai-lattice/dist/
+packages/lattice-dashboard/dist/
 /dist/
 
 # Machine-specific MCP registry and local state (ship projects.example.json instead)
@@ -38,3 +39,14 @@ packages/mcp-nai-lattice/state/
 
 .kelvin-write-fence
 .cargo
+.ingest
+
+# Internal runbooks and host-feed/updater scripts (not for public push)
+/docs/internal/
+/scripts/internal/
+
+# Local agent state and generated smoke artifacts (not for public push)
+/.kilo/
+/tools/webview2-smoke/out/
+/tools/webview2-smoke/bin/
+/tools/webview2-smoke/obj/

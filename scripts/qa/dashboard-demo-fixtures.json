@@ -1,0 +1,167 @@
+{
+  "scenario": "dashboard-demo",
+  "traces": [
+    {
+      "traceId": "demo-explicit-chain",
+      "baseOffsetMs": -2600,
+      "records": [
+        {
+          "key": "qa-demo-explicit-chain-span-root",
+          "offsetMs": 0,
+          "level": "info",
+          "component": "nai-os.shell",
+          "message": "turn.execute",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-chain-root",
+            "parent_span_id": null,
+            "operation": "turn.execute",
+            "duration_ms": 1240,
+            "span_kind": "server",
+            "call": {
+              "invocation_id": "demo-chain-call-1",
+              "source_span_id": "demo-chain-root",
+              "target_span_id": "demo-chain-agent",
+              "source_component": "nai-os.shell",
+              "target_component": "nai-os.agent",
+              "operation": "turn.dispatch",
+              "transport": "naf/rpc",
+              "observation_kind": "client"
+            }
+          }
+        },
+        {
+          "key": "qa-demo-explicit-chain-point-queue",
+          "offsetMs": 120,
+          "level": "info",
+          "component": "nai-os.shell",
+          "message": "queue.depth sampled (point event)",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "queue.sample",
+            "point": true
+          }
+        },
+        {
+          "key": "qa-demo-explicit-chain-span-agent",
+          "offsetMs": 160,
+          "level": "info",
+          "component": "nai-os.agent",
+          "message": "agent.turn",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-chain-agent",
+            "parent_span_id": "demo-chain-root",
+            "operation": "agent.turn",
+            "duration_ms": 820,
+            "span_kind": "internal"
+          }
+        },
+        {
+          "key": "qa-demo-explicit-chain-span-tool",
+          "offsetMs": 420,
+          "level": "info",
+          "component": "nai-os.worker",
+          "message": "tool.exec read_file",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-chain-tool",
+            "parent_span_id": "demo-chain-agent",
+            "operation": "tool.exec read_file",
+            "duration_ms": 260,
+            "span_kind": "client"
+          }
+        },
+        {
+          "key": "qa-demo-explicit-chain-span-terminal",
+          "offsetMs": 990,
+          "level": "info",
+          "component": "nai-os.terminal",
+          "message": "turn.terminal completed",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-chain-terminal",
+            "parent_span_id": "demo-chain-root",
+            "operation": "turn.terminal",
+            "duration_ms": 250,
+            "span_kind": "internal"
+          }
+        }
+      ]
+    },
+    {
+      "traceId": "demo-explicit-fanout",
+      "baseOffsetMs": -5200,
+      "records": [
+        {
+          "key": "qa-demo-explicit-fanout-span-root",
+          "offsetMs": 0,
+          "level": "info",
+          "component": "nai-os.shell",
+          "message": "turn.execute",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-fan-root",
+            "parent_span_id": null,
+            "operation": "turn.execute",
+            "duration_ms": 1500,
+            "span_kind": "server"
+          }
+        },
+        {
+          "key": "qa-demo-explicit-fanout-span-model",
+          "offsetMs": 120,
+          "level": "warn",
+          "component": "nai-os.agent",
+          "message": "model.invoke",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-fan-model",
+            "parent_span_id": "demo-fan-root",
+            "operation": "model.invoke",
+            "duration_ms": 600,
+            "span_kind": "internal"
+          }
+        },
+        {
+          "key": "qa-demo-explicit-fanout-span-tool",
+          "offsetMs": 160,
+          "level": "error",
+          "component": "nai-os.worker",
+          "message": "tool.exec git_status",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-fan-tool",
+            "parent_span_id": "demo-fan-root",
+            "operation": "tool.exec git_status",
+            "duration_ms": 340,
+            "span_kind": "client"
+          }
+        },
+        {
+          "key": "qa-demo-explicit-fanout-span-terminal",
+          "offsetMs": 980,
+          "level": "info",
+          "component": "nai-os.terminal",
+          "message": "turn.terminal completed",
+          "extras": {
+            "scenario": "dashboard-demo",
+            "event_type": "span.observed",
+            "span_id": "demo-fan-terminal",
+            "parent_span_id": "demo-fan-tool",
+            "operation": "turn.terminal",
+            "duration_ms": 120,
+            "span_kind": "internal"
+          }
+        }
+      ]
+    }
+  ]
+}

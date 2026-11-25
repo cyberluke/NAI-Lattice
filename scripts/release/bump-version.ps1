@@ -42,7 +42,9 @@ $rootPath = Join-Path $repo 'Cargo.toml'
 $root = Get-Content -LiteralPath $rootPath -Raw
 $updated = [regex]::Replace($root, '(?m)^version = "[^"]+"$', "version = `"$CargoVersion`"", 1)
 if ($updated -eq $root) { throw 'Workspace version line was not found.' }
-Set-Content -LiteralPath $rootPath -Value $updated -NoNewline
+# Preserve the source newline style and write UTF-8 without BOM. Set-Content can
+# normalize to CRLF on Windows and create whitespace-only diffs.
+[IO.File]::WriteAllText($rootPath, $updated, [Text.UTF8Encoding]::new($false))
 
 # Cargo path dependencies require literal versions; keep them in lockstep.
 $manifests = Get-ChildItem -LiteralPath $repo -Recurse -File -Filter Cargo.toml |
@@ -56,7 +58,7 @@ foreach ($manifest in $manifests) {
         '${1}' + $CargoVersion + '${2}'
     )
     if ($new -ne $text) {
-        Set-Content -LiteralPath $manifest.FullName -Value $new -NoNewline
+        [IO.File]::WriteAllText($manifest.FullName, $new, [Text.UTF8Encoding]::new($false))
         $changed++
     }
 }

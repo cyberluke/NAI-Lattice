@@ -10,7 +10,8 @@
 # Produces in -OutDir:
 #   nai-fabric-host.exe
 #   host-manifest.json   (version, protocol range, target, SHA-256, source, git,
-#                         signature_status + signer_subject/thumbprint)
+#                         signature_status + signer_subject/thumbprint,
+#                         embedded dashboard version + bundle BLAKE3)
 #
 # Fail-hard by design: a product release must never silently omit the host.
 #
@@ -29,6 +30,7 @@ param(
 
     [int]$ProtocolMin = 1,
     [int]$ProtocolMax = 1,
+    [int]$StorageSchema = 1,
 
     # Fail the bundle when the host is not Authenticode-Valid. Product release
     # builds set this; local/dev bundles may leave it off.
@@ -67,6 +69,33 @@ if (-not $package -or -not $package.version) {
 $version = [string]$package.version
 $gitDesc = (& git -C $Lattice rev-parse --short HEAD 2>$null)
 if (-not $gitDesc) { $gitDesc = 'unknown' }
+
+# ── dashboard bundle (embedded at compile time by apps/nai-fabric-host/build.rs)
+# The host binary embeds `packages/lattice-dashboard/dist`. It must be built and
+# sealed BEFORE cargo compiles the host; otherwise the release ships a binary
+# whose `/lattice/next` falls back to the legacy dashboard.
+$bundleManifestPath = Join-Path $Lattice 'packages\lattice-dashboard\dist\bundle-manifest.json'
+if (-not $SkipBuild) {
+    & (Join-Path $Lattice 'scripts\build-dashboard-bundle.ps1') -Lattice $Lattice
+    if ($LASTEXITCODE -ne 0) {
+        throw "bundle-host-for-product: dashboard bundle build failed (exit $LASTEXITCODE)"
+    }
+}
+elseif (-not (Test-Path -LiteralPath $bundleManifestPath)) {
+    throw ("bundle-host-for-product: -SkipBuild requires a sealed dashboard bundle at " +
+        "$bundleManifestPath. Run scripts\build-dashboard-bundle.ps1 and rebuild/sign " +
+        "the host before packaging.")
+}
+if (-not (Test-Path -LiteralPath $bundleManifestPath)) {
+    throw "bundle-host-for-product: dashboard bundle manifest missing at $bundleManifestPath"
+}
+$dashboardManifest = Get-Content -LiteralPath $bundleManifestPath -Raw | ConvertFrom-Json
+$dashboardIndex = @($dashboardManifest.files) | Where-Object { $_.path -eq 'index.html' } | Select-Object -First 1
+if (-not $dashboardIndex -or -not $dashboardIndex.blake3) {
+    throw "bundle-host-for-product: dashboard manifest has no verified index.html entry"
+}
+$dashboardVersion = [string]$dashboardManifest.version
+$dashboardHash = [string]$dashboardIndex.blake3
 
 # ── build (profile overrides scoped to this build only) ─────────────────────
 if (-not $SkipBuild) {
@@ -144,16 +173,24 @@ if ($RequireSignature -and $sig.Status -ne 'Valid') {
     throw "bundle-host-for-product: $dst is not Authenticode-Valid ($($sig.Status)). Sign it before packaging."
 }
 
+# Canonical activation value is "Signed"; Authenticode reports "Valid".
+# Readers accept both, but writing "Signed" keeps the activation contract and
+# the QA/manager clients (which require "Signed") in agreement.
+$signatureStatus = if ($sig.Status -eq 'Valid') { 'Signed' } else { $sig.Status.ToString() }
+
 $manifest = [ordered]@{
     version          = $version
     protocol_min     = $ProtocolMin
     protocol_max     = $ProtocolMax
+    storage_schema   = $StorageSchema
     target           = $Target
     sha256           = $sha
     built_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     source           = 'NAI-Lattice'
     git              = $gitDesc
-    signature_status = $sig.Status.ToString()
+    dashboard_version      = $dashboardVersion
+    dashboard_bundle_blake3 = $dashboardHash
+    signature_status = $signatureStatus
 }
 if ($sig.SignerCertificate) {
     $manifest['signer_subject'] = $sig.SignerCertificate.Subject

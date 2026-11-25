@@ -40,8 +40,8 @@ may be absent. Product lifecycles must never invoke it or write those paths.
    adopted.
 4. **Verify before execute.** SHA-256 must match the manifest. When the manifest
    carries `signer_thumbprint`, the bundled exe's Authenticode signer must match
-   it and `signature_status` must be `Valid`; the version label must be a safe
-   path component.
+   it and `signature_status` must be `Signed` (legacy `Valid` is accepted); the
+   version label must be a safe path component.
 5. **Spawn the host directly.** No `helldesk-release` subcommands, no wrapper
    script requirements.
 6. **Stop only for a forward upgrade.** Verify the image leaf is exactly
@@ -76,12 +76,13 @@ may be absent. Product lifecycles must never invoke it or write those paths.
   "version": "0.3.49",
   "protocol_min": 1,
   "protocol_max": 1,
+  "storage_schema": 1,
   "target": "x86_64-pc-windows-msvc",
   "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "built_at_unix_ms": 1760000000000,
   "source": "NAI-Lattice",
   "git": "1a2b3c4",
-  "signature_status": "Valid",
+  "signature_status": "Signed",
   "signer_subject": "CN=NAI Lattice",
   "signer_thumbprint": "0123456789abcdef0123456789abcdef01234567"
 }
@@ -90,11 +91,15 @@ may be absent. Product lifecycles must never invoke it or write those paths.
 - `version`: the `nai-fabric-host` package version (from `cargo metadata`).
 - `protocol_min`/`protocol_max`: the NAF handshake range **this product**
   supports (currently `1..1`; bump only with a deliberate break).
+- `storage_schema`: the runtime storage schema this host understands (currently
+  `1`). An updater must not auto-apply a host with a different schema without an
+  explicit migration.
 - `target`: the Windows target triple that produced the exe.
 - `sha256`: lowercase 64-char hex of the bundled exe.
 - `source`/`git`/`built_at_unix_ms`: audit metadata.
-- `signature_status`: Authenticode status at packaging time (`Valid`,
-  `NotSigned`, ...). Release bundles must be `Valid`.
+- `signature_status`: `Signed` when the exe passed Authenticode verification at
+  packaging time; otherwise the Authenticode status (`NotSigned`, ...). Release
+  bundles must be `Signed`. Readers also accept the older `Valid` spelling.
 - `signer_subject`/`signer_thumbprint`: present when the exe is signed. A
   consumer that enforces signing pins the NAI Lattice leaf thumbprint and
   rejects any other signer or a `NotSigned` bundle.
@@ -167,9 +172,13 @@ pwsh NAI-Lattice/packaging\bundle-host-for-product.ps1 `
      -Target x86_64-pc-windows-msvc
 ```
 
-The script resolves the host package version from `cargo metadata`, builds
-`nai-fabric-host` with scoped release-profile overrides, copies the exe, writes
-the manifest with a verified SHA-256, and fails hard on any error.
+The script resolves the host package version from `cargo metadata`, builds and
+seals the dashboard bundle (`scripts/build-dashboard-bundle.ps1`) **before**
+compiling `nai-fabric-host` with scoped release-profile overrides, copies the exe,
+and writes the manifest with a verified SHA-256 plus `dashboard_version` and
+`dashboard_bundle_blake3`. It fails hard on any error. `-SkipBuild` requires an
+already sealed dashboard bundle and refuses to package a host that would silently
+fall back to the legacy dashboard.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -272,6 +281,12 @@ it as a recovery.
 
 ---
 
+### Host and dashboard cadence
+
+NAI OS ships a signed baseline host and protocol floor. The shared runtime can
+adopt a newer signed host without rebuilding the product; the detailed update
+and trust runbook is internal.
+
 ## 6. Version and protocol policy
 
 ### Comparison
@@ -366,9 +381,16 @@ its parent. Do not assert "one process total" — assert one serving worker.
 - Never delete `active.json` or `runtime\` on product uninstall; other products
   may be using them.
 - A product may remove only its own packaged copy.
-- If a shared-runtime garbage collector is ever added, it must be
-  reference-counted across installed products and must never remove the active
-  release.
+- **Shared lifecycle is owned by NAI-Lattice, not by products:** retention,
+  purge, backup/restore and audit live in `nai-lattice-cli maintenance`
+  (`docs/MAINTENANCE.md`). A product uninstall must not prune or purge shared
+  state.
+- The shared-runtime collector exists but is **opt-in**
+  (`maintenance prune --prune-runtimes`): it always keeps the active release and
+  `runtime_keep` newest versions. It is not yet reference-counted across
+  installed products, so products must not run it as an uninstall step.
+- A deliberate data reset is `maintenance purge --scope all` (operator action,
+  backs up by default), never a product uninstall step.
 
 ---
 
